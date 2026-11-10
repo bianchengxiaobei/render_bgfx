@@ -1,0 +1,21 @@
+block Global {
+    mat4 view;
+    mat4 invView;
+    mat4 proj;
+    mat4 invProj;
+    mat4 viewProj;
+    mat4 invViewProj;
+    mat4 nonJitteredViewProj;
+    mat4 nonJitteredInvViewProj;
+    mat4 prevViewProj;
+    mat4 prevInvViewProj;
+    vec4 screenSize;      # w, h, 1/w, 1/h
+    vec4 cameraPos;       # xyz, 1
+    vec4 prevCameraPos;   # xyz, 1
+    vec4 taaJitter;       # x, y, x/w, y/h
+    vec4 taaFrameInfo;    # sharpen, unused, frameIndex, enabled
+    vec4 rtScale;         # current xy, previous zw
+    vec4 dynamicResolutionScale; # render/final xy, unused zw
+    vec4 time;            # t, dt, frameIndex, 0
+    vec4 frustumPlanes[6]; # [L,R,T,B,N,F], xyz = normal, w = distance
+}

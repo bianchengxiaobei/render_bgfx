@@ -1,0 +1,5 @@
+block Material {
+    vec4 baseColorFactor;
+    vec4 metallicRoughness; # metallic, roughness, normalScale, alphaCutoff
+    vec4 emissiveFactor;
+}

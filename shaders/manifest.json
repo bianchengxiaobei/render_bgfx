@@ -1,0 +1,364 @@
+{
+  "version": 1,
+  "generated_by": "tools/shader_build.py",
+  "passes": {
+    "dxbc": {
+      "forward": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/forward.fs.0.bin",
+          "build/dxbc/forward.fs.1.bin",
+          "build/dxbc/forward.fs.2.bin",
+          "build/dxbc/forward.fs.3.bin",
+          "build/dxbc/forward.fs.4.bin",
+          "build/dxbc/forward.fs.5.bin",
+          "build/dxbc/forward.fs.6.bin",
+          "build/dxbc/forward.fs.7.bin",
+          "build/dxbc/forward.fs.8.bin",
+          "build/dxbc/forward.fs.9.bin",
+          "build/dxbc/forward.fs.10.bin",
+          "build/dxbc/forward.fs.11.bin",
+          "build/dxbc/forward.fs.12.bin",
+          "build/dxbc/forward.fs.13.bin",
+          "build/dxbc/forward.fs.14.bin",
+          "build/dxbc/forward.fs.15.bin"
+        ]
+      },
+      "forwardInstanced": {
+        "vertex": "build/dxbc/forward_instanced.vs.bin",
+        "fragments": [
+          "build/dxbc/forward.fs.0.bin",
+          "build/dxbc/forward.fs.1.bin",
+          "build/dxbc/forward.fs.2.bin",
+          "build/dxbc/forward.fs.3.bin",
+          "build/dxbc/forward.fs.4.bin",
+          "build/dxbc/forward.fs.5.bin",
+          "build/dxbc/forward.fs.6.bin",
+          "build/dxbc/forward.fs.7.bin",
+          "build/dxbc/forward.fs.8.bin",
+          "build/dxbc/forward.fs.9.bin",
+          "build/dxbc/forward.fs.10.bin",
+          "build/dxbc/forward.fs.11.bin",
+          "build/dxbc/forward.fs.12.bin",
+          "build/dxbc/forward.fs.13.bin",
+          "build/dxbc/forward.fs.14.bin",
+          "build/dxbc/forward.fs.15.bin"
+        ]
+      },
+      "tonemap": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/tonemap.fs.bin"
+      },
+      "shadow": {
+        "vertex": "build/dxbc/shadowcaster.vs.bin",
+        "fragment": "build/dxbc/shadowcaster.fs.bin"
+      },
+      "shadowInstanced": {
+        "vertex": "build/dxbc/shadowcaster_instanced.vs.bin",
+        "fragment": "build/dxbc/shadowcaster.fs.bin"
+      },
+      "prepass": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/prepass.fs.0.bin",
+          "build/dxbc/prepass.fs.1.bin",
+          "build/dxbc/prepass.fs.2.bin",
+          "build/dxbc/prepass.fs.3.bin",
+          "build/dxbc/prepass.fs.4.bin",
+          "build/dxbc/prepass.fs.5.bin",
+          "build/dxbc/prepass.fs.6.bin",
+          "build/dxbc/prepass.fs.7.bin",
+          "build/dxbc/prepass.fs.8.bin",
+          "build/dxbc/prepass.fs.9.bin",
+          "build/dxbc/prepass.fs.10.bin",
+          "build/dxbc/prepass.fs.11.bin",
+          "build/dxbc/prepass.fs.12.bin",
+          "build/dxbc/prepass.fs.13.bin",
+          "build/dxbc/prepass.fs.14.bin",
+          "build/dxbc/prepass.fs.15.bin"
+        ]
+      },
+      "motionVectors": {
+        "vertex": "build/dxbc/motion_vectors.vs.bin",
+        "fragment": "build/dxbc/motion_vectors.fs.bin"
+      },
+      "cameraMotionVectors": {
+        "vertex": "build/dxbc/camera_motion_vectors.vs.bin",
+        "fragment": "build/dxbc/camera_motion_vectors.fs.bin"
+      },
+      "depthPyramidCopy": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/depth_pyramid_copy.fs.bin"
+      },
+      "depthPyramidDownsample": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/depth_pyramid_downsample.fs.bin"
+      },
+      "sky": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/sky.fs.bin"
+      },
+      "debugLightData": {
+        "vertex": "build/dxbc/debug_light_data.vs.bin",
+        "fragment": "build/dxbc/debug_light_data.fs.bin"
+      },
+      "debugNormal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_normal.fs.bin"
+      },
+      "debugMotionVectors": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_motion_vectors.fs.bin"
+      },
+      "debugDepth": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_depth.fs.bin"
+      },
+      "debugDepthPyramid": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_depth_pyramid.fs.bin"
+      },
+      "debugLightCluster": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_light_cluster.fs.bin"
+      },
+      "debugShadowAtlas": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_shadow_atlas.fs.bin"
+      },
+      "debugColor": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_color.fs.bin"
+      },
+      "debugAlbedo": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.1.bin",
+          "build/dxbc/debug_albedo.fs.2.bin",
+          "build/dxbc/debug_albedo.fs.3.bin",
+          "build/dxbc/debug_albedo.fs.4.bin",
+          "build/dxbc/debug_albedo.fs.5.bin",
+          "build/dxbc/debug_albedo.fs.6.bin",
+          "build/dxbc/debug_albedo.fs.7.bin",
+          "build/dxbc/debug_albedo.fs.8.bin",
+          "build/dxbc/debug_albedo.fs.9.bin",
+          "build/dxbc/debug_albedo.fs.10.bin",
+          "build/dxbc/debug_albedo.fs.11.bin",
+          "build/dxbc/debug_albedo.fs.12.bin",
+          "build/dxbc/debug_albedo.fs.13.bin",
+          "build/dxbc/debug_albedo.fs.14.bin",
+          "build/dxbc/debug_albedo.fs.15.bin"
+        ]
+      },
+      "debugRoughness": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.1.bin",
+          "build/dxbc/debug_roughness.fs.2.bin",
+          "build/dxbc/debug_roughness.fs.3.bin",
+          "build/dxbc/debug_roughness.fs.4.bin",
+          "build/dxbc/debug_roughness.fs.5.bin",
+          "build/dxbc/debug_roughness.fs.6.bin",
+          "build/dxbc/debug_roughness.fs.7.bin",
+          "build/dxbc/debug_roughness.fs.8.bin",
+          "build/dxbc/debug_roughness.fs.9.bin",
+          "build/dxbc/debug_roughness.fs.10.bin",
+          "build/dxbc/debug_roughness.fs.11.bin",
+          "build/dxbc/debug_roughness.fs.12.bin",
+          "build/dxbc/debug_roughness.fs.13.bin",
+          "build/dxbc/debug_roughness.fs.14.bin",
+          "build/dxbc/debug_roughness.fs.15.bin"
+        ]
+      },
+      "wireframe": {
+        "vertex": "build/dxbc/wireframe.vs.bin",
+        "fragment": "build/dxbc/wireframe.fs.bin"
+      },
+      "ui": {
+        "vertex": "build/dxbc/imgui.vs.bin",
+        "fragment": "build/dxbc/imgui.fs.bin"
+      }
+    },
+    "spirv": {
+      "forward": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/forward.fs.0.bin",
+          "build/spirv/forward.fs.1.bin",
+          "build/spirv/forward.fs.2.bin",
+          "build/spirv/forward.fs.3.bin",
+          "build/spirv/forward.fs.4.bin",
+          "build/spirv/forward.fs.5.bin",
+          "build/spirv/forward.fs.6.bin",
+          "build/spirv/forward.fs.7.bin",
+          "build/spirv/forward.fs.8.bin",
+          "build/spirv/forward.fs.9.bin",
+          "build/spirv/forward.fs.10.bin",
+          "build/spirv/forward.fs.11.bin",
+          "build/spirv/forward.fs.12.bin",
+          "build/spirv/forward.fs.13.bin",
+          "build/spirv/forward.fs.14.bin",
+          "build/spirv/forward.fs.15.bin"
+        ]
+      },
+      "forwardInstanced": {
+        "vertex": "build/spirv/forward_instanced.vs.bin",
+        "fragments": [
+          "build/spirv/forward.fs.0.bin",
+          "build/spirv/forward.fs.1.bin",
+          "build/spirv/forward.fs.2.bin",
+          "build/spirv/forward.fs.3.bin",
+          "build/spirv/forward.fs.4.bin",
+          "build/spirv/forward.fs.5.bin",
+          "build/spirv/forward.fs.6.bin",
+          "build/spirv/forward.fs.7.bin",
+          "build/spirv/forward.fs.8.bin",
+          "build/spirv/forward.fs.9.bin",
+          "build/spirv/forward.fs.10.bin",
+          "build/spirv/forward.fs.11.bin",
+          "build/spirv/forward.fs.12.bin",
+          "build/spirv/forward.fs.13.bin",
+          "build/spirv/forward.fs.14.bin",
+          "build/spirv/forward.fs.15.bin"
+        ]
+      },
+      "tonemap": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/tonemap.fs.bin"
+      },
+      "shadow": {
+        "vertex": "build/spirv/shadowcaster.vs.bin",
+        "fragment": "build/spirv/shadowcaster.fs.bin"
+      },
+      "shadowInstanced": {
+        "vertex": "build/spirv/shadowcaster_instanced.vs.bin",
+        "fragment": "build/spirv/shadowcaster.fs.bin"
+      },
+      "prepass": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/prepass.fs.0.bin",
+          "build/spirv/prepass.fs.1.bin",
+          "build/spirv/prepass.fs.2.bin",
+          "build/spirv/prepass.fs.3.bin",
+          "build/spirv/prepass.fs.4.bin",
+          "build/spirv/prepass.fs.5.bin",
+          "build/spirv/prepass.fs.6.bin",
+          "build/spirv/prepass.fs.7.bin",
+          "build/spirv/prepass.fs.8.bin",
+          "build/spirv/prepass.fs.9.bin",
+          "build/spirv/prepass.fs.10.bin",
+          "build/spirv/prepass.fs.11.bin",
+          "build/spirv/prepass.fs.12.bin",
+          "build/spirv/prepass.fs.13.bin",
+          "build/spirv/prepass.fs.14.bin",
+          "build/spirv/prepass.fs.15.bin"
+        ]
+      },
+      "motionVectors": {
+        "vertex": "build/spirv/motion_vectors.vs.bin",
+        "fragment": "build/spirv/motion_vectors.fs.bin"
+      },
+      "cameraMotionVectors": {
+        "vertex": "build/spirv/camera_motion_vectors.vs.bin",
+        "fragment": "build/spirv/camera_motion_vectors.fs.bin"
+      },
+      "depthPyramidCopy": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/depth_pyramid_copy.fs.bin"
+      },
+      "depthPyramidDownsample": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/depth_pyramid_downsample.fs.bin"
+      },
+      "sky": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/sky.fs.bin"
+      },
+      "debugLightData": {
+        "vertex": "build/spirv/debug_light_data.vs.bin",
+        "fragment": "build/spirv/debug_light_data.fs.bin"
+      },
+      "debugNormal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_normal.fs.bin"
+      },
+      "debugMotionVectors": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_motion_vectors.fs.bin"
+      },
+      "debugDepth": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_depth.fs.bin"
+      },
+      "debugDepthPyramid": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_depth_pyramid.fs.bin"
+      },
+      "debugLightCluster": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_light_cluster.fs.bin"
+      },
+      "debugShadowAtlas": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_shadow_atlas.fs.bin"
+      },
+      "debugColor": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_color.fs.bin"
+      },
+      "debugAlbedo": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.1.bin",
+          "build/spirv/debug_albedo.fs.2.bin",
+          "build/spirv/debug_albedo.fs.3.bin",
+          "build/spirv/debug_albedo.fs.4.bin",
+          "build/spirv/debug_albedo.fs.5.bin",
+          "build/spirv/debug_albedo.fs.6.bin",
+          "build/spirv/debug_albedo.fs.7.bin",
+          "build/spirv/debug_albedo.fs.8.bin",
+          "build/spirv/debug_albedo.fs.9.bin",
+          "build/spirv/debug_albedo.fs.10.bin",
+          "build/spirv/debug_albedo.fs.11.bin",
+          "build/spirv/debug_albedo.fs.12.bin",
+          "build/spirv/debug_albedo.fs.13.bin",
+          "build/spirv/debug_albedo.fs.14.bin",
+          "build/spirv/debug_albedo.fs.15.bin"
+        ]
+      },
+      "debugRoughness": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.1.bin",
+          "build/spirv/debug_roughness.fs.2.bin",
+          "build/spirv/debug_roughness.fs.3.bin",
+          "build/spirv/debug_roughness.fs.4.bin",
+          "build/spirv/debug_roughness.fs.5.bin",
+          "build/spirv/debug_roughness.fs.6.bin",
+          "build/spirv/debug_roughness.fs.7.bin",
+          "build/spirv/debug_roughness.fs.8.bin",
+          "build/spirv/debug_roughness.fs.9.bin",
+          "build/spirv/debug_roughness.fs.10.bin",
+          "build/spirv/debug_roughness.fs.11.bin",
+          "build/spirv/debug_roughness.fs.12.bin",
+          "build/spirv/debug_roughness.fs.13.bin",
+          "build/spirv/debug_roughness.fs.14.bin",
+          "build/spirv/debug_roughness.fs.15.bin"
+        ]
+      },
+      "wireframe": {
+        "vertex": "build/spirv/wireframe.vs.bin",
+        "fragment": "build/spirv/wireframe.fs.bin"
+      },
+      "ui": {
+        "vertex": "build/spirv/imgui.vs.bin",
+        "fragment": "build/spirv/imgui.fs.bin"
+      }
+    }
+  }
+}

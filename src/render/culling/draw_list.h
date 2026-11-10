@@ -1,0 +1,69 @@
+#pragma once
+
+#include "core/bounds.h"
+#include "core/math.h"
+#include "render/camera/view_state.h"
+#include "render/culling/sort_key.h"
+#include "render/material/render_queue.h"
+#include "render/material/shader_pass.h"
+#include "render/scene/render_scene.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace hbg::render {
+
+struct DrawItem {
+    uint32_t objectIndex = UINT32_MAX;
+    uint32_t meshIndex = UINT32_MAX;
+    uint32_t subMeshIndex = 0;
+    uint32_t materialIndex = 0;
+    uint32_t indexOffset = 0;
+    uint32_t indexCount = 0;
+    Mat4 world = Mat4::identity();
+    Mat4 prevWorld = Mat4::identity();
+    Bounds worldBounds;
+    float distance = 0.0f;
+    RenderQueueType queueType = RenderQueueType::Unknown;
+    ShaderPassMask passMask = 0;
+    bool transparent = false;
+    DrawSortKey sortKey;
+    uint64_t batchKey = 0;
+};
+
+struct DrawBatch {
+    uint32_t firstItem = 0;
+    uint32_t itemCount = 0;
+    uint64_t stateKey = 0;
+    uint32_t meshIndex = UINT32_MAX;
+    uint32_t materialIndex = 0;
+};
+
+struct DrawListDesc {
+    ShaderPassMask passTags = kShaderPassMaskAll;
+    RenderQueueRange queueRange = kRenderQueueRangeAll;
+    SortingCriteria sortingCriteria = kOpaqueSortingCriteria;
+    bool frustumCull = true;
+};
+
+class DrawList {
+  public:
+    void build(const RenderScene& scene, const ViewState& viewState, const DrawListDesc& desc);
+    void clear();
+
+    bool empty() const { return m_items.empty(); }
+    std::size_t size() const { return m_items.size(); }
+    const std::vector<DrawItem>& items() const { return m_items; }
+    const std::vector<DrawBatch>& batches() const { return m_batches; }
+    uint32_t filteredCount() const { return m_filteredCount; }
+    uint32_t culledCount() const { return m_culledCount; }
+
+  private:
+    std::vector<DrawItem> m_items;
+    std::vector<DrawBatch> m_batches;
+    uint32_t m_filteredCount = 0;
+    uint32_t m_culledCount = 0;
+};
+
+} // namespace hbg::render

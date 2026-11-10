@@ -1,0 +1,5 @@
+block PostProcess {
+    vec4 exposureParams;     # mode: fixed/auto/disabled, fixed exposure multiplier, compensation, lens exposure scale
+    vec4 autoExposureParams; # min EV100, max EV100, speed dark-to-light, speed light-to-dark
+    vec4 tonemapParams;      # mode, history valid, adaptation mode, unused
+}

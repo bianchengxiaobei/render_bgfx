@@ -1,0 +1,3 @@
+block Debug {
+    vec4 depthParams;        # near, far, unused, unused
+}

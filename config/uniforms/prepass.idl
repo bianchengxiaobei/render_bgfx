@@ -1,0 +1,7 @@
+block Object {
+    mat4 prevModel;          # previous-frame world matrix
+}
+
+block Prepass {
+    vec4 depthPyramidParams; # xy = source texel size, zw = unused
+}

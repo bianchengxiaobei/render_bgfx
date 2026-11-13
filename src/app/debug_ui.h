@@ -29,6 +29,25 @@ class DebugUI {
     render::DebugDisplaySettings& settings() { return m_settings; }
     const render::DebugDisplaySettings& settings() const { return m_settings; }
     const ProfilerStats& profilerStats() const { return m_profiler.stats(); }
+    void setGpuLightListStatus(bool requested, bool active, bool bufferPath, bool indirect, uint32_t passes,
+                               float cpuMs, bool shadowGpu, bool shadowIndirect, bool asyncRequested,
+                               bool asyncActive, uint32_t capacityRequested, uint32_t capacityEffective,
+                               uint32_t listStride, uint32_t truncated) {
+        m_gpuLightListRequested = requested;
+        m_gpuLightListActive = active;
+        m_gpuLightListBufferPath = bufferPath;
+        m_gpuLightListIndirect = indirect;
+        m_gpuLightListPasses = passes;
+        m_gpuLightListCpuMs = cpuMs;
+        m_gpuShadowCulling = shadowGpu;
+        m_gpuShadowIndirect = shadowIndirect;
+        m_asyncRequested = asyncRequested;
+        m_asyncActive = asyncActive;
+        m_lightListCapacityRequested = capacityRequested;
+        m_lightListCapacityEffective = capacityEffective;
+        m_lightListStride = listStride;
+        m_lightListTruncated = truncated;
+    }
 
     void beginFrame(const WindowInput& input, uint16_t width, uint16_t height, double deltaSeconds);
     void endFrame(uint16_t width, uint16_t height);
@@ -50,6 +69,20 @@ class DebugUI {
     bool m_visible = true;
     bool m_renderDocLoaded = false;
     bool m_screenshotRequested = false;
+    bool m_gpuLightListRequested = false;
+    bool m_gpuLightListActive = false;
+    bool m_gpuLightListBufferPath = false;
+    bool m_gpuLightListIndirect = false;
+    bool m_gpuShadowCulling = false;
+    bool m_gpuShadowIndirect = false;
+    bool m_asyncRequested = false;
+    bool m_asyncActive = false;
+    uint32_t m_gpuLightListPasses = 0;
+    float m_gpuLightListCpuMs = 0.0f;
+    uint32_t m_lightListCapacityRequested = 0;
+    uint32_t m_lightListCapacityEffective = 0;
+    uint32_t m_lightListStride = 0;
+    uint32_t m_lightListTruncated = 0;
     uint32_t m_screenshotCount = 0;
 };
 

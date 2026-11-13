@@ -156,6 +156,21 @@ TEST_CASE("ViewState applies HDRP Halton jitter and resets it when disabled") {
     checkMatrix(state.constants().prevViewProj, state.constants().viewProj);
 }
 
+TEST_CASE("ViewState ignores unchanged jitter scale and resets when it changes") {
+    ViewState state;
+    const Camera camera = makeCamera(Vec3(0.0f, 0.0f, 5.0f));
+    state.update(camera, 1280, 720, 1.0f, true, false);
+    state.update(camera, 1280, 720, 1.0f, true, false);
+    REQUIRE(state.historyValid());
+
+    state.setJitterScale(1.0f);
+    CHECK(state.historyValid());
+
+    state.setJitterScale(0.5f);
+    CHECK_FALSE(state.historyValid());
+    CHECK(state.taaFrameIndex() == 0);
+}
+
 TEST_CASE("ViewState shifts previous matrices and resets history on resolution changes") {
     ViewState state;
     const Camera camera = makeCamera(Vec3(0.0f, 0.0f, 5.0f));

@@ -3,8 +3,9 @@
 
 #include "common/common.sc"
 #include "common/light_data.sc"
-#include "material/lit.sc"
+#include "lighting/direct_lighting.sc"
 #include "lighting/shadows.sc"
+#include "lighting/contact_shadow.sc"
 
 vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition,
                           float directionalShadowVisibility)
@@ -16,6 +17,7 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
 
     const HbgLightData light = hbgLoadLightData(index);
     const int lightType = hbgLightType(light.shadowFlags);
+    const float shadowDimmer = hbgSaturate(light.shadowTintDimmer.w);
     vec3 lightDirection;
     vec3 radiance;
     float visibility = 1.0;
@@ -24,9 +26,15 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
     {
         lightDirection = normalize(light.directionCone.xyz);
         radiance = light.colorIntensity.rgb * light.colorIntensity.w;
-        if (light.shadowFlags.x >= 0.0)
+        if (light.shadowFlags.x >= 0.0 && shadowDimmer > 0.0)
         {
-            visibility = directionalShadowVisibility;
+            visibility = mix(1.0, directionalShadowVisibility, shadowDimmer);
+        }
+        if (u_pass_shadowParams.y > 0.0)
+        {
+            const float NdotL = dot(normalize(surfaceData.normalWS), lightDirection);
+            visibility *= hbgComputeMicroShadowing(surfaceData.materialAmbientOcclusion, NdotL,
+                                                   u_pass_shadowParams.y);
         }
     }
     else
@@ -41,23 +49,30 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
             const float cosTheta = dot(normalize(light.directionCone.xyz), fromLight);
             attenuation *= hbgSpotAttenuation(cosTheta, light.directionCone.w, light.shadowFlags.y);
         }
-        if (hbgLightCastShadow(light.shadowFlags) && light.shadowFlags.x >= 0.0)
+        if (hbgLightCastShadow(light.shadowFlags) && light.shadowFlags.x >= 0.0 && shadowDimmer > 0.0)
         {
-            visibility = hbgSamplePunctualShadow(int(light.shadowFlags.x + 0.5), lightType,
-                                                 light.positionRange.xyz, light.directionCone.xyz,
-                                                 worldPosition, surfaceData.normalWS);
+            visibility = mix(1.0,
+                             hbgSamplePunctualShadow(int(light.shadowFlags.x + 0.5), lightType,
+                                                     light.positionRange.xyz, light.directionCone.xyz,
+                                                     worldPosition, surfaceData.normalWS),
+                             shadowDimmer);
         }
         radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
     }
 
-    const LitResult direct = hbgEvaluateLight(surfaceData, viewWS, lightDirection, radiance, visibility);
+    visibility *= hbgContactShadowVisibility(surfaceData.contactShadowMask, surfaceData.contactShadowFade,
+                                             light.shadowFlags.z);
+
+    const vec3 shadowColor = hbgComputeShadowColor(visibility, light.shadowTintDimmer.rgb,
+                                                   light.shadowFadeFlags.y);
+    const LitResult direct = hbgEvaluateLight(surfaceData, viewWS, lightDirection, radiance, shadowColor);
     return direct.diffuse + direct.specular;
 }
 
 vec3 hbgEvaluateLightLoop(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition,
                           float directionalShadowVisibility)
 {
-    vec3 color = hbgEvaluateAmbient(surfaceData, viewWS, u_pass_ambientColor.rgb,
+    vec3 color = hbgEvaluateAmbient(surfaceData, viewWS, worldPosition, u_pass_ambientColor.rgb,
                                     u_pass_ambientColor.w);
 
     const int lightCount = min(int(u_pass_lightCounts.x + 0.5), 32);
@@ -68,8 +83,21 @@ vec3 hbgEvaluateLightLoop(SurfaceData surfaceData, vec3 viewWS, vec3 worldPositi
                                       directionalShadowVisibility);
     }
 
-    const bool useLightList = int(u_pass_lightListParams.w + 0.5) != 0;
-    if (useLightList)
+    if (u_cluster_depthParams.w > 0.5)
+    {
+        const ivec2 tile = hbgLightClusterTileCoord(worldPosition);
+        const int slice = hbgClusterSliceForDepth(hbgLinearDepth(worldPosition));
+        const int clusterLightCount = min(int(hbgClusterLightListCount(tile, slice)), HBG_LIGHT_CLUSTER_MAX_LIGHTS);
+        for (int offset = 0; offset < clusterLightCount; ++offset)
+        {
+            const int index = int(hbgClusterLightListIndex(tile, slice, offset));
+            if (index >= directionalCount && index < lightCount)
+            {
+                color += hbgEvaluateLightData(index, surfaceData, viewWS, worldPosition, 1.0);
+            }
+        }
+    }
+    else if (u_pass_lightListParams.w > 0.5)
     {
         const ivec2 tile = hbgLightTileCoord(worldPosition);
         const int tileLightCount = min(int(hbgLightListCount(tile)), 32);

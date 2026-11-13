@@ -13,6 +13,9 @@
 #ifndef HBG_BGFX_EXAMPLE_SHADERS
 #define HBG_BGFX_EXAMPLE_SHADERS ""
 #endif
+#ifndef HBG_SHADER_ROOT
+#define HBG_SHADER_ROOT ""
+#endif
 
 namespace hbg {
 namespace {
@@ -110,9 +113,18 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
     const gfx::UniformHandle colorSampler =
         resources.createUniform({"s_texColor", gfx::UniformType::Sampler, 1});
 
+    gfx::TextureDesc exposureDesc;
+    exposureDesc.width = 1;
+    exposureDesc.height = 1;
+    exposureDesc.format = gfx::TextureFormat::RGBA16F;
+    exposureDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    exposureDesc.computeWrite = true;
+    exposureDesc.name = "compute.exposure";
+    const gfx::TextureHandle exposureTexture = resources.createTexture(exposureDesc);
+
     const bool resourcesCreated = sampled.valid() && offscreenColor.valid() && offscreenDepth.valid() &&
                                   offscreen.valid() && vertices.valid() && indices.valid() &&
-                                  colorSampler.valid();
+                                  colorSampler.valid() && exposureTexture.valid();
     if (!resourcesCreated) {
         HBG_LOGE("gfx resource creation failed");
         return false;
@@ -121,7 +133,9 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
     gfx::generated::GlobalUniformBinder globalBinder;
     gfx::generated::PassUniformBinder passBinder;
     gfx::generated::MaterialUniformBinder materialBinder;
-    if (!globalBinder.init(resources) || !passBinder.init(resources) || !materialBinder.init(resources)) {
+    gfx::generated::PostProcessUniformBinder postProcessBinder;
+    if (!globalBinder.init(resources) || !passBinder.init(resources) || !materialBinder.init(resources) ||
+        !postProcessBinder.init(resources)) {
         HBG_LOGE("generated uniform block initialization failed");
         return false;
     }
@@ -160,6 +174,27 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
         const std::string directory = shaderRoot + "/" + shaderSubdir;
         program = resources.createProgramFromFiles(directory + "/vs_cubes.bin", directory + "/fs_cubes.bin", "cubes");
     }
+
+    const bgfx::Caps* caps = bgfx::getCaps();
+    const bool computeSupported =
+        caps != nullptr && (caps->supported & BGFX_CAPS_COMPUTE) != 0 && (caps->supported & BGFX_CAPS_IMAGE_RW) != 0;
+    gfx::ProgramHandle exposureProgram;
+    if (computeSupported && shaderSubdir != nullptr && HBG_SHADER_ROOT[0] != '\0') {
+        const std::string directory = std::string(HBG_SHADER_ROOT) + "/build/" + shaderSubdir;
+        exposureProgram =
+            resources.createComputeProgramFromFiles(directory + "/postprocess_exposure.cs.bin", "postprocess exposure");
+        if (!exposureProgram.valid()) {
+            HBG_LOGE("gfx test: compute exposure program creation failed");
+            return false;
+        }
+    } else {
+        HBG_LOGW("gfx test: compute/imageRW unavailable or shader root missing; skipping UAV dispatch");
+    }
+
+    gfx::generated::PostProcessUniforms computeUniforms{};
+    computeUniforms.exposureParams = hbg::Vec4(0.0f, 2.0f, 0.0f, 1.2f);
+    computeUniforms.autoExposureParams = hbg::Vec4(-1.0f, 14.0f, 0.0f, 0.0f);
+    computeUniforms.screenParams = hbg::Vec4(1.0f, 1.0f, 1.0f, 1.0f);
 
     gfx::Encoder encoder(resources);
     const float identity[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
@@ -201,21 +236,25 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
         encoder.submit(1, program);
     };
 
+    const auto dispatchExposure = [&]() {
+        if (!exposureProgram.valid()) {
+            return;
+        }
+        encoder.setImage(0, exposureTexture, 0, bgfx::Access::ReadWrite, gfx::TextureFormat::RGBA16F);
+        postProcessBinder.upload(computeUniforms);
+        encoder.dispatch(2, exposureProgram, 1, 1, 1);
+    };
+
     if (!drewCube) {
         HBG_LOGW("cubes shaders unavailable; skipping draw (shader root '{}')", shaderRoot);
     }
 
-    drawCube();
-    bgfx::frame();
-    resources.endFrame();
-
-    drawCube();
-    bgfx::frame();
-    resources.endFrame();
-
-    drawCube();
-    bgfx::frame();
-    resources.endFrame();
+    for (int frame = 0; frame < 3; ++frame) {
+        drawCube();
+        dispatchExposure();
+        bgfx::frame();
+        resources.endFrame();
+    }
 
     const bgfx::Stats* stats = bgfx::getStats();
     if (stats != nullptr) {
@@ -230,16 +269,22 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
     bgfx::frame();
     resources.endFrame();
 
+    const bool computeRan = exposureProgram.valid();
     resources.destroyFrameBuffer(offscreen);
     resources.destroyBuffer(indices);
     resources.destroyBuffer(vertices);
     if (program.valid()) {
         resources.destroyProgram(program);
     }
+    if (exposureProgram.valid()) {
+        resources.destroyProgram(exposureProgram);
+    }
     globalBinder.shutdown(resources);
     passBinder.shutdown(resources);
     materialBinder.shutdown(resources);
+    postProcessBinder.shutdown(resources);
     resources.destroyUniform(colorSampler);
+    resources.destroyTexture(exposureTexture);
     resources.destroyTexture(offscreenDepth);
     resources.destroyTexture(offscreenColor);
     resources.destroyTexture(sampled);
@@ -251,7 +296,8 @@ bool runGfxTest(gfx::ResourceManager& resources, uint16_t width, uint16_t height
         return false;
     }
 
-    HBG_LOGI("M0.2 gfx resource test passed (draw={})", drewCube);
+    HBG_LOGI("M0.2 gfx resource test passed (draw={}, compute={})", drewCube,
+             computeRan ? "true" : "false");
     return true;
 }
 

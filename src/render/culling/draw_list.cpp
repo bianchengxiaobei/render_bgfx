@@ -28,6 +28,34 @@ void DrawList::clear() {
     m_culledCount = 0;
 }
 
+void DrawList::buildCulled(const DrawList& source, const std::array<Vec4, 6>& planes) {
+    clear();
+    m_items.reserve(source.m_items.size());
+    for (const DrawItem& item : source.m_items) {
+        if (intersectsFrustum(planes, item.worldBounds)) {
+            m_items.push_back(item);
+        }
+    }
+    m_filteredCount = source.m_filteredCount;
+    m_culledCount = static_cast<uint32_t>(source.m_items.size() - m_items.size());
+
+    m_batches.reserve(m_items.size());
+    for (std::size_t index = 0; index < m_items.size(); ++index) {
+        const DrawItem& item = m_items[index];
+        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey) {
+            DrawBatch batch;
+            batch.firstItem = static_cast<uint32_t>(index);
+            batch.itemCount = 1;
+            batch.stateKey = item.batchKey;
+            batch.meshIndex = item.meshIndex;
+            batch.materialIndex = item.materialIndex;
+            m_batches.push_back(batch);
+        } else {
+            ++m_batches.back().itemCount;
+        }
+    }
+}
+
 void DrawList::build(const RenderScene& scene, const ViewState& viewState, const DrawListDesc& desc) {
     clear();
     m_items.reserve(scene.objects.size());

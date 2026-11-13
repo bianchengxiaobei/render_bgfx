@@ -1,0 +1,4 @@
+block Ssao {
+    vec4 params;             # radius, intensity, bias, thickness
+    vec4 params2;            # falloff, step count, half resolution, enabled
+}

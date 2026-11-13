@@ -1,4 +1,4 @@
-#include "gfx/generated/uniforms.h"
+﻿#include "gfx/generated/uniforms.h"
 
 #include <doctest/doctest.h>
 
@@ -43,7 +43,9 @@ static_assert(offsetof(PassUniforms, lightColor) == 176);
 static_assert(offsetof(PassUniforms, ambientColor) == 192);
 static_assert(offsetof(PassUniforms, lightCounts) == 208);
 static_assert(offsetof(PassUniforms, lightListParams) == 224);
-static_assert(sizeof(PassUniforms) == 240);
+static_assert(offsetof(PassUniforms, lightListParams2) == 240);
+static_assert(offsetof(PassUniforms, lightScreenSize) == 256);
+static_assert(sizeof(PassUniforms) == 272);
 static_assert(sizeof(MaterialUniforms) == 48);
 static_assert(std::is_standard_layout_v<ObjectUniforms>);
 static_assert(offsetof(ObjectUniforms, prevModel) == 0);
@@ -60,10 +62,60 @@ static_assert(std::is_standard_layout_v<PostProcessUniforms>);
 static_assert(offsetof(PostProcessUniforms, exposureParams) == 0);
 static_assert(offsetof(PostProcessUniforms, autoExposureParams) == 16);
 static_assert(offsetof(PostProcessUniforms, tonemapParams) == 32);
-static_assert(sizeof(PostProcessUniforms) == 48);
+static_assert(offsetof(PostProcessUniforms, frameParams) == 48);
+static_assert(offsetof(PostProcessUniforms, screenParams) == 64);
+static_assert(offsetof(PostProcessUniforms, histogramParams) == 80);
+static_assert(offsetof(PostProcessUniforms, gradingParams) == 96);
+static_assert(offsetof(PostProcessUniforms, vignetteParams) == 112);
+static_assert(offsetof(PostProcessUniforms, vignetteParams2) == 128);
+static_assert(offsetof(PostProcessUniforms, vignetteColor) == 144);
+static_assert(offsetof(PostProcessUniforms, bloomParams) == 160);
+static_assert(offsetof(PostProcessUniforms, bloomTint) == 176);
+static_assert(offsetof(PostProcessUniforms, bloomTexelSize) == 192);
+static_assert(offsetof(PostProcessUniforms, taaParams) == 208);
+static_assert(offsetof(PostProcessUniforms, taaParams2) == 224);
+static_assert(offsetof(PostProcessUniforms, taaHistorySize) == 240);
+static_assert(offsetof(PostProcessUniforms, dofParams) == 256);
+static_assert(offsetof(PostProcessUniforms, dofParams2) == 272);
+static_assert(offsetof(PostProcessUniforms, dofCocSize) == 288);
+static_assert(offsetof(PostProcessUniforms, motionBlurParams) == 304);
+static_assert(offsetof(PostProcessUniforms, motionBlurParams2) == 320);
+static_assert(sizeof(PostProcessUniforms) == 336);
+static_assert(std::is_standard_layout_v<ClusterUniforms>);
+static_assert(offsetof(ClusterUniforms, params) == 0);
+static_assert(offsetof(ClusterUniforms, depthParams) == 16);
+static_assert(offsetof(ClusterUniforms, lightCounts) == 32);
+static_assert(offsetof(ClusterUniforms, screenSize) == 48);
+static_assert(offsetof(ClusterUniforms, lightListParams2) == 64);
+static_assert(sizeof(ClusterUniforms) == 80);
 static_assert(std::is_standard_layout_v<DebugUniforms>);
 static_assert(offsetof(DebugUniforms, depthParams) == 0);
-static_assert(sizeof(DebugUniforms) == 16);
+static_assert(offsetof(DebugUniforms, clusterParams) == 16);
+static_assert(sizeof(DebugUniforms) == 32);
+static_assert(std::is_standard_layout_v<SsaoUniforms>);
+static_assert(offsetof(SsaoUniforms, params) == 0);
+static_assert(offsetof(SsaoUniforms, params2) == 16);
+static_assert(sizeof(SsaoUniforms) == 32);
+static_assert(std::is_standard_layout_v<SsrUniforms>);
+static_assert(offsetof(SsrUniforms, params) == 0);
+static_assert(offsetof(SsrUniforms, params2) == 16);
+static_assert(sizeof(SsrUniforms) == 32);
+static_assert(std::is_standard_layout_v<DecalUniforms>);
+static_assert(offsetof(DecalUniforms, worldToDecal) == 0);
+static_assert(offsetof(DecalUniforms, decalToWorld) == 64);
+static_assert(offsetof(DecalUniforms, params) == 128);
+static_assert(offsetof(DecalUniforms, params2) == 144);
+static_assert(offsetof(DecalUniforms, baseColor) == 160);
+static_assert(sizeof(DecalUniforms) == 176);
+static_assert(std::is_standard_layout_v<ProbeUniforms>);
+static_assert(offsetof(ProbeUniforms, worldToProbe0) == 0);
+static_assert(offsetof(ProbeUniforms, worldToProbe1) == 64);
+static_assert(offsetof(ProbeUniforms, extents0) == 128);
+static_assert(offsetof(ProbeUniforms, extents1) == 144);
+static_assert(offsetof(ProbeUniforms, params0) == 160);
+static_assert(offsetof(ProbeUniforms, params1) == 176);
+static_assert(offsetof(ProbeUniforms, global) == 192);
+static_assert(sizeof(ProbeUniforms) == 208);
 
 TEST_CASE("generated global uniform descriptors match the IDL") {
     const auto& descriptors = GlobalUniformBinder::kDescriptors;
@@ -97,7 +149,7 @@ TEST_CASE("generated global uniform descriptors match the IDL") {
 
 TEST_CASE("generated pass and material descriptors match the IDL") {
     const auto& pass = PassUniformBinder::kDescriptors;
-    REQUIRE(pass.size() == 9);
+    REQUIRE(pass.size() == 11);
     CHECK(pass[0].name == "u_pass_shadowMatrix");
     CHECK(pass[0].type == UniformType::Mat4);
     CHECK(pass[1].name == "u_pass_shadowViewProj");
@@ -112,6 +164,22 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(pass[7].name == "u_pass_lightCounts");
     CHECK(pass[8].name == "u_pass_lightListParams");
     CHECK(pass[8].type == UniformType::Vec4);
+    CHECK(pass[9].name == "u_pass_lightListParams2");
+    CHECK(pass[9].type == UniformType::Vec4);
+    CHECK(pass[10].name == "u_pass_lightScreenSize");
+
+    const auto& cluster = ClusterUniformBinder::kDescriptors;
+    REQUIRE(cluster.size() == 5);
+    CHECK(cluster[0].name == "u_cluster_params");
+    CHECK(cluster[0].type == UniformType::Vec4);
+    CHECK(cluster[1].name == "u_cluster_depthParams");
+    CHECK(cluster[1].type == UniformType::Vec4);
+    CHECK(cluster[2].name == "u_cluster_lightCounts");
+    CHECK(cluster[2].type == UniformType::Vec4);
+    CHECK(cluster[3].name == "u_cluster_screenSize");
+    CHECK(cluster[3].type == UniformType::Vec4);
+    CHECK(cluster[4].name == "u_cluster_lightListParams2");
+    CHECK(cluster[4].type == UniformType::Vec4);
 
     const auto& material = MaterialUniformBinder::kDescriptors;
     REQUIRE(material.size() == 3);
@@ -144,16 +212,95 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(prepass[0].num == 1);
 
     const auto& postProcess = PostProcessUniformBinder::kDescriptors;
-    REQUIRE(postProcess.size() == 3);
+    REQUIRE(postProcess.size() == 21);
     CHECK(postProcess[0].name == "u_postprocess_exposureParams");
     CHECK(postProcess[1].name == "u_postprocess_autoExposureParams");
     CHECK(postProcess[2].name == "u_postprocess_tonemapParams");
+    CHECK(postProcess[3].name == "u_postprocess_frameParams");
+    CHECK(postProcess[4].name == "u_postprocess_screenParams");
+    CHECK(postProcess[5].name == "u_postprocess_histogramParams");
+    CHECK(postProcess[6].name == "u_postprocess_gradingParams");
+    CHECK(postProcess[7].name == "u_postprocess_vignetteParams");
+    CHECK(postProcess[8].name == "u_postprocess_vignetteParams2");
+    CHECK(postProcess[9].name == "u_postprocess_vignetteColor");
+    CHECK(postProcess[10].name == "u_postprocess_bloomParams");
+    CHECK(postProcess[11].name == "u_postprocess_bloomTint");
+    CHECK(postProcess[12].name == "u_postprocess_bloomTexelSize");
+    CHECK(postProcess[13].name == "u_postprocess_taaParams");
+    CHECK(postProcess[14].name == "u_postprocess_taaParams2");
+    CHECK(postProcess[15].name == "u_postprocess_taaHistorySize");
+    CHECK(postProcess[16].name == "u_postprocess_dofParams");
+    CHECK(postProcess[17].name == "u_postprocess_dofParams2");
+    CHECK(postProcess[18].name == "u_postprocess_dofCocSize");
+    CHECK(postProcess[19].name == "u_postprocess_motionBlurParams");
+    CHECK(postProcess[20].name == "u_postprocess_motionBlurParams2");
     CHECK(postProcess[2].type == UniformType::Vec4);
+    CHECK(postProcess[11].type == UniformType::Vec4);
+    CHECK(postProcess[12].type == UniformType::Vec4);
+    CHECK(postProcess[13].type == UniformType::Vec4);
+    CHECK(postProcess[14].type == UniformType::Vec4);
+    CHECK(postProcess[15].type == UniformType::Vec4);
+    CHECK(postProcess[16].type == UniformType::Vec4);
+    CHECK(postProcess[17].type == UniformType::Vec4);
+    CHECK(postProcess[18].type == UniformType::Vec4);
+    CHECK(postProcess[19].type == UniformType::Vec4);
+    CHECK(postProcess[20].type == UniformType::Vec4);
 
     const auto& debug = DebugUniformBinder::kDescriptors;
-    REQUIRE(debug.size() == 1);
+    REQUIRE(debug.size() == 2);
     CHECK(debug[0].name == "u_debug_depthParams");
     CHECK(debug[0].type == UniformType::Vec4);
+    CHECK(debug[1].name == "u_debug_clusterParams");
+    CHECK(debug[1].type == UniformType::Vec4);
+
+    const auto& ssao = SsaoUniformBinder::kDescriptors;
+    REQUIRE(ssao.size() == 2);
+    CHECK(ssao[0].name == "u_ssao_params");
+    CHECK(ssao[0].type == UniformType::Vec4);
+    CHECK(ssao[1].name == "u_ssao_params2");
+    CHECK(ssao[1].type == UniformType::Vec4);
+
+    const auto& ssr = SsrUniformBinder::kDescriptors;
+    REQUIRE(ssr.size() == 2);
+    CHECK(ssr[0].name == "u_ssr_params");
+    CHECK(ssr[0].type == UniformType::Vec4);
+    CHECK(ssr[1].name == "u_ssr_params2");
+    CHECK(ssr[1].type == UniformType::Vec4);
+
+    const auto& ssgi = SsgiUniformBinder::kDescriptors;
+    REQUIRE(ssgi.size() == 3);
+    CHECK(ssgi[0].name == "u_ssgi_params");
+    CHECK(ssgi[0].type == UniformType::Vec4);
+    CHECK(ssgi[1].name == "u_ssgi_params2");
+    CHECK(ssgi[1].type == UniformType::Vec4);
+    CHECK(ssgi[2].name == "u_ssgi_params3");
+    CHECK(ssgi[2].type == UniformType::Vec4);
+
+    const auto& decal = DecalUniformBinder::kDescriptors;
+    REQUIRE(decal.size() == 5);
+    CHECK(decal[0].name == "u_decal_worldToDecal");
+    CHECK(decal[0].type == UniformType::Mat4);
+    CHECK(decal[1].name == "u_decal_decalToWorld");
+    CHECK(decal[1].type == UniformType::Mat4);
+    CHECK(decal[2].name == "u_decal_params");
+    CHECK(decal[2].type == UniformType::Vec4);
+    CHECK(decal[3].name == "u_decal_params2");
+    CHECK(decal[3].type == UniformType::Vec4);
+    CHECK(decal[4].name == "u_decal_baseColor");
+    CHECK(decal[4].type == UniformType::Vec4);
+
+    const auto& probe = ProbeUniformBinder::kDescriptors;
+    REQUIRE(probe.size() == 7);
+    CHECK(probe[0].name == "u_probe_worldToProbe0");
+    CHECK(probe[0].type == UniformType::Mat4);
+    CHECK(probe[1].name == "u_probe_worldToProbe1");
+    CHECK(probe[1].type == UniformType::Mat4);
+    CHECK(probe[2].name == "u_probe_extents0");
+    CHECK(probe[3].name == "u_probe_extents1");
+    CHECK(probe[4].name == "u_probe_params0");
+    CHECK(probe[5].name == "u_probe_params1");
+    CHECK(probe[6].name == "u_probe_global");
+    CHECK(probe[6].type == UniformType::Vec4);
 }
 
 TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
@@ -169,12 +316,25 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_global_taaJitter;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_global_rtScale;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_global_frustumPlanes[6];") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_taaParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_taaHistorySize;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_dofParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_dofParams2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_dofCocSize;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_motionBlurParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_motionBlurParams2;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_pass_shadowMatrix;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_pass_shadowViewProj;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_shadowCascadeSplits;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_lightDirection;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_lightCounts;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_lightListParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_pass_lightListParams2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_cluster_lightListParams2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_cluster_params;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_cluster_depthParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_cluster_lightCounts;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_cluster_screenSize;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_material_baseColorFactor;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_object_prevModel;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_environment_skyParams;") != std::string::npos);
@@ -182,5 +342,25 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_prepass_depthPyramidParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_postprocess_exposureParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_postprocess_tonemapParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_frameParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_screenParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_postprocess_histogramParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_debug_depthParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_debug_clusterParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssao_params;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssao_params2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssr_params;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssr_params2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssgi_params;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssgi_params2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssgi_params3;") != std::string::npos);
+    CHECK(text.find("uniform mat4 u_decal_worldToDecal;") != std::string::npos);
+    CHECK(text.find("uniform mat4 u_decal_decalToWorld;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_decal_params;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_decal_params2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_decal_baseColor;") != std::string::npos);
+    CHECK(text.find("uniform mat4 u_probe_worldToProbe0;") != std::string::npos);
+    CHECK(text.find("uniform mat4 u_probe_worldToProbe1;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_probe_extents0;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_probe_global;") != std::string::npos);
 }

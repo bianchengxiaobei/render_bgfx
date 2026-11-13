@@ -1,5 +1,7 @@
 #include "render/pipeline/pipeline_settings.h"
 
+#include "render/lighting/gpu_light_data.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cctype>
@@ -161,6 +163,20 @@ bool readMSAA(const Json& document, const char* key, MSAASamples& value, std::st
     return true;
 }
 
+bool readLightListCapacity(const Json& document, const char* key, uint32_t& value, std::string& error) {
+    const auto it = document.find(key);
+    if (it == document.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        error = std::string(key) + " must be 32, 64 or 128";
+        return false;
+    }
+    const int64_t requested = it->get<int64_t>();
+    value = sanitizeLightListCapacity(requested > 0 ? static_cast<uint32_t>(requested) : 0u);
+    return true;
+}
+
 const char* litShaderModeName(SupportedLitShaderMode value) {
     switch (value) {
     case SupportedLitShaderMode::ForwardOnly:
@@ -242,6 +258,20 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportShadows, error);
         } else if (key == "supportShadowMask") {
             ok = readBool(document, key.c_str(), settings.supportShadowMask, error);
+        } else if (key == "supportGpuLightList") {
+            ok = readBool(document, key.c_str(), settings.supportGpuLightList, error);
+        } else if (key == "supportGpuLightListBuffers") {
+            ok = readBool(document, key.c_str(), settings.supportGpuLightListBuffers, error);
+        } else if (key == "supportGpuLightListIndirect") {
+            ok = readBool(document, key.c_str(), settings.supportGpuLightListIndirect, error);
+        } else if (key == "lightListCapacity") {
+            ok = readLightListCapacity(document, key.c_str(), settings.lightListCapacity, error);
+        } else if (key == "supportGpuShadowCulling") {
+            ok = readBool(document, key.c_str(), settings.supportGpuShadowCulling, error);
+        } else if (key == "supportGpuShadowIndirect") {
+            ok = readBool(document, key.c_str(), settings.supportGpuShadowIndirect, error);
+        } else if (key == "supportAsyncGpuLightList") {
+            ok = readBool(document, key.c_str(), settings.supportAsyncGpuLightList, error);
         } else if (key == "supportContactShadows") {
             ok = readBool(document, key.c_str(), settings.supportContactShadows, error);
         } else if (key == "supportScreenSpaceShadows") {
@@ -262,6 +292,20 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportVolumetricClouds, error);
         } else if (key == "supportMotionVectors") {
             ok = readBool(document, key.c_str(), settings.supportMotionVectors, error);
+        } else if (key == "supportTAA") {
+            ok = readBool(document, key.c_str(), settings.supportTAA, error);
+        } else if (key == "supportBloom") {
+            ok = readBool(document, key.c_str(), settings.supportBloom, error);
+        } else if (key == "supportColorGrading") {
+            ok = readBool(document, key.c_str(), settings.supportColorGrading, error);
+        } else if (key == "supportDepthOfField") {
+            ok = readBool(document, key.c_str(), settings.supportDepthOfField, error);
+        } else if (key == "supportMotionBlur") {
+            ok = readBool(document, key.c_str(), settings.supportMotionBlur, error);
+        } else if (key == "supportFXAA") {
+            ok = readBool(document, key.c_str(), settings.supportFXAA, error);
+        } else if (key == "supportExposureHistogram") {
+            ok = readBool(document, key.c_str(), settings.supportExposureHistogram, error);
         } else if (key == "supportTransparentDepthPrepass") {
             ok = readBool(document, key.c_str(), settings.supportTransparentDepthPrepass, error);
         } else if (key == "supportTransparentDepthPostpass") {
@@ -342,6 +386,13 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["msaaSampleCount"] = msaaName(settings.msaaSampleCount);
     document["supportShadows"] = settings.supportShadows;
     document["supportShadowMask"] = settings.supportShadowMask;
+    document["supportGpuLightList"] = settings.supportGpuLightList;
+    document["supportGpuLightListBuffers"] = settings.supportGpuLightListBuffers;
+    document["supportGpuLightListIndirect"] = settings.supportGpuLightListIndirect;
+    document["lightListCapacity"] = settings.lightListCapacity;
+    document["supportGpuShadowCulling"] = settings.supportGpuShadowCulling;
+    document["supportGpuShadowIndirect"] = settings.supportGpuShadowIndirect;
+    document["supportAsyncGpuLightList"] = settings.supportAsyncGpuLightList;
     document["supportContactShadows"] = settings.supportContactShadows;
     document["supportScreenSpaceShadows"] = settings.supportScreenSpaceShadows;
     document["supportSSR"] = settings.supportSSR;
@@ -352,6 +403,13 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportVolumetrics"] = settings.supportVolumetrics;
     document["supportVolumetricClouds"] = settings.supportVolumetricClouds;
     document["supportMotionVectors"] = settings.supportMotionVectors;
+    document["supportTAA"] = settings.supportTAA;
+    document["supportBloom"] = settings.supportBloom;
+    document["supportColorGrading"] = settings.supportColorGrading;
+    document["supportDepthOfField"] = settings.supportDepthOfField;
+    document["supportMotionBlur"] = settings.supportMotionBlur;
+    document["supportFXAA"] = settings.supportFXAA;
+    document["supportExposureHistogram"] = settings.supportExposureHistogram;
     document["supportTransparentDepthPrepass"] = settings.supportTransparentDepthPrepass;
     document["supportTransparentDepthPostpass"] = settings.supportTransparentDepthPostpass;
     document["supportLowResTransparent"] = settings.supportLowResTransparent;

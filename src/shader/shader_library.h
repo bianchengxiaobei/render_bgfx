@@ -23,28 +23,62 @@ class ShaderLibrary {
     void shutdown(gfx::ResourceManager& resources);
     bool valid() const { return m_valid; }
 
-    gfx::ProgramHandle program(PassId pass, uint64_t materialKey);
-    gfx::ProgramHandle program(const ProgramKey& key) { return program(key.pass, key.materialKey); }
+    gfx::ProgramHandle program(PassId pass, uint64_t materialKey, uint64_t pipelineKey = 0);
+    gfx::ProgramHandle program(const ProgramKey& key) {
+        return program(key.pass, key.materialKey, key.pipelineKey);
+    }
     std::string_view backendName() const { return m_backend; }
 
   private:
     struct PassFiles {
         std::string vertex;
         std::vector<std::string> fragments;
+        std::vector<std::string> bufferFragments;
+        std::string compute;
+        std::string bufferCompute;
     };
 
     struct BackendFiles {
         PassFiles forward;
         PassFiles forwardInstanced;
         PassFiles tonemap;
+        PassFiles postProcessExposure;
+        PassFiles postProcessExposurePrepass;
+        PassFiles postProcessExposureReduce;
+        PassFiles postProcessExposureReduceFinal;
+        PassFiles postProcessHistogramClear;
+        PassFiles postProcessHistogramGen;
+        PassFiles postProcessHistogramReduce;
+        PassFiles applyExposure;
+        PassFiles debugExposure;
+        PassFiles final;
+        PassFiles uberPost;
+        PassFiles debugColorGrading;
+        PassFiles bloomPrefilter;
+        PassFiles bloomBlur;
+        PassFiles bloomDownsample;
+        PassFiles bloomUpsample;
+        PassFiles debugBloom;
+        PassFiles taa;
+        PassFiles taaSharpen;
+        PassFiles debugTaaHistory;
+        PassFiles dofCoc;
+        PassFiles dofGather;
+        PassFiles dofCombine;
+        PassFiles debugDofCoc;
+        PassFiles debugFxaa;
+        PassFiles motionBlur;
         PassFiles shadow;
         PassFiles shadowInstanced;
+        PassFiles shadowCull;
         PassFiles prepass;
         PassFiles motionVectors;
         PassFiles cameraMotionVectors;
         PassFiles depthPyramidCopy;
         PassFiles depthPyramidDownsample;
         PassFiles sky;
+        PassFiles volumetricFog;
+        PassFiles volumetricFogComposite;
         PassFiles debugLightData;
         PassFiles debugNormal;
         PassFiles debugMotionVectors;
@@ -55,12 +89,45 @@ class ShaderLibrary {
         PassFiles debugColor;
         PassFiles debugAlbedo;
         PassFiles debugRoughness;
+        PassFiles debugGbuffer;
         PassFiles wireframe;
+        PassFiles gbuffer;
+        PassFiles gbufferClear;
+        PassFiles gbufferDecals;
+        PassFiles decal;
+        PassFiles decalClear;
+        PassFiles deferredLighting;
+        PassFiles ssao;
+        PassFiles ssaoBlur;
+        PassFiles ssaoUpsample;
+        PassFiles debugSsao;
+        PassFiles ssrTrace;
+        PassFiles ssrComposite;
+        PassFiles debugSsr;
+        PassFiles debugDecals;
+        PassFiles ssgiTrace;
+        PassFiles ssgiDenoise;
+        PassFiles ssgiComposite;
+        PassFiles debugSsgi;
+        PassFiles contactShadows;
+        PassFiles lightScreenAabb;
+        PassFiles lightBigTile;
+        PassFiles lightFptl;
+        PassFiles lightCluster;
+        PassFiles lightScreenAabbBuffer;
+        PassFiles lightBigTileBuffer;
+        PassFiles lightFptlBuffer;
+        PassFiles lightClusterBuffer;
+        PassFiles lightIndirectArgs;
+        PassFiles debugContactShadows;
+        PassFiles debugShadowCascade;
+        PassFiles debugShadowFilter;
         PassFiles ui;
     };
 
     bool loadManifest(const std::filesystem::path& manifestPath);
-    gfx::ProgramHandle createProgram(const PassFiles& files, uint32_t variant);
+    gfx::ProgramHandle createProgram(const PassFiles& files, uint32_t variant, bool bufferPath);
+    gfx::ProgramHandle createComputeProgram(const PassFiles& files, bool bufferPath);
 
     gfx::ResourceManager* m_resources = nullptr;
     std::filesystem::path m_root;

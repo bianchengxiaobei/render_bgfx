@@ -115,7 +115,11 @@ void ViewState::resetHistory() {
 }
 
 void ViewState::setJitterScale(float scale) {
-    m_jitterScale = std::max(scale, 0.0f);
+    const float nextScale = std::max(scale, 0.0f);
+    if (std::fabs(nextScale - m_jitterScale) <= 1.0e-6f) {
+        return;
+    }
+    m_jitterScale = nextScale;
     m_history.reset();
     m_taaFrameIndex = 0;
 }

@@ -69,6 +69,36 @@ bool Program::create(const void* vertexData, uint32_t vertexSize, const void* fr
     return true;
 }
 
+bool Program::createCompute(const void* computeData, uint32_t computeSize, const std::string& name) {
+    if (valid()) {
+        HBG_LOGE("Program::createCompute called on an existing program '{}'", m_name);
+        return false;
+    }
+    if (computeData == nullptr || computeSize == 0) {
+        HBG_LOGE("Program::createCompute '{}' requires a compute shader binary", name);
+        return false;
+    }
+
+    const bgfx::ShaderHandle computeShader = bgfx::createShader(bgfx::copy(computeData, computeSize));
+    if (!bgfx::isValid(computeShader)) {
+        HBG_LOGE("failed to create compute shader for program '{}'", name);
+        return false;
+    }
+    if (!name.empty()) {
+        bgfx::setName(computeShader, name.c_str());
+    }
+
+    m_native = bgfx::createProgram(computeShader, true);
+    if (!valid()) {
+        HBG_LOGE("failed to link compute program '{}'", name);
+        bgfx::destroy(computeShader);
+        return false;
+    }
+
+    m_name = name;
+    return true;
+}
+
 void Program::destroy() {
     if (valid()) {
         bgfx::destroy(m_native);

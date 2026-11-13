@@ -2,6 +2,7 @@
 
 #include "render/lighting/gpu_light_data.h"
 #include "render/scene/render_scene.h"
+#include "render/shadows/shadow_settings.h"
 
 #include <vector>
 
@@ -9,11 +10,15 @@ namespace hbg::render {
 
 class LightBuilder {
   public:
-    void build(const RenderScene& scene, const Vec3& cameraPosition, const Vec3& cameraForward, float cameraFar);
+    void build(const RenderScene& scene, const Vec3& cameraPosition, const Vec3& cameraForward, float cameraFar,
+               bool contactShadowsEnabled = false, bool directionalOnly = false,
+               const ShadowSettings* shadowSettings = nullptr,
+               uint32_t lightCapacity = kLightListDefaultCapacity);
     const GpuLightData& data() const { return m_data; }
     const Light* shadowCaster() const { return m_shadowCaster; }
     const std::vector<const Light*>& selectedLights() const { return m_selectedLights; }
     void setShadowIndex(uint32_t lightIndex, int32_t shadowIndex);
+    void setShadowDimmer(uint32_t lightIndex, float dimmer);
     void setShadowedCount(uint32_t count) { m_data.shadowedCount = count; }
 
   private:

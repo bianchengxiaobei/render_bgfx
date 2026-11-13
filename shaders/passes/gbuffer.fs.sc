@@ -1,0 +1,24 @@
+$input v_texcoord0, v_worldPos, v_normal, v_tangent, v_bitangent
+
+#include "material/surface_data.sc"
+#include "material/normal_buffer.sc"
+#ifdef HAS_DECALS
+#include "lighting/decal.sc"
+#endif
+
+void main()
+{
+    const vec3 normalWS = normalize(v_normal);
+    const float viewSign = gl_FrontFacing ? -1.0 : 1.0;
+    SurfaceData surfaceData = hbgMakeSurfaceData(v_worldPos, normalWS, v_tangent, v_bitangent,
+                                                 v_texcoord0, viewSign);
+#ifdef HAS_DECALS
+    const vec2 screenSize = max(u_global_screenSize.xy, vec2(1.0, 1.0));
+    surfaceData = hbgApplyDecals(surfaceData, gl_FragCoord.xy * (vec2(1.0, 1.0) / screenSize));
+#endif
+
+    gl_FragData[0] = vec4(hbgSaturate(surfaceData.baseColor), surfaceData.alpha);
+    gl_FragData[1] = vec4(hbgSaturate(surfaceData.metallic), hbgSaturate(surfaceData.ambientOcclusion), 0.0, 0.0);
+    gl_FragData[2] = hbgEncodeNormalBuffer(surfaceData.normalWS, surfaceData.perceptualRoughness);
+    gl_FragData[3] = vec4(max(surfaceData.emissive, vec3(0.0, 0.0, 0.0)), 1.0);
+}

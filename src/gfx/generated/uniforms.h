@@ -98,13 +98,15 @@ struct PassUniforms {
     Vec4 ambientColor;
     Vec4 lightCounts;
     Vec4 lightListParams;
+    Vec4 lightListParams2;
+    Vec4 lightScreenSize;
 };
 
 class PassUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_pass_";
 
-    inline static const std::array<UniformDesc, 9> kDescriptors = {
+    inline static const std::array<UniformDesc, 11> kDescriptors = {
         UniformDesc{"u_pass_shadowMatrix", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowViewProj", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowParams", UniformType::Vec4, 1},
@@ -114,6 +116,8 @@ class PassUniformBinder {
         UniformDesc{"u_pass_ambientColor", UniformType::Vec4, 1},
         UniformDesc{"u_pass_lightCounts", UniformType::Vec4, 1},
         UniformDesc{"u_pass_lightListParams", UniformType::Vec4, 1},
+        UniformDesc{"u_pass_lightListParams2", UniformType::Vec4, 1},
+        UniformDesc{"u_pass_lightScreenSize", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -131,6 +135,132 @@ class PassUniformBinder {
         m_block.set(6, uniforms.ambientColor);
         m_block.set(7, uniforms.lightCounts);
         m_block.set(8, uniforms.lightListParams);
+        m_block.set(9, uniforms.lightListParams2);
+        m_block.set(10, uniforms.lightScreenSize);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct ClusterUniforms {
+    Vec4 params;
+    Vec4 depthParams;
+    Vec4 lightCounts;
+    Vec4 screenSize;
+    Vec4 lightListParams2;
+};
+
+class ClusterUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_cluster_";
+
+    inline static const std::array<UniformDesc, 5> kDescriptors = {
+        UniformDesc{"u_cluster_params", UniformType::Vec4, 1},
+        UniformDesc{"u_cluster_depthParams", UniformType::Vec4, 1},
+        UniformDesc{"u_cluster_lightCounts", UniformType::Vec4, 1},
+        UniformDesc{"u_cluster_screenSize", UniformType::Vec4, 1},
+        UniformDesc{"u_cluster_lightListParams2", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const ClusterUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.depthParams);
+        m_block.set(2, uniforms.lightCounts);
+        m_block.set(3, uniforms.screenSize);
+        m_block.set(4, uniforms.lightListParams2);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct SsaoUniforms {
+    Vec4 params;
+    Vec4 params2;
+};
+
+class SsaoUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_ssao_";
+
+    inline static const std::array<UniformDesc, 2> kDescriptors = {
+        UniformDesc{"u_ssao_params", UniformType::Vec4, 1},
+        UniformDesc{"u_ssao_params2", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const SsaoUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.params2);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct SsrUniforms {
+    Vec4 params;
+    Vec4 params2;
+};
+
+class SsrUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_ssr_";
+
+    inline static const std::array<UniformDesc, 2> kDescriptors = {
+        UniformDesc{"u_ssr_params", UniformType::Vec4, 1},
+        UniformDesc{"u_ssr_params2", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const SsrUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.params2);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct SsgiUniforms {
+    Vec4 params;
+    Vec4 params2;
+    Vec4 params3;
+};
+
+class SsgiUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_ssgi_";
+
+    inline static const std::array<UniformDesc, 3> kDescriptors = {
+        UniformDesc{"u_ssgi_params", UniformType::Vec4, 1},
+        UniformDesc{"u_ssgi_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_ssgi_params3", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const SsgiUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.params2);
+        m_block.set(2, uniforms.params3);
     }
 
   private:
@@ -168,16 +298,95 @@ class MaterialUniformBinder {
     UniformBlock m_block;
 };
 
+struct ProbeUniforms {
+    Mat4 worldToProbe0;
+    Mat4 worldToProbe1;
+    Vec4 extents0;
+    Vec4 extents1;
+    Vec4 params0;
+    Vec4 params1;
+    Vec4 global;
+};
+
+class ProbeUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_probe_";
+
+    inline static const std::array<UniformDesc, 7> kDescriptors = {
+        UniformDesc{"u_probe_worldToProbe0", UniformType::Mat4, 1},
+        UniformDesc{"u_probe_worldToProbe1", UniformType::Mat4, 1},
+        UniformDesc{"u_probe_extents0", UniformType::Vec4, 1},
+        UniformDesc{"u_probe_extents1", UniformType::Vec4, 1},
+        UniformDesc{"u_probe_params0", UniformType::Vec4, 1},
+        UniformDesc{"u_probe_params1", UniformType::Vec4, 1},
+        UniformDesc{"u_probe_global", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const ProbeUniforms& uniforms) const {
+        m_block.set(0, uniforms.worldToProbe0);
+        m_block.set(1, uniforms.worldToProbe1);
+        m_block.set(2, uniforms.extents0);
+        m_block.set(3, uniforms.extents1);
+        m_block.set(4, uniforms.params0);
+        m_block.set(5, uniforms.params1);
+        m_block.set(6, uniforms.global);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct ContactUniforms {
+    Vec4 params;
+    Vec4 params2;
+    Vec4 params3;
+    Vec4 params4;
+};
+
+class ContactUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_contact_";
+
+    inline static const std::array<UniformDesc, 4> kDescriptors = {
+        UniformDesc{"u_contact_params", UniformType::Vec4, 1},
+        UniformDesc{"u_contact_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_contact_params3", UniformType::Vec4, 1},
+        UniformDesc{"u_contact_params4", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const ContactUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.params2);
+        m_block.set(2, uniforms.params3);
+        m_block.set(3, uniforms.params4);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
 struct DebugUniforms {
     Vec4 depthParams;
+    Vec4 clusterParams;
 };
 
 class DebugUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_debug_";
 
-    inline static const std::array<UniformDesc, 1> kDescriptors = {
+    inline static const std::array<UniformDesc, 2> kDescriptors = {
         UniformDesc{"u_debug_depthParams", UniformType::Vec4, 1},
+        UniformDesc{"u_debug_clusterParams", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -187,6 +396,44 @@ class DebugUniformBinder {
 
     void upload(const DebugUniforms& uniforms) const {
         m_block.set(0, uniforms.depthParams);
+        m_block.set(1, uniforms.clusterParams);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
+struct DecalUniforms {
+    Mat4 worldToDecal;
+    Mat4 decalToWorld;
+    Vec4 params;
+    Vec4 params2;
+    Vec4 baseColor;
+};
+
+class DecalUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_decal_";
+
+    inline static const std::array<UniformDesc, 5> kDescriptors = {
+        UniformDesc{"u_decal_worldToDecal", UniformType::Mat4, 1},
+        UniformDesc{"u_decal_decalToWorld", UniformType::Mat4, 1},
+        UniformDesc{"u_decal_params", UniformType::Vec4, 1},
+        UniformDesc{"u_decal_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_decal_baseColor", UniformType::Vec4, 1},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const DecalUniforms& uniforms) const {
+        m_block.set(0, uniforms.worldToDecal);
+        m_block.set(1, uniforms.decalToWorld);
+        m_block.set(2, uniforms.params);
+        m_block.set(3, uniforms.params2);
+        m_block.set(4, uniforms.baseColor);
     }
 
   private:
@@ -239,6 +486,79 @@ class EnvironmentUniformBinder {
     UniformBlock m_block;
 };
 
+struct FogUniforms {
+    Vec4 params;
+    Vec4 params2;
+    Vec4 albedo;
+    Vec4 params3;
+    Vec4 params4;
+    Vec4 params5;
+    Vec4 params6;
+    std::array<Vec4, 8> localObbRight;
+    std::array<Vec4, 8> localObbUp;
+    std::array<Vec4, 8> localObbExtents;
+    std::array<Vec4, 8> localObbCenter;
+    std::array<Vec4, 8> localScattering;
+    std::array<Vec4, 8> localFaceFadePos;
+    std::array<Vec4, 8> localFaceFadeNeg;
+    std::array<Vec4, 8> localDistanceFade;
+    std::array<Vec4, 8> localMaskTiling;
+    std::array<Vec4, 8> localMaskScroll;
+};
+
+class FogUniformBinder {
+  public:
+    static constexpr std::string_view kPrefix = "u_fog_";
+
+    inline static const std::array<UniformDesc, 17> kDescriptors = {
+        UniformDesc{"u_fog_params", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_albedo", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_params3", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_params4", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_params5", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_params6", UniformType::Vec4, 1},
+        UniformDesc{"u_fog_localObbRight", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localObbUp", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localObbExtents", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localObbCenter", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localScattering", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localFaceFadePos", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localFaceFadeNeg", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localDistanceFade", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localMaskTiling", UniformType::Vec4, 8},
+        UniformDesc{"u_fog_localMaskScroll", UniformType::Vec4, 8},
+    };
+
+    bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
+    void shutdown(ResourceManager& resources) { m_block.shutdown(resources); }
+    bool valid() const { return m_block.valid(); }
+    void validateShader(bgfx::ShaderHandle shader) const { m_block.validateShader(shader); }
+
+    void upload(const FogUniforms& uniforms) const {
+        m_block.set(0, uniforms.params);
+        m_block.set(1, uniforms.params2);
+        m_block.set(2, uniforms.albedo);
+        m_block.set(3, uniforms.params3);
+        m_block.set(4, uniforms.params4);
+        m_block.set(5, uniforms.params5);
+        m_block.set(6, uniforms.params6);
+        m_block.setArray(7, uniforms.localObbRight.data(), 8);
+        m_block.setArray(8, uniforms.localObbUp.data(), 8);
+        m_block.setArray(9, uniforms.localObbExtents.data(), 8);
+        m_block.setArray(10, uniforms.localObbCenter.data(), 8);
+        m_block.setArray(11, uniforms.localScattering.data(), 8);
+        m_block.setArray(12, uniforms.localFaceFadePos.data(), 8);
+        m_block.setArray(13, uniforms.localFaceFadeNeg.data(), 8);
+        m_block.setArray(14, uniforms.localDistanceFade.data(), 8);
+        m_block.setArray(15, uniforms.localMaskTiling.data(), 8);
+        m_block.setArray(16, uniforms.localMaskScroll.data(), 8);
+    }
+
+  private:
+    UniformBlock m_block;
+};
+
 struct ObjectUniforms {
     Mat4 prevModel;
 };
@@ -268,16 +588,52 @@ struct PostProcessUniforms {
     Vec4 exposureParams;
     Vec4 autoExposureParams;
     Vec4 tonemapParams;
+    Vec4 frameParams;
+    Vec4 screenParams;
+    Vec4 histogramParams;
+    Vec4 gradingParams;
+    Vec4 vignetteParams;
+    Vec4 vignetteParams2;
+    Vec4 vignetteColor;
+    Vec4 bloomParams;
+    Vec4 bloomTint;
+    Vec4 bloomTexelSize;
+    Vec4 taaParams;
+    Vec4 taaParams2;
+    Vec4 taaHistorySize;
+    Vec4 dofParams;
+    Vec4 dofParams2;
+    Vec4 dofCocSize;
+    Vec4 motionBlurParams;
+    Vec4 motionBlurParams2;
 };
 
 class PostProcessUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_postprocess_";
 
-    inline static const std::array<UniformDesc, 3> kDescriptors = {
+    inline static const std::array<UniformDesc, 21> kDescriptors = {
         UniformDesc{"u_postprocess_exposureParams", UniformType::Vec4, 1},
         UniformDesc{"u_postprocess_autoExposureParams", UniformType::Vec4, 1},
         UniformDesc{"u_postprocess_tonemapParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_frameParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_screenParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_histogramParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_gradingParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_vignetteParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_vignetteParams2", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_vignetteColor", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_bloomParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_bloomTint", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_bloomTexelSize", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_taaParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_taaParams2", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_taaHistorySize", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_dofParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_dofParams2", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_dofCocSize", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_motionBlurParams", UniformType::Vec4, 1},
+        UniformDesc{"u_postprocess_motionBlurParams2", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -289,6 +645,24 @@ class PostProcessUniformBinder {
         m_block.set(0, uniforms.exposureParams);
         m_block.set(1, uniforms.autoExposureParams);
         m_block.set(2, uniforms.tonemapParams);
+        m_block.set(3, uniforms.frameParams);
+        m_block.set(4, uniforms.screenParams);
+        m_block.set(5, uniforms.histogramParams);
+        m_block.set(6, uniforms.gradingParams);
+        m_block.set(7, uniforms.vignetteParams);
+        m_block.set(8, uniforms.vignetteParams2);
+        m_block.set(9, uniforms.vignetteColor);
+        m_block.set(10, uniforms.bloomParams);
+        m_block.set(11, uniforms.bloomTint);
+        m_block.set(12, uniforms.bloomTexelSize);
+        m_block.set(13, uniforms.taaParams);
+        m_block.set(14, uniforms.taaParams2);
+        m_block.set(15, uniforms.taaHistorySize);
+        m_block.set(16, uniforms.dofParams);
+        m_block.set(17, uniforms.dofParams2);
+        m_block.set(18, uniforms.dofCocSize);
+        m_block.set(19, uniforms.motionBlurParams);
+        m_block.set(20, uniforms.motionBlurParams2);
     }
 
   private:

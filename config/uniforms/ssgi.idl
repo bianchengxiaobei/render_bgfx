@@ -1,0 +1,5 @@
+block Ssgi {
+    vec4 params;             # intensity, max distance, max steps, ray count
+    vec4 params2;            # falloff, thickness, half resolution, enabled
+    vec4 params3;            # ambient bias, unused, unused, unused
+}

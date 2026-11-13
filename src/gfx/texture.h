@@ -48,6 +48,7 @@ struct TextureDesc {
     uint64_t flags = BGFX_TEXTURE_NONE;
     bool renderTarget = false;
     bool depthStencil = false;
+    bool computeWrite = false;
     bool cubeMap = false;
     const void* data = nullptr;
     uint32_t dataSize = 0;

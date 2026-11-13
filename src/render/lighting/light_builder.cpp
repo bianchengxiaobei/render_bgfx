@@ -1,4 +1,5 @@
 #include "render/lighting/light_builder.h"
+#include "render/shadows/contact_shadow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,7 +29,8 @@ uint32_t lightFlags(GpuLightType type, bool castShadows) {
 } // namespace
 
 void LightBuilder::build(const RenderScene& scene, const Vec3& cameraPosition, const Vec3& cameraForward,
-                         float cameraFar) {
+                         float cameraFar, bool contactShadowsEnabled, bool directionalOnly,
+                         const ShadowSettings* shadowSettings, uint32_t lightCapacity) {
     m_data = {};
     m_shadowCaster = nullptr;
     m_selectedLights.clear();
@@ -87,12 +89,21 @@ void LightBuilder::build(const RenderScene& scene, const Vec3& cameraPosition, c
         m_data.primaryIntensity = std::max(selectedDirectional->intensity, 0.0f);
     }
 
-    const uint32_t maxPunctual = m_data.directionalCount > 0 ? kMaxGpuLights - 1 : kMaxGpuLights;
+    const uint32_t capacity = sanitizeLightListCapacity(lightCapacity);
+    const uint32_t maxPunctual = capacity > m_data.directionalCount ? capacity - m_data.directionalCount : 0;
     const uint32_t punctualCount = std::min<uint32_t>(static_cast<uint32_t>(punctualLights.size()), maxPunctual);
     m_data.punctualCount = punctualCount;
     m_data.lightCount = m_data.directionalCount + punctualCount;
+    m_data.truncatedLightCount =
+        static_cast<uint32_t>(directionalLights.size() + punctualLights.size()) > m_data.lightCount
+            ? static_cast<uint32_t>(directionalLights.size() + punctualLights.size()) - m_data.lightCount
+            : 0;
 
-    auto writeLight = [this](uint32_t index, const Light& light, bool castShadows) {
+    const ShadowSettings fallbackShadowSettings;
+    const ShadowSettings& globalShadow = shadowSettings != nullptr ? *shadowSettings : fallbackShadowSettings;
+    uint32_t nextContactIndex = 1;
+    auto writeLight = [this](uint32_t index, const Light& light, bool castShadows, uint32_t contactMask,
+                             const LightShadowSettings& shadow) {
         const bool directional = light.type == LightType::Directional;
         const bool spot = light.type == LightType::Spot;
         const Vec3 position = directional ? Vec3(0.0f, 0.0f, 0.0f) : worldTranslation(light.world);
@@ -110,18 +121,35 @@ void LightBuilder::build(const RenderScene& scene, const Vec3& cameraPosition, c
         m_data.texels[base + 0] = Vec4(position.x, position.y, position.z, std::max(light.range, 0.0f));
         m_data.texels[base + 1] = Vec4(light.color.x, light.color.y, light.color.z, std::max(light.intensity, 0.0f));
         m_data.texels[base + 2] = Vec4(direction.x, direction.y, direction.z, cosOuter);
-        m_data.texels[base + 3] = Vec4(static_cast<float>(shadowIndex), cosInner, 1.0f, static_cast<float>(flags));
+        m_data.texels[base + 3] =
+            Vec4(static_cast<float>(shadowIndex), cosInner, static_cast<float>(contactMask), static_cast<float>(flags));
+        m_data.texels[base + 4] = Vec4(shadow.tint.x, shadow.tint.y, shadow.tint.z, shadow.dimmer);
+        m_data.texels[base + 5] =
+            Vec4(shadow.fadeDistance, shadow.penumbraTint ? 1.0f : 0.0f, 0.0f, 0.0f);
     };
 
     uint32_t lightIndex = 0;
     if (selectedDirectional != nullptr) {
+        const LightShadowSettings shadow = resolveLightShadow(*selectedDirectional, globalShadow);
+        const uint32_t contactMask = contactShadowsEnabled && selectedDirectional->castShadows &&
+                                             shadow.contactShadows
+                                         ? contactShadowBit(0)
+                                         : 0u;
         m_selectedLights.push_back(selectedDirectional);
-        writeLight(lightIndex++, *selectedDirectional, selectedDirectional == m_shadowCaster);
+        writeLight(lightIndex++, *selectedDirectional, selectedDirectional == m_shadowCaster, contactMask, shadow);
     }
     for (uint32_t index = 0; index < punctualCount; ++index) {
         const Light& light = *punctualLights[index];
+        const LightShadowSettings shadow = resolveLightShadow(light, globalShadow);
         m_selectedLights.push_back(&light);
-        writeLight(lightIndex++, light, light.castShadows);
+        uint32_t contactMask = 0u;
+        if (contactShadowsEnabled && !directionalOnly && light.castShadows && shadow.contactShadows) {
+            contactMask = contactShadowBit(nextContactIndex);
+            if (contactMask != 0u) {
+                ++nextContactIndex;
+            }
+        }
+        writeLight(lightIndex++, light, light.castShadows, contactMask, shadow);
     }
 
     if (selectedDirectional == &m_fallbackLight) {
@@ -138,6 +166,13 @@ void LightBuilder::setShadowIndex(uint32_t lightIndex, int32_t shadowIndex) {
         return;
     }
     m_data.texels[lightIndex * kGpuLightTexels + 3].x = static_cast<float>(shadowIndex);
+}
+
+void LightBuilder::setShadowDimmer(uint32_t lightIndex, float dimmer) {
+    if (lightIndex >= m_selectedLights.size()) {
+        return;
+    }
+    m_data.texels[lightIndex * kGpuLightTexels + 4].w = std::clamp(dimmer, 0.0f, 1.0f);
 }
 
 } // namespace hbg::render

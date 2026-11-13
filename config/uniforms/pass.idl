@@ -1,11 +1,13 @@
 block Pass {
     mat4 shadowMatrix;       # world -> shadow atlas UV/depth
     mat4 shadowViewProj;     # light view-projection used by shadow casters
-    vec4 shadowParams;       # filter mode, depth bias, enabled, normal bias
+    vec4 shadowParams;       # x = legacy filter flag, y = micro shadow opacity, z = enabled, w = cascade count
     vec4 shadowCascadeSplits; # cascade far distances
     vec4 lightDirection;     # xyz = primary direction toward light, w = intensity
     vec4 lightColor;         # rgb = primary light color, w = unused
     vec4 ambientColor;       # rgb = ambient color, w = intensity
     vec4 lightCounts;        # total, directional, punctual, shadowed
     vec4 lightListParams;    # tile size, tiles x, tiles y, enabled
+    vec4 lightListParams2;   # list stride, capacity, max fptl lights, max big-tile lights
+    vec4 lightScreenSize;    # render width, render height, inverse width, inverse height
 }

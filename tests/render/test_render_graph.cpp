@@ -49,6 +49,9 @@ TEST_CASE("render graph culls passes that do not feed a live output") {
     CHECK(graph.passViewIds()[2] == kRenderGraphBackbufferView);
     CHECK(graph.passViewIds()[3] == 0);
     CHECK(graph.passViewIds()[4] == 0);
+    REQUIRE(graph.passNames().size() == 5);
+    CHECK(graph.passNames()[0] == "Producer");
+    CHECK(graph.passNames()[2] == "Presentation");
     CHECK(kDebugUiView > kRenderGraphBackbufferView);
 }
 
@@ -79,6 +82,74 @@ TEST_CASE("render graph keeps all writers of a live texture and attachment write
     CHECK(graph.passViewIds()[1] == kRenderGraphViewBase + 1);
     CHECK(graph.passViewIds()[2] == kRenderGraphViewBase + 2);
     CHECK(graph.passViewIds()[3] == kRenderGraphBackbufferView);
+}
+
+TEST_CASE("render graph supports a four-target pass with an independent view size") {
+    RenderGraph graph("gbuffer");
+    graph.beginFrame(64, 32, 0);
+
+    const RenderGraphTextureHandle color0 = graph.createTexture(transientColorDesc(), "color0");
+    const RenderGraphTextureHandle color1 = graph.createTexture(transientColorDesc(), "color1");
+    const RenderGraphTextureHandle color2 = graph.createTexture(transientColorDesc(), "color2");
+    const RenderGraphTextureHandle color3 = graph.createTexture(transientColorDesc(), "color3");
+    const RenderGraphTextureHandle depth = graph.createTexture(
+        [] {
+            gfx::TextureDesc desc;
+            desc.width = 64;
+            desc.height = 32;
+            desc.format = gfx::TextureFormat::D24S8;
+            desc.depthStencil = true;
+            return desc;
+        }(),
+        "depth");
+
+    graph.addRasterPass("GBuffer")
+        .setColorAttachment(color0, 0)
+        .setColorAttachment(color1, 1)
+        .setColorAttachment(color2, 2)
+        .setColorAttachment(color3, 3)
+        .setDepthAttachment(depth)
+        .setViewSize(32, 16)
+        .allowCulling(false)
+        .setRenderFunc(noop());
+    graph.addRasterPass("Present").readTexture(color0).writeBackbuffer().setRenderFunc(noop());
+
+    REQUIRE(graph.compile());
+    CHECK(graph.diagnostics().livePasses == 2);
+    CHECK(graph.lastError().empty());
+}
+
+TEST_CASE("render graph records a compute pass without a framebuffer") {
+    RenderGraph graph("compute");
+    graph.beginFrame(64, 32, 0);
+
+    gfx::TextureDesc desc;
+    desc.width = 128;
+    desc.height = 1;
+    desc.format = gfx::TextureFormat::R32U;
+    desc.computeWrite = true;
+    const RenderGraphTextureHandle histogram = graph.createTexture(desc, "histogram");
+
+    graph.addComputePass("Histogram")
+        .writeTexture(histogram)
+        .allowCulling(false)
+        .setRenderFunc([](RenderGraphContext& context) { CHECK_FALSE(context.frameBuffer().valid()); });
+    graph.addRasterPass("Present").readTexture(histogram).writeBackbuffer().setRenderFunc(noop());
+
+    REQUIRE(graph.compile());
+    CHECK(graph.diagnostics().livePasses == 2);
+    CHECK(graph.passViewIds()[0] == kRenderGraphViewBase);
+    CHECK(graph.passViewIds()[1] == kRenderGraphBackbufferView);
+}
+
+TEST_CASE("render graph rejects an invalid view size") {
+    RenderGraph graph("view-size");
+    graph.beginFrame(64, 32, 0);
+    const RenderGraphTextureHandle color = graph.createTexture(transientColorDesc(), "color");
+    graph.addRasterPass("Bad view").setColorAttachment(color).setViewSize(32, 0).setRenderFunc(noop());
+
+    CHECK_FALSE(graph.compile());
+    CHECK(graph.lastError().find("invalid pass view size") != std::string::npos);
 }
 
 TEST_CASE("render graph keeps an explicitly uncullable read-only pass") {

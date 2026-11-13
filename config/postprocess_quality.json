@@ -1,0 +1,54 @@
+{
+  "name": "quality",
+  "exposure": {
+    "mode": "auto",
+    "fixedEv100": -1.2630344,
+    "compensation": 0.0,
+    "limitMin": -1.0,
+    "limitMax": 14.0,
+    "debugExposure": 0.0,
+    "metering": "centerWeighted"
+  },
+  "tonemapping": "neutral",
+  "taa": {
+    "enabled": true,
+    "quality": 3,
+    "motionVectorRejection": 0.1,
+    "sharpening": 0.0,
+    "jitterScale": 1.0
+  },
+  "bloom": {
+    "enabled": true,
+    "threshold": 0.8,
+    "intensity": 0.5,
+    "scatter": 0.7,
+    "tint": [1.0, 1.0, 1.0],
+    "highQualityPrefiltering": false,
+    "highQualityFiltering": true,
+    "resolution": 2
+  },
+  "colorGrading": {
+    "enabled": true,
+    "postExposure": 0.0,
+    "contrast": 0.0,
+    "saturation": 0.0
+  },
+  "vignette": {
+    "center": [0.5, 0.5],
+    "intensity": 0.0,
+    "smoothness": 0.2,
+    "roundness": 1.0,
+    "rounded": false,
+    "color": [0.0, 0.0, 0.0],
+    "opacity": 1.0
+  },
+  "depthOfField": {
+    "enabled": false
+  },
+  "motionBlur": {
+    "enabled": false
+  },
+  "fxaa": {
+    "enabled": false
+  }
+}

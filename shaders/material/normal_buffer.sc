@@ -33,8 +33,8 @@ vec3 hbgDecodeNormalBuffer(vec4 normalBuffer)
     const float high = floor(normalBuffer.b * 255.5);
     const float loX = floor(normalBuffer.r * 255.5);
     const float loY = floor(normalBuffer.g * 255.5);
-    const float hiX = floor(high / 16.0);
-    const float hiY = high - hiX * 16.0;
+    const float hiY = floor(high / 16.0);
+    const float hiX = high - hiY * 16.0;
     const vec2 oct = vec2(loX + hiX * 256.0, loY + hiY * 256.0) / 4095.0;
     const vec2 f = oct * 2.0 - 1.0;
 

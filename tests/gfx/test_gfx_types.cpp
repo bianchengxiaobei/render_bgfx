@@ -1,5 +1,6 @@
 ﻿#include "gfx/buffer.h"
 #include "gfx/framebuffer_cache.h"
+#include "gfx/state.h"
 #include "gfx/texture.h"
 #include "gfx/uniform.h"
 
@@ -78,4 +79,26 @@ TEST_CASE("framebuffer keys compare and hash consistently") {
     const std::vector<FrameBufferHandle> containingSecond = cache.findContaining(second);
     REQUIRE(containingSecond.size() == 2);
     CHECK(std::find(containingSecond.begin(), containingSecond.end(), secondFrameBuffer) != containingSecond.end());
+}
+
+TEST_CASE("gbuffer state uses depth equal and marks the deferred stencil bit") {
+    CHECK((state::kGBuffer & BGFX_STATE_WRITE_Z) == 0);
+    CHECK((state::kGBuffer & BGFX_STATE_DEPTH_TEST_MASK) == BGFX_STATE_DEPTH_TEST_EQUAL);
+    CHECK((state::kGBufferNoCull & BGFX_STATE_WRITE_Z) == 0);
+    CHECK((state::kGBufferNoCull & BGFX_STATE_DEPTH_TEST_MASK) == BGFX_STATE_DEPTH_TEST_EQUAL);
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_TEST_MASK) == BGFX_STENCIL_TEST_ALWAYS);
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_FUNC_REF_MASK) == BGFX_STENCIL_FUNC_REF(1));
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_FUNC_RMASK_MASK) == BGFX_STENCIL_FUNC_RMASK(0x01));
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_OP_FAIL_S_MASK) == BGFX_STENCIL_OP_FAIL_S_KEEP);
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_OP_FAIL_Z_MASK) == BGFX_STENCIL_OP_FAIL_Z_KEEP);
+    CHECK((state::kGBufferStencil & BGFX_STENCIL_OP_PASS_Z_MASK) == BGFX_STENCIL_OP_PASS_Z_REPLACE);
+}
+
+TEST_CASE("deferred lighting stencil tests only gbuffer pixels") {
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_TEST_MASK) == BGFX_STENCIL_TEST_EQUAL);
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_FUNC_REF_MASK) == BGFX_STENCIL_FUNC_REF(1));
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_FUNC_RMASK_MASK) == BGFX_STENCIL_FUNC_RMASK(0x01));
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_OP_FAIL_S_MASK) == BGFX_STENCIL_OP_FAIL_S_KEEP);
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_OP_FAIL_Z_MASK) == BGFX_STENCIL_OP_FAIL_Z_KEEP);
+    CHECK((state::kDeferredLightingStencil & BGFX_STENCIL_OP_PASS_Z_MASK) == BGFX_STENCIL_OP_PASS_Z_KEEP);
 }

@@ -8,6 +8,7 @@
 #include "render/material/shader_pass.h"
 #include "render/scene/render_scene.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -50,6 +51,7 @@ struct DrawListDesc {
 class DrawList {
   public:
     void build(const RenderScene& scene, const ViewState& viewState, const DrawListDesc& desc);
+    void buildCulled(const DrawList& source, const std::array<Vec4, 6>& planes);
     void clear();
 
     bool empty() const { return m_items.empty(); }

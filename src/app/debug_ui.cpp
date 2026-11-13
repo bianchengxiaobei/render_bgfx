@@ -212,6 +212,23 @@ void DebugUI::drawPanel() {
         ImGui::Checkbox("Shadows", &m_settings.shadows);
         ImGui::SameLine();
         ImGui::Checkbox("Wireframe", &m_settings.wireframe);
+        ImGui::Checkbox("GPU light list", &m_settings.gpuLightList);
+        if (m_gpuLightListRequested) {
+            ImGui::Text("Light list: %s (%s)  indirect=%s  passes=%u  cpu=%.3f ms",
+                        m_gpuLightListActive ? "GPU" : "CPU fallback",
+                        m_gpuLightListBufferPath ? "buffer" : "texture", m_gpuLightListIndirect ? "true" : "false",
+                        m_gpuLightListPasses, static_cast<double>(m_gpuLightListCpuMs));
+        } else {
+            ImGui::TextUnformatted("Light list: CPU");
+        }
+        ImGui::Text("Light capacity: requested=%u effective=%u stride=%u truncated=%u",
+                    m_lightListCapacityRequested, m_lightListCapacityEffective, m_lightListStride,
+                    m_lightListTruncated);
+        ImGui::Text("Shadow cull: %s  indirect=%s", m_gpuShadowCulling ? "GPU" : "CPU",
+                    m_gpuShadowIndirect ? "true" : "false");
+        if (m_asyncRequested) {
+            ImGui::Text("Async light list: requested=true  active=%s", m_asyncActive ? "true" : "false");
+        }
         ImGui::Checkbox("Freeze time", &m_settings.freezeTime);
         ImGui::SliderFloat("Render scale", &m_settings.renderScale, 0.1f, 1.0f, "%.2f");
 
@@ -226,14 +243,20 @@ void DebugUI::drawPanel() {
         if (ImGui::Combo("Exposure", &exposureMode, exposureModeNames,
                          static_cast<int>(std::min<std::size_t>(exposureModeCount, 8)))) {
             m_settings.postProcess.exposureMode =
-                render::exposureModeAt(static_cast<std::size_t>(std::clamp(exposureMode, 0, 1)));
+                render::exposureModeAt(static_cast<std::size_t>(std::clamp(exposureMode, 0, 2)));
         }
         if (m_settings.postProcess.exposureMode == render::ExposureMode::Fixed) {
             ImGui::SliderFloat("Fixed EV100", &m_settings.postProcess.fixedEv100, -10.0f, 20.0f, "%.2f");
         } else {
             ImGui::SliderFloat("Limit min EV", &m_settings.postProcess.limitMin, -10.0f, 20.0f, "%.2f");
             ImGui::SliderFloat("Limit max EV", &m_settings.postProcess.limitMax, -10.0f, 30.0f, "%.2f");
-            ImGui::TextDisabled("Auto metering: 4x4 center-weighted grid");
+            ImGui::SliderFloat("Adapt dark to light", &m_settings.postProcess.adaptationSpeedDarkToLight, 0.01f,
+                               10.0f, "%.2f");
+            ImGui::SliderFloat("Adapt light to dark", &m_settings.postProcess.adaptationSpeedLightToDark, 0.01f,
+                               10.0f, "%.2f");
+            ImGui::SliderFloat("Histogram min", &m_settings.postProcess.histogramMinPercentile, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Histogram max", &m_settings.postProcess.histogramMaxPercentile, 0.0f, 1.0f, "%.2f");
+            ImGui::TextDisabled("Compute exposure: 256 -> 32 -> 1; histogram: 128 bins");
         }
         ImGui::SliderFloat("Compensation", &m_settings.postProcess.compensation, -10.0f, 10.0f, "%.2f EV");
         ImGui::SliderFloat("Debug exposure", &m_settings.postProcess.debugExposure, -10.0f, 10.0f, "%.2f EV");
@@ -251,9 +274,82 @@ void DebugUI::drawPanel() {
         ImGui::TextDisabled("Final output is linear-to-sRGB encoded");
 
         ImGui::Separator();
+        ImGui::TextUnformatted("Post-process M3");
+        ImGui::TextDisabled("Effects require support flags in pipeline.json");
+        if (ImGui::Checkbox("TAA", &m_settings.postProcess.taa.enabled) && m_settings.postProcess.taa.enabled) {
+            m_settings.postProcess.fxaa.enabled = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("FXAA", &m_settings.postProcess.fxaa.enabled) &&
+            m_settings.postProcess.fxaa.enabled) {
+            m_settings.postProcess.taa.enabled = false;
+        }
+        if (m_settings.postProcess.taa.enabled) {
+            int quality = static_cast<int>(m_settings.postProcess.taa.quality);
+            if (ImGui::SliderInt("TAA quality", &quality, 1, 5)) {
+                m_settings.postProcess.taa.quality = static_cast<uint32_t>(quality);
+            }
+            ImGui::SliderFloat("TAA motion rejection", &m_settings.postProcess.taa.motionVectorRejection, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("TAA sharpening", &m_settings.postProcess.taa.sharpening, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("TAA jitter scale", &m_settings.postProcess.taa.jitterScale, 0.0f, 1.0f, "%.2f");
+        }
+        ImGui::Checkbox("Bloom", &m_settings.postProcess.bloom.enabled);
+        if (m_settings.postProcess.bloom.enabled) {
+            ImGui::SliderFloat("Bloom threshold", &m_settings.postProcess.bloom.threshold, 0.0f, 4.0f, "%.2f");
+            ImGui::SliderFloat("Bloom intensity", &m_settings.postProcess.bloom.intensity, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Bloom scatter", &m_settings.postProcess.bloom.scatter, 0.0f, 1.0f, "%.2f");
+            ImGui::ColorEdit3("Bloom tint", &m_settings.postProcess.bloom.tint.x);
+            int resolutionIndex = m_settings.postProcess.bloom.resolution == 4u ? 1 : 0;
+            if (ImGui::Combo("Bloom resolution", &resolutionIndex, "Half\0Quarter\0")) {
+                m_settings.postProcess.bloom.resolution = resolutionIndex == 1 ? 4u : 2u;
+            }
+            ImGui::Checkbox("HQ bloom prefilter", &m_settings.postProcess.bloom.highQualityPrefiltering);
+            ImGui::Checkbox("HQ bloom filtering", &m_settings.postProcess.bloom.highQualityFiltering);
+        }
+        ImGui::Checkbox("Color grading", &m_settings.postProcess.colorGrading.enabled);
+        if (m_settings.postProcess.colorGrading.enabled) {
+            ImGui::SliderFloat("Post exposure", &m_settings.postProcess.colorGrading.postExposure, -8.0f, 8.0f,
+                               "%.2f EV");
+            ImGui::SliderFloat("Contrast", &m_settings.postProcess.colorGrading.contrast, -100.0f, 100.0f, "%.0f");
+            ImGui::SliderFloat("Saturation", &m_settings.postProcess.colorGrading.saturation, -100.0f, 100.0f,
+                               "%.0f");
+            ImGui::SliderFloat("Hue shift", &m_settings.postProcess.colorGrading.hueShift, -180.0f, 180.0f, "%.0f");
+        }
+        ImGui::SliderFloat("Vignette", &m_settings.postProcess.vignette.intensity, 0.0f, 1.0f, "%.2f");
+        ImGui::Checkbox("Depth of field", &m_settings.postProcess.depthOfField.enabled);
+        if (m_settings.postProcess.depthOfField.enabled) {
+            render::DepthOfFieldSettings& dof = m_settings.postProcess.depthOfField;
+            ImGui::SliderFloat("Near focus start", &dof.nearFocusStart, 0.0f, 50.0f, "%.1f");
+            ImGui::SliderFloat("Near focus end", &dof.nearFocusEnd, 0.0f, 50.0f, "%.1f");
+            ImGui::SliderFloat("Far focus start", &dof.farFocusStart, 0.0f, 100.0f, "%.1f");
+            ImGui::SliderFloat("Far focus end", &dof.farFocusEnd, 0.0f, 100.0f, "%.1f");
+            ImGui::SliderFloat("Near max blur", &dof.nearMaxBlur, 0.0f, 8.0f, "%.1f px");
+            ImGui::SliderFloat("Far max blur", &dof.farMaxBlur, 0.0f, 16.0f, "%.1f px");
+            int resolutionIndex = dof.resolution == 1u ? 0 : (dof.resolution == 4u ? 2 : 1);
+            if (ImGui::Combo("DOF resolution", &resolutionIndex, "Full\0Half\0Quarter\0")) {
+                dof.resolution = resolutionIndex == 0 ? 1u : (resolutionIndex == 2 ? 4u : 2u);
+            }
+            ImGui::Checkbox("HQ DOF gather", &dof.highQuality);
+        }
+        ImGui::Checkbox("Motion blur", &m_settings.postProcess.motionBlur.enabled);
+        if (m_settings.postProcess.motionBlur.enabled) {
+            render::MotionBlurSettings& motion = m_settings.postProcess.motionBlur;
+            ImGui::SliderFloat("Motion intensity", &motion.intensity, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Max velocity", &motion.maximumVelocity, 0.0f, 500.0f, "%.0f px");
+            ImGui::SliderFloat("Min velocity", &motion.minimumVelocity, 0.0f, 64.0f, "%.0f px");
+            int samples = static_cast<int>(motion.sampleCount);
+            if (ImGui::SliderInt("Motion samples", &samples, 2, 32)) {
+                motion.sampleCount = static_cast<uint32_t>(samples);
+            }
+            ImGui::SliderFloat("Motion depth extent", &motion.depthComparisonExtent, 0.0f, 20.0f, "%.2f");
+            ImGui::Checkbox("Camera motion blur", &motion.cameraMotionBlur);
+        }
+
+        ImGui::Separator();
         const std::size_t modeCount = render::debugDisplayModeCount();
-        const std::size_t shownModes = std::min<std::size_t>(modeCount, 16);
-        const char* modeNames[16]{};
+        const std::size_t shownModes = std::min<std::size_t>(modeCount, 32);
+        const char* modeNames[32]{};
         for (std::size_t index = 0; index < shownModes; ++index) {
             modeNames[index] = render::debugDisplayModeNameAt(index);
         }
@@ -267,6 +363,10 @@ void DebugUI::drawPanel() {
         if (ImGui::Combo("Debug view", &mode, modeNames, static_cast<int>(shownModes)) && mode >= 0 &&
             static_cast<std::size_t>(mode) < shownModes) {
             m_settings.fullscreen = render::debugDisplayModeAt(static_cast<std::size_t>(mode));
+        }
+        if (m_settings.fullscreen == render::DebugDisplayMode::LightCluster) {
+            ImGui::SliderInt("Cluster slice", &m_settings.lightClusterSlice, -2, 31);
+            ImGui::TextDisabled("-2: FPTL legacy, -1: per-pixel depth slice, 0..31: fixed slice");
         }
 
         ImGui::Separator();

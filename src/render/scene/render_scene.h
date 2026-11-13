@@ -5,7 +5,10 @@
 #include "asset/texture_loader.h"
 #include "core/bounds.h"
 #include "core/math.h"
+#include "render/atmosphere/local_fog_volume.h"
+#include "render/scene/decal.h"
 #include "render/scene/light.h"
+#include "render/scene/reflection_probe.h"
 #include "render/scene/render_object.h"
 
 #include <cstdint>
@@ -35,6 +38,9 @@ struct RenderScene {
     std::vector<asset::ImageAsset> images;
     std::vector<RenderObject> objects;
     std::vector<Light> lights;
+    std::vector<LocalFogVolume> localFogVolumes;
+    std::vector<Decal> decals;
+    std::vector<ReflectionProbe> probes;
     std::vector<Camera> cameras;
     Bounds bounds;
 

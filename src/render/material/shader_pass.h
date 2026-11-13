@@ -32,6 +32,9 @@ inline constexpr ShaderPassMask kForwardPassMask =
     (1u << static_cast<uint32_t>(ShaderPass::Forward)) | (1u << static_cast<uint32_t>(ShaderPass::ForwardOnly));
 inline constexpr ShaderPassMask kAllForwardOpaquePassMask =
     kForwardPassMask | (1u << static_cast<uint32_t>(ShaderPass::SRPDefaultUnlit));
+inline constexpr ShaderPassMask kForwardOnlyOpaquePassMask =
+    (1u << static_cast<uint32_t>(ShaderPass::ForwardOnly)) |
+    (1u << static_cast<uint32_t>(ShaderPass::SRPDefaultUnlit));
 inline constexpr ShaderPassMask kAllTransparentPassMask =
     (1u << static_cast<uint32_t>(ShaderPass::TransparentBackface)) | kForwardPassMask |
     (1u << static_cast<uint32_t>(ShaderPass::SRPDefaultUnlit));

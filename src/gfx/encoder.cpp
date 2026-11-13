@@ -47,8 +47,16 @@ void Encoder::setViewTransform(bgfx::ViewId view, const float* viewMatrix, const
     bgfx::setViewTransform(view, viewMatrix, projectionMatrix);
 }
 
+void Encoder::setViewDepthBias(bgfx::ViewId view, int32_t constant, float slopeScale, float clamp) {
+    bgfx::setViewDepthBias(view, constant, slopeScale, clamp);
+}
+
 void Encoder::setState(uint64_t state, uint32_t rgba) {
     bgfx::setState(state, rgba);
+}
+
+void Encoder::setStencil(uint32_t front, uint32_t back) {
+    bgfx::setStencil(front, back);
 }
 
 void Encoder::setTransform(const float* modelMatrix) {
@@ -107,6 +115,26 @@ void Encoder::setTextureMip(uint8_t stage, UniformHandle sampler, TextureHandle 
     }
 
     bgfx::setTexture(stage, samplerResource->native(), textureResource->native(), 0, 1, firstMip, numMips, flags);
+}
+
+void Encoder::setImage(uint8_t stage, TextureHandle texture, uint8_t mip, bgfx::Access::Enum access,
+                       TextureFormat format) {
+    const Texture* textureResource = m_resources.texture(texture);
+    if (textureResource == nullptr || !textureResource->valid() || mip >= textureResource->desc().mipCount) {
+        HBG_LOGE("Encoder::setImage received an invalid texture or mip");
+        return;
+    }
+    if (!textureResource->desc().computeWrite) {
+        HBG_LOGW("Encoder::setImage texture '{}' was not created with computeWrite", textureResource->desc().name);
+    }
+
+    const bgfx::TextureFormat::Enum imageFormat =
+        format == TextureFormat::Count ? toBgfx(textureResource->desc().format) : toBgfx(format);
+    if (imageFormat == bgfx::TextureFormat::Count) {
+        HBG_LOGE("Encoder::setImage received an unsupported image format");
+        return;
+    }
+    bgfx::setImage(stage, textureResource->native(), mip, access, imageFormat);
 }
 
 void Encoder::setVertexBuffer(uint8_t stream, BufferHandle buffer) {
@@ -197,6 +225,51 @@ void Encoder::setInstanceDataBuffer(const InstanceData& instances) {
     bgfx::setInstanceDataBuffer(instances.native());
 }
 
+void Encoder::setInstanceDataBuffer(BufferHandle buffer, uint32_t startVertex, uint32_t numInstances) {
+    const Buffer* resource = m_resources.buffer(buffer);
+    if (resource == nullptr || !resource->valid()) {
+        HBG_LOGE("Encoder::setInstanceDataBuffer received an invalid buffer");
+        return;
+    }
+    if (resource->type() != BufferType::DynamicVertex && resource->type() != BufferType::StorageVertex) {
+        HBG_LOGE("Encoder::setInstanceDataBuffer received a non-vertex buffer");
+        return;
+    }
+    bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{resource->nativeIndex()}, startVertex, numInstances);
+}
+
+void Encoder::setStorageBuffer(uint8_t stage, BufferHandle buffer, bgfx::Access::Enum access, uint32_t offset,
+                               uint32_t size) {
+    const Buffer* resource = m_resources.buffer(buffer);
+    if (resource == nullptr || !resource->valid()) {
+        HBG_LOGE("Encoder::setStorageBuffer received an invalid buffer");
+        return;
+    }
+    if (offset % 256u != 0) {
+        HBG_LOGE("Encoder::setStorageBuffer '{}' offset {} is not 256-byte aligned", resource->name(), offset);
+        return;
+    }
+    if (stage >= bgfx::getCaps()->limits.maxComputeBindings) {
+        HBG_LOGE("Encoder::setStorageBuffer stage {} exceeds the compute binding limit", stage);
+        return;
+    }
+
+    switch (resource->type()) {
+    case BufferType::Storage:
+        bgfx::setBuffer(stage, bgfx::DynamicIndexBufferHandle{resource->nativeIndex()}, access, offset, size);
+        break;
+    case BufferType::StorageVertex:
+        bgfx::setBuffer(stage, bgfx::DynamicVertexBufferHandle{resource->nativeIndex()}, access, offset, size);
+        break;
+    case BufferType::Indirect:
+        bgfx::setBuffer(stage, bgfx::IndirectBufferHandle{resource->nativeIndex()}, access);
+        break;
+    default:
+        HBG_LOGE("Encoder::setStorageBuffer '{}' is not a storage or indirect buffer", resource->name());
+        break;
+    }
+}
+
 void Encoder::submit(bgfx::ViewId view, ProgramHandle program, uint32_t depth, uint8_t flags) {
     const Program* resource = m_resources.program(program);
     if (resource == nullptr || !resource->valid()) {
@@ -204,6 +277,23 @@ void Encoder::submit(bgfx::ViewId view, ProgramHandle program, uint32_t depth, u
         return;
     }
     bgfx::submit(view, resource->native(), depth, flags);
+}
+
+void Encoder::submitIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start,
+                             uint32_t num, uint32_t depth, uint8_t flags) {
+    const Program* programResource = m_resources.program(program);
+    const Buffer* indirectResource = m_resources.buffer(indirect);
+    if (programResource == nullptr || !programResource->valid()) {
+        HBG_LOGE("Encoder::submitIndirect received an invalid program");
+        return;
+    }
+    if (indirectResource == nullptr || !indirectResource->valid() ||
+        indirectResource->type() != BufferType::Indirect) {
+        HBG_LOGE("Encoder::submitIndirect received an invalid indirect buffer");
+        return;
+    }
+    bgfx::submit(view, programResource->native(), bgfx::IndirectBufferHandle{indirectResource->nativeIndex()}, start,
+                 num, depth, flags);
 }
 
 void Encoder::dispatch(bgfx::ViewId view, ProgramHandle program, uint32_t numX, uint32_t numY, uint32_t numZ,
@@ -214,6 +304,23 @@ void Encoder::dispatch(bgfx::ViewId view, ProgramHandle program, uint32_t numX, 
         return;
     }
     bgfx::dispatch(view, resource->native(), numX, numY, numZ, flags);
+}
+
+void Encoder::dispatchIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start,
+                               uint32_t num, uint8_t flags) {
+    const Program* programResource = m_resources.program(program);
+    const Buffer* indirectResource = m_resources.buffer(indirect);
+    if (programResource == nullptr || !programResource->valid()) {
+        HBG_LOGE("Encoder::dispatchIndirect received an invalid program");
+        return;
+    }
+    if (indirectResource == nullptr || !indirectResource->valid() ||
+        indirectResource->type() != BufferType::Indirect) {
+        HBG_LOGE("Encoder::dispatchIndirect received an invalid indirect buffer");
+        return;
+    }
+    bgfx::dispatch(view, programResource->native(), bgfx::IndirectBufferHandle{indirectResource->nativeIndex()}, start,
+                   num, flags);
 }
 
 void Encoder::touch(bgfx::ViewId view) {

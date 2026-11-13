@@ -1,4 +1,5 @@
 #include "render/pipeline/frame_settings.h"
+#include "render/lighting/gpu_light_data.h"
 #include "render/pipeline/pipeline_settings.h"
 
 #include <doctest/doctest.h>
@@ -52,6 +53,17 @@ TEST_CASE("BitSet128 supports the operations used by FrameSettings") {
     CHECK_FALSE(bits.test(0));
 }
 
+TEST_CASE("pipeline defaults enable the validated GPU light-list buffer path") {
+    const PipelineSettings pipeline = PipelineSettings::defaults();
+    CHECK(pipeline.supportGpuLightList);
+    CHECK(pipeline.supportGpuLightListBuffers);
+    CHECK(pipeline.lightListCapacity == kLightListDefaultCapacity);
+    CHECK_FALSE(pipeline.supportGpuLightListIndirect);
+    CHECK_FALSE(pipeline.supportGpuShadowCulling);
+    CHECK_FALSE(pipeline.supportGpuShadowIndirect);
+    CHECK_FALSE(pipeline.supportAsyncGpuLightList);
+}
+
 TEST_CASE("FrameSettings defaults follow HDRP render types") {
     const FrameSettings camera = FrameSettings::defaults(FrameSettingsRenderType::Camera);
     CHECK(camera.isEnabled(FrameSettingsField::ShadowMaps));
@@ -59,6 +71,9 @@ TEST_CASE("FrameSettings defaults follow HDRP render types") {
     CHECK(camera.isEnabled(FrameSettingsField::TransparentObjects));
     CHECK(camera.isEnabled(FrameSettingsField::Postprocess));
     CHECK(camera.isEnabled(FrameSettingsField::MotionVectors));
+    CHECK(camera.isEnabled(FrameSettingsField::SSAO));
+    CHECK(camera.isEnabled(FrameSettingsField::SSR));
+    CHECK(camera.isEnabled(FrameSettingsField::SSGI));
     CHECK(camera.litShaderMode() == LitShaderMode::Deferred);
     CHECK(camera.msaaMode == MSAAMode::None);
     CHECK(camera.lodBias == 1.0f);
@@ -94,17 +109,23 @@ TEST_CASE("FrameSettings sanitize gates unsupported pipeline features") {
     pipeline.supportedLitShaderMode = SupportedLitShaderMode::ForwardOnly;
     pipeline.supportShadows = false;
     pipeline.supportSSR = false;
+    pipeline.supportSSAO = false;
+    pipeline.supportSSGI = false;
     pipeline.supportMotionVectors = false;
 
     FrameSettings settings = FrameSettings::defaults(FrameSettingsRenderType::Camera);
     settings.setLitShaderMode(LitShaderMode::Deferred);
     settings.setEnabled(FrameSettingsField::SSR, true);
+    settings.setEnabled(FrameSettingsField::SSAO, true);
+    settings.setEnabled(FrameSettingsField::SSGI, true);
     settings.setEnabled(FrameSettingsField::MotionVectors, true);
     settings.sanitize(pipeline);
 
     CHECK(settings.litShaderMode() == LitShaderMode::Forward);
     CHECK_FALSE(settings.isEnabled(FrameSettingsField::ShadowMaps));
     CHECK_FALSE(settings.isEnabled(FrameSettingsField::SSR));
+    CHECK_FALSE(settings.isEnabled(FrameSettingsField::SSAO));
+    CHECK_FALSE(settings.isEnabled(FrameSettingsField::SSGI));
     CHECK_FALSE(settings.isEnabled(FrameSettingsField::MotionVectors));
     CHECK_FALSE(settings.isEnabled(FrameSettingsField::ClearGBuffers));
     CHECK(settings.isEnabled(FrameSettingsField::OpaqueObjects));
@@ -150,18 +171,70 @@ TEST_CASE("FrameSettings sanitize applies reflection and MSAA rules") {
     CHECK(msaa.msaaMode == MSAAMode::None);
 }
 
+TEST_CASE("FrameSettings keeps deferred when the pipeline supports both modes") {
+    PipelineSettings pipeline = PipelineSettings::defaults();
+    pipeline.supportedLitShaderMode = SupportedLitShaderMode::Both;
+    pipeline.supportSSAO = true;
+    pipeline.supportSSR = true;
+
+    FrameSettings settings = FrameSettings::defaults(FrameSettingsRenderType::Camera);
+    settings.setLitShaderMode(LitShaderMode::Deferred);
+    settings.sanitize(pipeline);
+
+    CHECK(settings.litShaderMode() == LitShaderMode::Deferred);
+    CHECK(settings.isEnabled(FrameSettingsField::SSAO));
+    CHECK(settings.isEnabled(FrameSettingsField::SSR));
+}
+
+TEST_CASE("Pipeline light-list capacity uses supported tiers") {
+    CHECK(sanitizeLightListCapacity(0) == 32);
+    CHECK(sanitizeLightListCapacity(31) == 32);
+    CHECK(sanitizeLightListCapacity(32) == 32);
+    CHECK(sanitizeLightListCapacity(33) == 32);
+    CHECK(sanitizeLightListCapacity(63) == 32);
+    CHECK(sanitizeLightListCapacity(64) == 64);
+    CHECK(sanitizeLightListCapacity(65) == 64);
+    CHECK(sanitizeLightListCapacity(127) == 64);
+    CHECK(sanitizeLightListCapacity(128) == 128);
+    CHECK(sanitizeLightListCapacity(129) == 128);
+    CHECK(isValidLightListCapacity(32));
+    CHECK(isValidLightListCapacity(64));
+    CHECK(isValidLightListCapacity(128));
+    CHECK_FALSE(isValidLightListCapacity(33));
+    CHECK(lightListStrideFor(32) == 33);
+    CHECK(lightListStrideFor(64) == 65);
+    CHECK(lightListStrideFor(128) == 129);
+    CHECK(kLightListStrideMax == 129);
+
+    PipelineSettings settings;
+    std::string error;
+    REQUIRE(parsePipelineSettings(R"({"lightListCapacity":64})", settings, error));
+    CHECK(settings.lightListCapacity == 64);
+    PipelineSettings roundTrip;
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK(roundTrip.lightListCapacity == 64);
+    REQUIRE(parsePipelineSettings(R"({"lightListCapacity":129})", settings, error));
+    CHECK(settings.lightListCapacity == 128);
+    REQUIRE(parsePipelineSettings(R"({"lightListCapacity":33})", settings, error));
+    CHECK(settings.lightListCapacity == 32);
+    CHECK_FALSE(parsePipelineSettings(R"({"lightListCapacity":"64"})", settings, error));
+}
+
 TEST_CASE("PipelineSettings JSON parses and round-trips") {
     PipelineSettings settings;
     std::string error;
     REQUIRE(parsePipelineSettings(
-        R"({"supportedLitShaderMode":"both","colorBufferFormat":"RGBA16F","depthBufferFormat":"D32F","msaaSampleCount":"4x","supportShadows":false,"supportSSR":true,"supportMotionVectors":true})",
+        R"({"supportedLitShaderMode":"both","colorBufferFormat":"RGBA16F","depthBufferFormat":"D32F","msaaSampleCount":"4x","supportShadows":false,"supportGpuLightList":true,"supportSSR":true,"supportSSAO":true,"supportSSGI":true,"supportMotionVectors":true})",
         settings, error));
     CHECK(settings.supportedLitShaderMode == SupportedLitShaderMode::Both);
     CHECK(settings.colorBufferFormat == ColorBufferFormat::R16G16B16A16F);
     CHECK(settings.depthBufferFormat == DepthBufferFormat::D32F);
     CHECK(settings.msaaSampleCount == MSAASamples::MSAA4X);
     CHECK_FALSE(settings.supportShadows);
+    CHECK(settings.supportGpuLightList);
     CHECK(settings.supportSSR);
+    CHECK(settings.supportSSAO);
+    CHECK(settings.supportSSGI);
     CHECK(settings.supportMotionVectors);
 
     PipelineSettings roundTrip;
@@ -204,5 +277,25 @@ TEST_CASE("Shipped settings files load") {
     REQUIRE(loadPipelineSettings(std::string(HBG_PROJECT_ROOT) + "/config/pipeline.json", pipeline, error));
     REQUIRE(loadFrameSettings(std::string(HBG_PROJECT_ROOT) + "/config/frame_settings.json", frame, error));
     CHECK(pipeline.supportShadows);
+    CHECK(pipeline.supportFXAA);
     CHECK(frame.isEnabled(FrameSettingsField::ShadowMaps));
+}
+
+TEST_CASE("FrameSettings sanitize gates volumetric fog") {
+    PipelineSettings pipeline = PipelineSettings::defaults();
+    pipeline.supportVolumetrics = false;
+    FrameSettings settings = FrameSettings::defaults(FrameSettingsRenderType::Camera);
+    settings.setEnabled(FrameSettingsField::AtmosphericScattering, true);
+    settings.setEnabled(FrameSettingsField::Volumetrics, true);
+    settings.sanitize(pipeline);
+    CHECK_FALSE(settings.isEnabled(FrameSettingsField::Volumetrics));
+
+    pipeline.supportVolumetrics = true;
+    settings.setEnabled(FrameSettingsField::Volumetrics, true);
+    settings.sanitize(pipeline);
+    CHECK(settings.isEnabled(FrameSettingsField::Volumetrics));
+
+    settings.setEnabled(FrameSettingsField::AtmosphericScattering, false);
+    settings.sanitize(pipeline);
+    CHECK_FALSE(settings.isEnabled(FrameSettingsField::Volumetrics));
 }

@@ -106,6 +106,15 @@ BufferHandle ResourceManager::createBuffer(const BufferDesc& desc) {
     return m_buffers.add(std::move(buffer));
 }
 
+bool ResourceManager::updateBuffer(BufferHandle handle, const void* data, uint32_t size, uint32_t offset) {
+    Buffer* buffer = m_buffers.get(handle);
+    if (buffer == nullptr) {
+        HBG_LOGW("ResourceManager::updateBuffer received an invalid handle");
+        return false;
+    }
+    return buffer->update(data, size, offset);
+}
+
 void ResourceManager::destroyBuffer(BufferHandle handle) {
     Buffer* buffer = m_buffers.get(handle);
     if (buffer == nullptr) {
@@ -214,6 +223,29 @@ ProgramHandle ResourceManager::createProgramFromFiles(const std::string& vertexP
 
     return createProgram(vertexData.data(), static_cast<uint32_t>(vertexData.size()), fragmentData.data(),
                          static_cast<uint32_t>(fragmentData.size()), name);
+}
+
+ProgramHandle ResourceManager::createComputeProgram(const void* computeData, uint32_t computeSize,
+                                                     const std::string& name) {
+    if (!m_initialized) {
+        HBG_LOGE("ResourceManager::createComputeProgram called before init");
+        return {};
+    }
+
+    Program program;
+    if (!program.createCompute(computeData, computeSize, name)) {
+        return {};
+    }
+    return m_programs.add(std::move(program));
+}
+
+ProgramHandle ResourceManager::createComputeProgramFromFiles(const std::string& computePath,
+                                                             const std::string& name) {
+    std::vector<uint8_t> computeData;
+    if (!m_programCache.loadShader(computePath, computeData)) {
+        return {};
+    }
+    return createComputeProgram(computeData.data(), static_cast<uint32_t>(computeData.size()), name);
 }
 
 void ResourceManager::destroyProgram(ProgramHandle handle) {

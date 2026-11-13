@@ -156,6 +156,9 @@ bool Texture::create(const TextureDesc& desc) {
     if (desc.mipCount > 1) {
         flags |= BGFX_TEXTURE_MIP_COUNT(desc.mipCount);
     }
+    if (desc.computeWrite) {
+        flags |= BGFX_TEXTURE_COMPUTE_WRITE;
+    }
     if (desc.renderTarget || desc.depthStencil) {
         flags &= ~BGFX_TEXTURE_RT_MASK;
         if (desc.msaaSamples >= 8) {

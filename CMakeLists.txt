@@ -138,6 +138,9 @@ add_library(hbg_asset STATIC
     src/asset/mesh.cpp
     src/asset/scene_loader.cpp
     src/asset/texture_loader.cpp
+    src/render/atmosphere/local_fog_volume.cpp
+    src/render/scene/decal.cpp
+    src/render/scene/reflection_probe.cpp
     src/render/scene/render_scene.cpp
 )
 target_include_directories(hbg_asset PUBLIC
@@ -161,6 +164,7 @@ add_library(hbg_app STATIC
     src/app/window.cpp
     src/app/application.cpp
     src/app/gfx_test.cpp
+    src/render/atmosphere/volumetric_fog_settings.cpp
     src/render/camera/resolution_group.cpp
     src/render/camera/view_state.cpp
     src/render/culling/draw_list.cpp
@@ -177,9 +181,19 @@ add_library(hbg_app STATIC
     src/render/passes/prepass_utils.cpp
     src/render/pipeline/frame_settings.cpp
     src/render/pipeline/pipeline_settings.cpp
+    src/render/postprocess/color_grading_lut.cpp
+    src/render/postprocess/post_process_chain.cpp
+    src/render/postprocess/post_process_profile.cpp
     src/render/postprocess/post_process_settings.cpp
+    src/render/postprocess/ssao_settings.cpp
+    src/render/postprocess/ssr_settings.cpp
+    src/render/postprocess/ssgi_settings.cpp
+    src/render/shadows/contact_shadow.cpp
+    src/render/shadows/shadow_settings.cpp
     src/render/shadows/shadow_manager.cpp
     src/render/sky/environment_processor.cpp
+    src/render/sky/environment_texture.cpp
+    src/render/sky/probe_manager.cpp
     src/render/sky/sky_manager.cpp
 )
 target_link_libraries(hbg_app

@@ -28,23 +28,34 @@ class Encoder {
     void setViewMode(bgfx::ViewId view, bgfx::ViewMode::Enum mode);
     void setViewFrameBuffer(bgfx::ViewId view, FrameBufferHandle frameBuffer);
     void setViewTransform(bgfx::ViewId view, const float* viewMatrix, const float* projectionMatrix);
+    void setViewDepthBias(bgfx::ViewId view, int32_t constant = 0, float slopeScale = 0.0f, float clamp = 0.0f);
 
     void setState(uint64_t state, uint32_t rgba = 0);
+    void setStencil(uint32_t front, uint32_t back = BGFX_STENCIL_NONE);
     void setTransform(const float* modelMatrix);
     void setUniform(UniformHandle uniform, const void* data, uint16_t num = UINT16_MAX);
     void setTexture(uint8_t stage, UniformHandle sampler, TextureHandle texture, uint32_t flags = UINT32_MAX);
     void setTextureMip(uint8_t stage, UniformHandle sampler, TextureHandle texture, uint8_t firstMip, uint8_t numMips,
                        uint32_t flags = UINT32_MAX);
+    void setImage(uint8_t stage, TextureHandle texture, uint8_t mip, bgfx::Access::Enum access,
+                  TextureFormat format = TextureFormat::Count);
 
     void setVertexBuffer(uint8_t stream, BufferHandle buffer);
     void setVertexBuffer(uint8_t stream, BufferHandle buffer, uint32_t startVertex, uint32_t numVertices);
     void setIndexBuffer(BufferHandle buffer);
     void setIndexBuffer(BufferHandle buffer, uint32_t firstIndex, uint32_t numIndices);
     void setInstanceDataBuffer(const InstanceData& instances);
+    void setInstanceDataBuffer(BufferHandle buffer, uint32_t startVertex, uint32_t numInstances);
+    void setStorageBuffer(uint8_t stage, BufferHandle buffer, bgfx::Access::Enum access, uint32_t offset = 0,
+                          uint32_t size = UINT32_MAX);
 
     void submit(bgfx::ViewId view, ProgramHandle program, uint32_t depth = 0, uint8_t flags = BGFX_DISCARD_ALL);
+    void submitIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start = 0,
+                        uint32_t num = 1, uint32_t depth = 0, uint8_t flags = BGFX_DISCARD_ALL);
     void dispatch(bgfx::ViewId view, ProgramHandle program, uint32_t numX = 1, uint32_t numY = 1, uint32_t numZ = 1,
                   uint8_t flags = BGFX_DISCARD_ALL);
+    void dispatchIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start = 0,
+                          uint32_t num = 1, uint8_t flags = BGFX_DISCARD_ALL);
     void touch(bgfx::ViewId view);
     void discard(uint8_t flags = BGFX_DISCARD_ALL);
 

@@ -30,6 +30,12 @@ struct GpuMaterial {
     uint64_t variantKey = 0;
 };
 
+struct GpuDecalTextures {
+    gfx::TextureHandle albedo;
+    gfx::TextureHandle normal;
+    gfx::TextureHandle mask;
+};
+
 struct MaterialSamplers {
     gfx::UniformHandle baseColorMap;
     gfx::UniformHandle metallicRoughnessMap;
@@ -55,6 +61,7 @@ class MaterialSystem {
 
     const std::vector<GpuMesh>& meshes() const { return m_meshes; }
     const std::vector<GpuMaterial>& materials() const { return m_materials; }
+    const std::vector<GpuDecalTextures>& decals() const { return m_decals; }
     const MaterialSamplers& samplers() const { return m_samplers; }
 
   private:
@@ -64,6 +71,7 @@ class MaterialSystem {
     gfx::ResourceManager* m_resources = nullptr;
     std::vector<GpuMesh> m_meshes;
     std::vector<GpuMaterial> m_materials;
+    std::vector<GpuDecalTextures> m_decals;
     std::unordered_map<uint64_t, gfx::TextureHandle> m_textureCache;
     MaterialSamplers m_samplers;
     gfx::TextureHandle m_whiteSrgb;

@@ -146,6 +146,12 @@ TEST_CASE("shader pass tags follow HDRP material pass support") {
     CHECK((litMask & shaderPassMask(ShaderPass::ForwardOnly)) == 0);
     CHECK((litMask & shaderPassMask(ShaderPass::TransparentDepthPrepass)) == 0);
 
+    asset::Material maskedLit;
+    maskedLit.alphaMode = asset::AlphaMode::Mask;
+    const ShaderPassMask maskedLitMask = defaultShaderPassMask(maskedLit);
+    CHECK((maskedLitMask & shaderPassMask(ShaderPass::ShadowCaster)) != 0);
+    CHECK((maskedLitMask & shaderPassMask(ShaderPass::Forward)) != 0);
+
     asset::Material transparentLit;
     transparentLit.alphaMode = asset::AlphaMode::Blend;
     const ShaderPassMask transparentLitMask = defaultShaderPassMask(transparentLit);
@@ -155,6 +161,7 @@ TEST_CASE("shader pass tags follow HDRP material pass support") {
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::TransparentDepthPostpass)) != 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::GBuffer)) == 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::DepthOnly)) == 0);
+    CHECK((transparentLitMask & shaderPassMask(ShaderPass::ShadowCaster)) == 0);
 
     asset::Material unlit;
     unlit.type = asset::MaterialType::Unlit;
@@ -260,6 +267,65 @@ TEST_CASE("draw list sorts opaque queues and groups compatible batches") {
     CHECK(list.batches()[1].itemCount == 1);
 }
 
+TEST_CASE("gbuffer draw list keeps lit opaque variants only") {
+    RenderScene scene;
+    const uint32_t opaque = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t mask = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Mask, 2450);
+    const uint32_t doubleSided = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    scene.materials[doubleSided].doubleSided = true;
+    const uint32_t unlit = addMaterial(scene, asset::MaterialType::Unlit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t transparent = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Blend, 3000);
+
+    addObject(scene, addMesh(scene, opaque), Vec3(0.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, mask), Vec3(1.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, doubleSided), Vec3(2.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, unlit), Vec3(3.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, transparent), Vec3(4.0f, 0.0f, 0.0f));
+
+    ViewState viewState;
+    buildViewState(viewState, makeCamera());
+    DrawListDesc desc;
+    desc.passTags = shaderPassMask(ShaderPass::GBuffer);
+    desc.queueRange = kRenderQueueRangeAllOpaque;
+    desc.sortingCriteria = kOpaqueSortingCriteria;
+
+    DrawList list;
+    list.build(scene, viewState, desc);
+    REQUIRE(list.size() == 3);
+    CHECK(list.items()[0].materialIndex == opaque);
+    CHECK(list.items()[1].materialIndex == doubleSided);
+    CHECK(list.items()[2].materialIndex == mask);
+    for (const DrawItem& item : list.items()) {
+        CHECK((item.passMask & shaderPassMask(ShaderPass::GBuffer)) != 0);
+        CHECK_FALSE(item.transparent);
+    }
+    CHECK(list.filteredCount() == 2);
+}
+
+TEST_CASE("forward-only opaque list keeps unlit opaque objects out of deferred gbuffer") {
+    RenderScene scene;
+    const uint32_t litOpaque = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t unlitOpaque = addMaterial(scene, asset::MaterialType::Unlit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t unlitTransparent = addMaterial(scene, asset::MaterialType::Unlit, asset::AlphaMode::Blend, 3000);
+    addObject(scene, addMesh(scene, litOpaque), Vec3(-2.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, unlitOpaque), Vec3(0.0f, 0.0f, 0.0f));
+    addObject(scene, addMesh(scene, unlitTransparent), Vec3(2.0f, 0.0f, 0.0f));
+
+    ViewState viewState;
+    buildViewState(viewState, makeCamera());
+    DrawListDesc desc;
+    desc.passTags = kForwardOnlyOpaquePassMask;
+    desc.queueRange = kRenderQueueRangeAllOpaque;
+    desc.sortingCriteria = kOpaqueSortingCriteria;
+
+    DrawList list;
+    list.build(scene, viewState, desc);
+    REQUIRE(list.size() == 1);
+    CHECK(list.items()[0].materialIndex == unlitOpaque);
+    CHECK_FALSE(list.items()[0].transparent);
+    CHECK(list.filteredCount() == 2);
+}
+
 TEST_CASE("draw list sorts transparent objects back to front") {
     RenderScene scene;
     const uint32_t material = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Blend, 3000);
@@ -330,6 +396,41 @@ TEST_CASE("draw list culls objects outside the camera frustum") {
     list.build(scene, viewState, desc);
     CHECK(list.size() == 2);
     CHECK(list.culledCount() == 0);
+}
+
+TEST_CASE("draw list rebuilds batches after per-request culling") {
+    RenderScene scene;
+    const uint32_t material = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t mesh = addMesh(scene, material);
+    addObject(scene, mesh, Vec3(0.0f, 0.0f, 0.0f));
+    addObject(scene, mesh, Vec3(-10.0f, 0.0f, 0.0f));
+
+    ViewState viewState;
+    buildViewState(viewState, makeCamera());
+    DrawListDesc desc;
+    desc.passTags = shaderPassMask(ShaderPass::ShadowCaster);
+    desc.queueRange = kRenderQueueRangeAllOpaque;
+    desc.frustumCull = false;
+
+    DrawList source;
+    source.build(scene, viewState, desc);
+    REQUIRE(source.size() == 2);
+
+    std::array<Vec4, 6> planes = {
+        Vec4(1.0f, 0.0f, 0.0f, 0.0f),
+        Vec4(0.0f, 0.0f, 0.0f, 100.0f),
+        Vec4(0.0f, 0.0f, 0.0f, 100.0f),
+        Vec4(0.0f, 0.0f, 0.0f, 100.0f),
+        Vec4(0.0f, 0.0f, 0.0f, 100.0f),
+        Vec4(0.0f, 0.0f, 0.0f, 100.0f),
+    };
+    DrawList culled;
+    culled.buildCulled(source, planes);
+    REQUIRE(culled.size() == 1);
+    CHECK(culled.culledCount() == 1);
+    CHECK(culled.items()[0].objectIndex == 0);
+    REQUIRE(culled.batches().size() == 1);
+    CHECK(culled.batches()[0].itemCount == 1);
 }
 
 TEST_CASE("draw distance quantization is monotonic") {

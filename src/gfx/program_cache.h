@@ -26,6 +26,7 @@ class Program {
 
     bool create(const void* vertexData, uint32_t vertexSize, const void* fragmentData, uint32_t fragmentSize,
                 const std::string& name = {});
+    bool createCompute(const void* computeData, uint32_t computeSize, const std::string& name = {});
     void destroy();
 
     bool valid() const;

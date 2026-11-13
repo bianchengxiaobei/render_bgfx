@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IDL_DIR = Path("config/uniforms")
 CPP_OUTPUT = Path("src/gfx/generated/uniforms.h")
 SHADER_OUTPUT = Path("shaders/include/generated/uniforms.sc")
-BLOCK_ORDER = {"Global": 0, "Pass": 1, "Material": 2}
+BLOCK_ORDER = {"Global": 0, "Pass": 1, "Cluster": 2, "Ssao": 3, "Ssr": 4, "Ssgi": 5, "Material": 6, "Probe": 7, "Contact": 8}
 
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[{}[\];]")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

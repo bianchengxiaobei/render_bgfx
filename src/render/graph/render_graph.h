@@ -82,6 +82,7 @@ class RenderGraphBuilder {
     RenderGraphBuilder& writeTexture(RenderGraphTextureHandle handle);
     RenderGraphBuilder& setColorAttachment(RenderGraphTextureHandle handle, uint8_t index = 0, uint16_t mip = 0);
     RenderGraphBuilder& setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip = 0);
+    RenderGraphBuilder& setViewSize(uint16_t width, uint16_t height);
 
     RenderGraphBuilder& readBuffer(RenderGraphBufferHandle handle);
     RenderGraphBuilder& writeBuffer(RenderGraphBufferHandle handle);
@@ -128,6 +129,7 @@ class RenderGraph {
     const std::string& lastError() const { return m_error; }
     const RenderGraphDiagnostics& diagnostics() const { return m_diagnostics; }
     const std::vector<bgfx::ViewId>& passViewIds() const { return m_passViewIds; }
+    std::vector<std::string> passNames() const;
 
   private:
     friend class RenderGraphBuilder;
@@ -164,6 +166,8 @@ class RenderGraph {
         std::vector<uint16_t> colorAttachmentMips;
         RenderGraphTextureHandle depthAttachment;
         uint16_t depthAttachmentMip = 0;
+        uint16_t viewWidth = 0;
+        uint16_t viewHeight = 0;
         bool hasDepthAttachment = false;
         bool backbuffer = false;
         bool allowCulling = true;
@@ -207,6 +211,7 @@ class RenderGraph {
     void addBufferWrite(uint32_t passIndex, RenderGraphBufferHandle handle);
     void setColorAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint8_t index, uint16_t mip);
     void setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint16_t mip);
+    void setViewSize(uint32_t passIndex, uint16_t width, uint16_t height);
     void setBackbuffer(uint32_t passIndex);
     void setAllowCulling(uint32_t passIndex, bool enabled);
     void setRenderFunc(uint32_t passIndex, RenderGraphPassFunc func);

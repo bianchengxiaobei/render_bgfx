@@ -19,15 +19,33 @@ enum class DebugDisplayMode : uint8_t {
     ShadowAtlasPunctual,
     Albedo,
     Roughness,
+    Metallic,
+    AmbientOcclusion,
+    Emissive,
+    SSAO,
+    SSR,
+    SSGI,
+    Decals,
+    Exposure,
+    ColorGrading,
+    Bloom,
+    TaaHistory,
+    Dof,
+    Fxaa,
+    ContactShadows,
+    ShadowCascade,
+    ShadowFilter,
 };
 
 struct DebugDisplaySettings {
     bool shadows = true;
     bool wireframe = false;
+    bool gpuLightList = true;
     bool freezeTime = false;
     bool showPanel = true;
     float renderScale = 1.0f;
     DebugDisplayMode fullscreen = DebugDisplayMode::None;
+    int lightClusterSlice = -1;
     PostProcessSettings postProcess;
 };
 

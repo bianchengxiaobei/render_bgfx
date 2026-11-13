@@ -47,9 +47,10 @@ TEST_CASE("light builder caps lights and writes directional shadow data") {
     builder.build(scene, Vec3(0.0f, 1.0f, 5.0f), Vec3(0.0f, 0.0f, -1.0f), 100.0f);
     const GpuLightData& data = builder.data();
 
-    CHECK(data.lightCount == kMaxGpuLights);
+    CHECK(data.lightCount == kLightListDefaultCapacity);
     CHECK(data.directionalCount == 1);
-    CHECK(data.punctualCount == kMaxGpuLights - 1);
+    CHECK(data.punctualCount == kLightListDefaultCapacity - 1);
+    CHECK(data.truncatedLightCount == 41u - kLightListDefaultCapacity);
     CHECK(data.shadowedCount == 1);
     REQUIRE(builder.shadowCaster() != nullptr);
     CHECK(builder.shadowCaster()->type == LightType::Directional);
@@ -61,8 +62,8 @@ TEST_CASE("light builder caps lights and writes directional shadow data") {
     CHECK(data.texels[3].x == doctest::Approx(0.0f));
     CHECK(data.texels[3].w == doctest::Approx(4.0f));
 
-    CHECK(data.texels[4].w == doctest::Approx(5.0f));
-    CHECK(data.texels[5].w == doctest::Approx(10.0f));
+    CHECK(data.texels[6].w == doctest::Approx(5.0f));
+    CHECK(data.texels[7].w == doctest::Approx(10.0f));
 }
 
 TEST_CASE("light builder writes spot cone data and culls lights behind camera") {

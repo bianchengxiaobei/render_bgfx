@@ -22,12 +22,18 @@
     {
       "name": "vs2022-debug",
       "configurePreset": "vs2022",
-      "configuration": "Debug"
+      "configuration": "Debug",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      }
     },
     {
       "name": "vs2022-relwithdebinfo",
       "configurePreset": "vs2022",
-      "configuration": "RelWithDebInfo"
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      }
     }
   ],
   "testPresets": [
@@ -35,6 +41,9 @@
       "name": "vs2022-debug",
       "configurePreset": "vs2022",
       "configuration": "Debug",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      },
       "output": {
         "outputOnFailure": true
       }

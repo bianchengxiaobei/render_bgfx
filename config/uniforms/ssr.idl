@@ -1,0 +1,4 @@
+block Ssr {
+    vec4 params;             # max distance, max steps, thickness, roughness fade
+    vec4 params2;            # edge fade, intensity, enabled, unused
+}

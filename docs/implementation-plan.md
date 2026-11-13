@@ -1,263 +1,161 @@
-﻿# hdrp-bgfx 总体实现方案（收敛版）
+# hdrp-bgfx 鎬讳綋瀹炵幇鏂规锛堟敹鏁涚増锛?
 
-> 工程根：`E:\Learn\hdrp-bgfx`。
-> 范围：Windows + D3D11/Vulkan、Forward + Deferred、SSR/SSAO/SSGI/体积雾、glTF、暂无编辑器。
-> 实现状态以 `docs/m0-checklist.md` 为准。
-
----
-
-## 当前进度（2026-11-10）
-
-- `M0.1 工程骨架与窗口`：已完成。D3D11/Vulkan 双后端开窗、清屏、打印 caps、响应 resize。
-- `M0.2 gfx 封装`：核心完成。句柄池、Texture/Buffer/Uniform/Program/FrameBuffer/Encoder/ResourceManager；两帧延迟销毁、FBO refCount 复用、shutdown 泄漏告警。
-- `M0.3 IDL / uniform codegen`：完成。`tools/idl_gen.py` 从 `config/uniforms/*.idl` 生成 C++ binder + shader 声明；`UniformBlock` 上传与 shader 反射校验；CMake 增量生成 + `hbg_idl_check`。
-- `M0.4 glTF 资产层`：核心完成。cgltf 解析网格/材质/贴图/节点/相机/`KHR_lights_punctual`，MikkTSpace 生成 tangent，`SceneLoader` 输出 `RenderScene`，支持 `.hdrp.json` sidecar。
-- `M0.5 前向 PBR + Shader 库`：核心完成。`hbg_shader` 读取 manifest 的 dxbc/spirv 变体，`MaterialSystem` 上传 VB/IB/材质/贴图，`ForwardRenderer` 画到 HDR target；M1.9 起最终输出支持固定/自动曝光、ACES/Neutral/None 与 sRGB 编码；新增 `--scene/--render-test/--frames/--screenshot`。
-- `M0.6 光照与阴影 v0`：核心完成。`GpuLightData`（RGBA32F 4×32）+ `LightBuilder` 上传 1 方向光 + 最多 31 punctual；`ShadowManager` 方向光阴影 + PCF 3×3；新增 `shadowcaster`、`light_loop`、`shadows`、`debug_light_data` shader。
-- `M0.7 调试与验收设施`：核心完成。`hbg_imgui` + 自写 bgfx backend、DebugUI 面板、Profiler、wireframe line pass、F1/F11/F12、`--debug-wireframe/--no-shadows`。
-- `M1.1 RenderGraph`：核心完成。logical texture/buffer handle、raster/compute pass builder、attachment/read/write 声明、死 pass flood-fill、transient 池/FBO 池、ViewId 分配、校验与 diagnostics；ForwardRenderer 已拆成 Shadow → Scene Clear → Prepass/MV/DepthPyramid → Forward → Wireframe → Tonemap/Debug pass。
-- `M1.2 FrameSettings`：核心完成。128 位 `BitSet128` + HDRP 同 bit 索引、Camera/Reflection 默认值、OverrideMask、PipelineSettings 能力门控、JSON 解析/序列化、`--pipeline-settings/--frame-settings`。
-- `M1.3 ViewState`：核心完成。jittered/non-jittered view/proj/VP、逆矩阵、上一帧矩阵、相机位置、frustum planes；Halton(2/3) jitter；`HistoryBuffer<T>`；`ViewResolution` 分离 render/target 与 RT scale；全局 CB 扩展。
-- `M1.4 DrawList`：核心完成。HDRP queue/pass tag/frustum cull/sort key；opaque/transparent/shadow/wireframe 独立列表；opaque/shadow instancing；submesh index range。
-- `M1.5 Prepass`：核心完成。DepthOnly/DepthForwardOnly opaque 深度+法线（888 oct + perceptual roughness）、Objects/Camera Motion Vectors（RG16F）、RG32F min/max depth pyramid（scratch）；RenderGraph/FBO 支持 per-attachment mip；相机运动矢量改为采样 depth pyramid，避免 D3D 深度纹理同时作为 DSV/SRV；新增 `--debug-view` 与 `--camera-orbit`。
-- `M1.6 光照 v1`：核心完成。`LightListBuilder` 按 16×16 FPTL tile 与 64×64 big-tile 两阶段 CPU 构建；`R32_UINT` 每 tile count + 最多 32 个绝对 GpuLight 索引；LightLoop 方向光单独循环、punctual 走 tile list，list 不可用时回退；ForwardRenderer 上传/绑定/显式 graph read。
-- `M1.7 阴影 v1`：核心完成。方向光 4 级联（2048 atlas，4×1024）、point 6×256/spot 512 punctual atlas、shelf pack、`ShadowContext` RGBA32F 8×32、每 request 一个 shadow pass、stage 6/8/9 绑定、PCF 3×3 默认 + 5×5 分支；`LightBuilder` 回填方向光/punctual shadowIndex；glTF 点光/聚光默认参与阴影。
-- `M1.8 Sky/IBL`：核心完成。HDR/EXR equirect + 6:1 cube strip、独立 2048×1024 sky 与 1024×512×7mip IBL、CPU GGX prefilter、SH9 ambient（7×vec4 packing）、UE4 analytic EnvBRDF、prepass 后 fullscreen sky pass、stage 10 环境采样、`FrameSettings SkyReflection` 门控、`--sky/--sky-intensity/--sky-rotation`。
-- `M1.9 最终输出`：核心完成。固定 EV100 / 自动 4×4 center-weighted 测光、HDRP `PhysicalCamera.hlsl` 曝光换算、HDRP `Color.hlsl` ACES approximate / Neutral / None、sRGB 输出、`--debug-exposure` 覆盖、DebugUI 最终输出面板、`FrameSettings` Exposure/Tonemapping 门控。
-- `M1.10 Debug`：核心完成。11 个全屏模式；硬件深度/线性化 depth pyramid、normal、HDRP hue-wheel motion、CPU tile LightCluster、方向/punctual shadow atlas、opaque material debug 的 Albedo/Roughness；`DebugUniforms` 16B、debug-only atlas clear、camera motion 采样 depth pyramid 修复 D3D DSV/SRV 冲突。
-- 当前验证：`ctest` 86 个用例、15842 assertions + `hbg_idl_check` 通过；双后端 `--gfx-test`；DamagedHelmet 标准/prepass、重复 helmet instancing、shadow scene、point/spot LightList 与阴影、透明场景、`--render-scale=0.5`、ImGui/debug light-data 截图；shadow scene graph `37/37`，point `33/33`，spot `28/28`；M1.8 双后端 sky graph `28/28`，Uffizi/DefaultHDRI 天空、金属反射、SkyReflection 开关；M1.9 固定/自动曝光、ACES/Neutral、D3D11/Vulkan 一致性；M1.10 depth/normal/motion/cluster/双 atlas/albedo/roughness 双后端截图，shadow atlas debug graph `38/38`、material `27/27`；Sponza 103 draw items / 27,013,502 triangles（本地贴图缺失）。
-- 遗留验收：alphaMask 外部场景、Khronos 参考视觉对齐、sampler wrap/压缩纹理、shadow 视觉细化；RenderDoc 抓帧需安装 RenderDoc 后补。M1.5 边界：透明 prepass/MV、TAA/motion blur、moving object prevWorld authoring 未接；深度金字塔为 RG32F min/max + scratch。M1.6 边界：LightList 为 CPU 屏幕空间 AABB v1，不是 HDRP GPU compute/cluster；无 depth fine pruning/per-voxel clusters/light layers/categories/probes/decals。M1.7 边界：固定 2048 atlas/1024 级联/256 point face/512 spot，无 shadow cache、per-request frustum cull、alphaMask shadow、shadow mask/screen-space/contact shadow；PCF 默认 3×3，未接 PCSS/EVSM/VSM 和 volume 配置。M1.8 边界：IBL 为 1024×512 equirect 7 mips、sky 2048×1024 raw，CPU GGX 32 samples/mip；无 cubemap BSDF LUT、反射探针/SSR/SSGI、动态天空/cloud/backplate/distortion；SH9 静态，SkyReflection 只关 specular。M1.9 边界：自动曝光为最终 pass 内 4×4 center-weighted 瞬时测光，不是 HDRP GPU histogram/adaptation；无 Bloom/ColorGrading/自定义 LUT，ACES 为 HDRP approximate、无 HDR 输出。M1.10 边界：LightCluster 为 CPU 16×16 tile 占用图，不是 HDRP ray cluster；shadow atlas 为 debug-only clear + raw depth 对比度视图；Material debug 仅 opaque/depth prepass；Motion 无箭头网格/Intensity 子模式；DepthPyramid 固定 mip0。
-- 下一任务：`M2 Deferred`（M1 1080p 60fps 性能验收待补）。
-- 验证命令：`cmake --preset vs2022` → `cmake --build --preset vs2022-debug` → `ctest --test-dir build/vs2022 -C Debug --output-on-failure`；冒烟 `hbg --render-test=<scene.gltf> --frames=3 --screenshot=out.png`；设置 `--pipeline-settings=config/pipeline.json --frame-settings=config/frame_settings.json`；RT scale `--render-scale=0.5`；UI `hbg --scene=<scene.gltf> --frames=3 --screenshot=ui.png`；调试 `--debug-light-data`/`--debug-wireframe --no-shadows`；prepass/debug `--debug-view=depth|depth-pyramid|normal|motion-vectors|light-cluster|directional-shadow-atlas|punctual-shadow-atlas|albedo|roughness`；Sky/IBL `hbg --render-test=<scene.gltf> --sky=<hdri.hdr|exr> --sky-intensity=1 --sky-rotation=0 --frames=3 --screenshot=sky.png`；最终输出 `--exposure-mode=fixed|auto --exposure-compensation=<ev> --tonemap=aces|neutral|none --debug-exposure=<ev>`。
+> 宸ョ▼鏍癸細`E:\Learn\hdrp-bgfx`銆?
+> 鑼冨洿锛歐indows + D3D11/Vulkan銆丗orward + Deferred銆丼SR/SSAO/SSGI/浣撶Н闆俱€乬lTF銆佹殏鏃犵紪杈戝櫒銆?
+> 瀹炵幇鐘舵€侊細M0 瑙?`docs/m0-checklist.md`锛孧1 瑙?`docs/m1-checklist.md`锛孧2/M3 瑙佸搴旀竻鍗曪紝M4.0鈥揗4.3 瑙?`docs/m4-checklist.md`锛汳5.0/M5.1/M5.2/M5.3/M5.4 宸插畬鎴愶紝瑙?`docs/m5-checklist.md`锛汳6.0/M6.1/M6.2/M6.3/M6.4 宸插畬鎴愶紝瑙?`docs/m6-checklist.md`锛汳7.0鈥揗7.8 瀹屾垚骞堕獙鏀讹紙buffer path 榛樿寮€鍚級锛岃 `docs/m7-checklist.md`锛汳8.0/M8.1 宸插畬鎴愩€丮8.2 鏈紑濮嬶紝瑙?`docs/m8-checklist.md`銆?
 
 ---
 
-## 0. 范围锁定与前置结论
+## 鏂囨。缁撴瀯
 
-- 后端：D3D11 + Vulkan（先跑通这两个，D3D12 后置）。
-- 资产：glTF 用 cgltf，贴图用 bimg，运行时调试面板用 ImGui（不算编辑器）。
-- HDRP 的 HLSL 不能直接给 bgfx 用：bgfx 的 shaderc 是 GLSL 风格方言，最终生成各后端二进制。必须把 HDRP 的 SurfaceData/BSDF/LightLoop/Shadow 数学部分重写成 shaderc 方言。
-- 图形阶段不能读 StructuredBuffer，因此 HDRP 的 LightList / ShadowContext / LightData / ProbeData 全部改为 2D/3D Data Texture + `texelFetch`；Compute 内部仍可用 Storage Buffer。
-- bgfx 单队列，HDRP 的 AsyncCompute 相关 FrameSettings 直接置空，不做假异步。
-- 坐标系：右手系 Y-up，逆时针为正面（与 glTF 一致）；投影矩阵按 `bgfx::getCaps()->homogeneousDepth` 生成对应深度范围。
-- 命名空间 `hbg`；C++20；类型 `PascalCase`，函数 `camelCase`，成员 `m_`，常量 `k_`。
-- 资源全部句柄化：`TextureHandle` / `BufferHandle` / `ProgramHandle` / `FrameBufferHandle` 是 `{index, generation}`，禁止在 `gfx` 层之外出现裸 `bgfx::*Handle`。
-- 所有 GPU 常量结构由 IDL 生成；渲染代码里不允许手写 uniform 名字。
-- 失败处理：`HBG_ASSERT`（debug）+ `HBG_FATAL`（log + abort）；shader 编译错误在构建期失败，不允许运行时静默。
-- **源码优先（铁律）**：动手实现任何模块之前，必须先阅读对应 HDRP 源码与 bgfx/bx 源码；计划文档只作索引，冲突时以源码为准。参考位置：
-  - HDRP：`E:\Learn\Graphics\Packages\com.unity.render-pipelines.high-definition\Runtime`
-  - HDRP Core：`E:\Learn\Graphics\Packages\com.unity.render-pipelines.core\Runtime`
-  - bgfx/bx/bimg：本工程构建目录 `build\vs2022\_deps\bgfx-src`
-  - 每个任务在 `docs/m0-checklist.md` 记录实际参考的 `file:line`，实现后回填。
-
-### 0.1 实际依赖
-
-| 依赖 | 版本/方式 |
-|---|---|
-| bgfx.cmake | tag `v1.167.9621-609`（FetchContent） |
-| bgfx | `1.167.9149`，commit `f446c319d65b5e9a4d4070100e3fc571f5b35ea5` |
-| GLFW | `3.4` |
-| doctest | `v2.4.11` |
-| cgltf | `v1.15` |
-| MikkTSpace | commit `3e895b49d05ea07e4c2133156cfa94369e19e409` |
-| nlohmann/json | `v3.11.3` |
-| ImGui | `1.92.8 WIP`，使用 bgfx 源码树 `3rdparty/dear-imgui` |
-| enkiTS | 顺延 M1 |
+- `docs/implementation-plan.md`锛氭€讳綋鏋舵瀯銆佹暟鎹绾︺€佸抚椤哄簭銆佽矾绾垮拰椋庨櫓锛屼笉璁板綍閫愪换鍔￠獙璇佺粏鑺傘€?
+- `docs/m0-checklist.md`锛歁0.1鈥揗0.7 宸ョ▼楠ㄦ灦銆乬fx 灏佽銆両DL銆乬lTF銆丗orward PBR銆佸熀纭€鍏夌収/闃村奖銆佽皟璇曡鏂姐€?
+- `docs/m1-checklist.md`锛歁1.1鈥揗1.10 RenderGraph銆丗rameSettings銆乂iewState銆丏rawList銆丳repass銆佸厜鐓?v1銆侀槾褰?v1銆丼ky/IBL銆佹渶缁堣緭鍑恒€丏ebug锛涘父鐢ㄥ懡浠や篃缁存姢鍦ㄨ繖閲屻€?
+- `docs/m2-checklist.md`锛歁2.0鈥揗2.9 Deferred 鍩虹銆丟Buffer銆丏eferred Lighting銆丆luster銆丼SAO/SSR/SSGI銆丏ecals銆丷eflection Probes銆侀獙鏀躲€?
+- `docs/m3-checklist.md`锛歁3.0鈥揗3.8 鍚庡鐞嗗熀纭€璁炬柦銆丒xposure/Histogram銆乁ber/Color Grading銆丅loom銆乀AA銆丏OF銆丮otion Blur銆丗XAA銆侀獙鏀躲€?
+- `docs/m4-checklist.md`锛歁4.0 Global Volumetric Fog v1銆丮4.1 璐ㄩ噺/浼樺寲銆丮4.2 灞€閮ㄩ浘浣撱€丮4.3 楠屾敹銆?
+- `docs/m5-checklist.md`锛歁5.0 shadow 璁剧疆/atlas/culling/alpha test銆丮5.1 杞槾褰?bias/micro shadow銆丮5.2 contact shadows銆丮5.3 per-light shadow controls/cache銆丮5.4 楠屾敹銆?
+- `docs/m6-checklist.md`锛歁6.0 GPU light-list 鍩虹璁炬柦/screen AABB銆丮6.1 GPU big-tile/FPTL銆丮6.2 GPU cluster銆丮6.3 闆嗘垚/鍥為€€/debug銆丮6.4 楠屾敹锛泇1 涓?texture-backed锛屼笉鍋?GPU shadow indirect銆?
+- `docs/m7-checklist.md`锛歁7.0鈥揗7.8 瀹屾垚锛歜uffer path 榛樿寮€鍚紱indirect/GPU shadow/async 淇濇寔 opt-in銆俛lpha/cache/cascade 缁勫悎鍙屽悗绔?0 diff锛?080p 300 甯?full post 鍙屽悗绔?>60 fps銆?
+- `docs/m8-checklist.md`锛歁8.0/M8.1 宸插畬鎴愶細32/64/128 璁剧疆銆丆PU reference銆佸姩鎬?stride銆乧luster 32/cell 杈圭晫锛汫PU 鎵╁ M8.2 璧枫€?
+- 鍚庣画姣忎釜澶фā鍧楁柊寤虹嫭绔嬫竻鍗曪細`docs/m9-checklist.md`鈥︹€︼紝涓嶆妸鏂版ā鍧楀啓鍥炴棫娓呭崟銆?
 
 ---
 
-## 1. 目录与类清单
+## 褰撳墠杩涘害锛?026-11-13锛?
 
-```text
-hdrp-bgfx/
-├─ CMakeLists.txt  CMakePresets.json
-├─ cmake/                 # Dependencies.cmake
-├─ config/
-│  ├─ uniforms/           # global.idl pass.idl material.idl object.idl prepass.idl
-│  ├─ pipeline.json  frame_settings.json
-├─ docs/
-│  ├─ implementation-plan.md
-│  └─ m0-checklist.md
-├─ src/
-│  ├─ core/               # math/vec/mat/bounds/log/assert/handle/profiler
-│  ├─ gfx/                # device/texture/buffer/uniform/program/framebuffer/encoder/resource_manager
-│  ├─ shader/             # shader_library/shader_key
-│  ├─ render/
-│  │  ├─ graph/           # render_graph
-│  │  ├─ camera/          # view_state/history_buffer/resolution_group
-│  │  ├─ pipeline/        # frame_settings/pipeline_settings
-│  │  ├─ scene/           # render_scene/render_object/light
-│  │  ├─ culling/         # frustum/draw_list/sort_key
-│  │  ├─ material/        # material_system/render_queue/shader_pass
-│  │  ├─ lighting/        # gpu_light_data/light_builder/light_list_builder
-│  │  ├─ shadows/         # shadow_manager
-│  │  ├─ passes/          # forward_renderer/prepass_utils
-│  │  └─ debug/           # debug_display
-│  └─ app/                # application/backend/window/debug_ui/gfx_test/render_test
-├─ shaders/
-│  ├─ common/             # common.sc/light_data.sc
-│  ├─ lighting/           # light_loop.sc/shadows.sc
-│  ├─ material/           # surface_data.sc/lit.sc/normal_buffer.sc
-│  ├─ passes/             # forward/shadowcaster/prepass/motion/depth_pyramid/debug
-│  └─ include/generated/  # IDL 产物
-└─ tests/
-   ├─ app/ asset/ core/ gfx/ render/
-```
+- `M0.1 宸ョ▼楠ㄦ灦涓庣獥鍙锛氬凡瀹屾垚銆侱3D11/Vulkan 鍙屽悗绔紑绐椼€佹竻灞忋€佹墦鍗?caps銆佸搷搴?resize銆?
+- `M0.2 gfx 灏佽`锛氭牳蹇冨畬鎴愩€傚彞鏌勬睜銆乀exture/Buffer/Uniform/Program/FrameBuffer/Encoder/ResourceManager锛涗袱甯у欢杩熼攢姣併€丗BO refCount 澶嶇敤銆乻hutdown 娉勬紡鍛婅銆?
+- `M0.3 IDL / uniform codegen`锛氬畬鎴愩€俙tools/idl_gen.py` 浠?`config/uniforms/*.idl` 鐢熸垚 C++ binder + shader 澹版槑锛沗UniformBlock` 涓婁紶涓?shader 鍙嶅皠鏍￠獙锛汣Make 澧為噺鐢熸垚 + `hbg_idl_check`銆?
+- `M0.4 glTF 璧勪骇灞俙锛氭牳蹇冨畬鎴愩€俢gltf 瑙ｆ瀽缃戞牸/鏉愯川/璐村浘/鑺傜偣/鐩告満/`KHR_lights_punctual`锛孧ikkTSpace 鐢熸垚 tangent锛宍SceneLoader` 杈撳嚭 `RenderScene`锛屾敮鎸?`.hdrp.json` sidecar銆?
+- `M0.5 鍓嶅悜 PBR + Shader 搴揱锛氭牳蹇冨畬鎴愩€俙hbg_shader` 璇诲彇 manifest 鐨?dxbc/spirv 鍙樹綋锛宍MaterialSystem` 涓婁紶 VB/IB/鏉愯川/璐村浘锛宍ForwardRenderer` 鐢诲埌 HDR target锛汳1.9 璧锋渶缁堣緭鍑烘敮鎸佸浐瀹?鑷姩鏇濆厜銆丄CES/Neutral/None 涓?sRGB 缂栫爜锛涙柊澧?`--scene/--render-test/--frames/--screenshot`銆?
+- `M0.6 鍏夌収涓庨槾褰?v0`锛氭牳蹇冨畬鎴愩€俙GpuLightData`锛圧GBA32F 4脳32锛? `LightBuilder` 涓婁紶 1 鏂瑰悜鍏?+ 鏈€澶?31 punctual锛沗ShadowManager` 鏂瑰悜鍏夐槾褰?+ PCF 3脳3锛涙柊澧?`shadowcaster`銆乣light_loop`銆乣shadows`銆乣debug_light_data` shader銆?
+- `M0.7 璋冭瘯涓庨獙鏀惰鏂絗锛氭牳蹇冨畬鎴愩€俙hbg_imgui` + 鑷啓 bgfx backend銆丏ebugUI 闈㈡澘銆丳rofiler銆亀ireframe line pass銆丗1/F11/F12銆乣--debug-wireframe/--no-shadows`銆?
+- `M1.1 RenderGraph`锛氭牳蹇冨畬鎴愩€俵ogical texture/buffer handle銆乺aster/compute pass builder銆乤ttachment/read/write 澹版槑銆佹 pass flood-fill銆乼ransient 姹?FBO 姹犮€乂iewId 鍒嗛厤銆佹牎楠屼笌 diagnostics锛汧orwardRenderer 宸叉媶鎴?Shadow 鈫?Scene Clear 鈫?Prepass/MV/DepthPyramid 鈫?Forward 鈫?Wireframe 鈫?Tonemap/Debug pass銆?
+- `M1.2 FrameSettings`锛氭牳蹇冨畬鎴愩€?28 浣?`BitSet128` + HDRP 鍚?bit 绱㈠紩銆丆amera/Reflection 榛樿鍊笺€丱verrideMask銆丳ipelineSettings 鑳藉姏闂ㄦ帶銆丣SON 瑙ｆ瀽/搴忓垪鍖栥€乣--pipeline-settings/--frame-settings`銆?
+- `M1.3 ViewState`锛氭牳蹇冨畬鎴愩€俲ittered/non-jittered view/proj/VP銆侀€嗙煩闃点€佷笂涓€甯х煩闃点€佺浉鏈轰綅缃€乫rustum planes锛汬alton(2/3) jitter锛沗HistoryBuffer<T>`锛沗ViewResolution` 鍒嗙 render/target 涓?RT scale锛涘叏灞€ CB 鎵╁睍銆?
+- `M1.4 DrawList`锛氭牳蹇冨畬鎴愩€侶DRP queue/pass tag/frustum cull/sort key锛沷paque/transparent/shadow/wireframe 鐙珛鍒楄〃锛沷paque/shadow instancing锛泂ubmesh index range銆?
+- `M1.5 Prepass`锛氭牳蹇冨畬鎴愩€侱epthOnly/DepthForwardOnly opaque 娣卞害+娉曠嚎锛?88 oct + perceptual roughness锛夈€丱bjects/Camera Motion Vectors锛圧G16F锛夈€丷G32F min/max depth pyramid锛坰cratch锛夛紱RenderGraph/FBO 鏀寔 per-attachment mip锛涚浉鏈鸿繍鍔ㄧ煝閲忔敼涓洪噰鏍?depth pyramid锛岄伩鍏?D3D 娣卞害绾圭悊鍚屾椂浣滀负 DSV/SRV锛涙柊澧?`--debug-view` 涓?`--camera-orbit`銆?
+- `M1.6 鍏夌収 v1`锛氭牳蹇冨畬鎴愩€俙LightListBuilder` 鎸?16脳16 FPTL tile 涓?64脳64 big-tile 涓ら樁娈?CPU 鏋勫缓锛沗R32_UINT` 姣?tile count + 鏈€澶?32 涓粷瀵?GpuLight 绱㈠紩锛汱ightLoop 鏂瑰悜鍏夊崟鐙惊鐜€乸unctual 璧?tile list锛宭ist 涓嶅彲鐢ㄦ椂鍥為€€锛汧orwardRenderer 涓婁紶/缁戝畾/鏄惧紡 graph read銆?
+- `M1.7 闃村奖 v1`锛氭牳蹇冨畬鎴愩€傛柟鍚戝厜 4 绾ц仈锛?048 atlas锛?脳1024锛夈€乸oint 6脳256/spot 512 punctual atlas銆乻helf pack銆乣ShadowContext` RGBA32F 8脳32銆佹瘡 request 涓€涓?shadow pass銆乻tage 6/8/9 缁戝畾銆丳CF 3脳3 榛樿 + 5脳5 鍒嗘敮锛沗LightBuilder` 鍥炲～鏂瑰悜鍏?punctual shadowIndex锛沢lTF 鐐瑰厜/鑱氬厜榛樿鍙備笌闃村奖銆?
+- `M1.8 Sky/IBL`锛氭牳蹇冨畬鎴愩€侶DR/EXR equirect + 6:1 cube strip銆佺嫭绔?2048脳1024 sky 涓?1024脳512脳7mip IBL銆丆PU GGX prefilter銆丼H9 ambient锛?脳vec4 packing锛夈€乁E4 analytic EnvBRDF銆乸repass 鍚?fullscreen sky pass銆乻tage 10 鐜閲囨牱銆乣FrameSettings SkyReflection` 闂ㄦ帶銆乣--sky/--sky-intensity/--sky-rotation`銆?
+- `M1.9 鏈€缁堣緭鍑篳锛氭牳蹇冨畬鎴愩€傚浐瀹?EV100 / 鑷姩 4脳4 center-weighted 娴嬪厜銆丠DRP `PhysicalCamera.hlsl` 鏇濆厜鎹㈢畻銆丠DRP `Color.hlsl` ACES approximate / Neutral / None銆乻RGB 杈撳嚭銆乣--debug-exposure` 瑕嗙洊銆丏ebugUI 鏈€缁堣緭鍑洪潰鏉裤€乣FrameSettings` Exposure/Tonemapping 闂ㄦ帶銆?
+- `M1.10 Debug`锛氭牳蹇冨畬鎴愩€?5 涓叏灞忔ā寮忥紱纭欢娣卞害/绾挎€у寲 depth pyramid銆乶ormal銆丠DRP hue-wheel motion銆丆PU 64脳64脳32 LightCluster锛圡2.3锛夈€丼SAO锛圡2.4锛夈€丼SR锛圡2.5锛夈€丼SGI锛圡2.6锛夈€佹柟鍚?punctual shadow atlas銆乷paque material debug 鐨?Albedo/Roughness锛沗DebugUniforms` 32B銆乨ebug-only atlas clear銆乧amera motion 閲囨牱 depth pyramid 淇 D3D DSV/SRV 鍐茬獊銆?
+- `M2.0 Deferred 鍩虹`锛氭牳蹇冨畬鎴愩€俙pipeline.json=both`銆乣--lit-shader-mode/--deferred`銆丗rameSettings 鍒嗘敮銆? RT GBuffer 璧勬簮锛堝鐢?scene depth锛夈€丟Buffer Clear + 4RT/depth FBO銆丏24S8/stencil 鑳藉姏 fallback銆丷enderGraph per-pass viewport銆乨eferred pass 椤哄簭鏃ュ織銆?
+- `M2.1 GBuffer`锛氭牳蹇冨畬鎴愩€侴Buffer clear MRT shader銆?6 鍙樹綋 Lit GBuffer shader銆丩it opaque GBuffer draw list銆乨eferred depth-only prepass銆乨epth equal/no write + stencil bit0銆丷T2 normal debug銆?RT 鍙屽悗绔覆鏌擄紱琛ラ浂 tangent 淇濇姢浠ュ惎鐢?derivative fallback锛涗慨姝?888 normal buffer 瑙ｇ爜楂樹綆 4bit 椤哄簭銆?
+- `M2.2 Deferred Lighting`锛氭牳蹇冨畬鎴愩€俧ullscreen deferred_lighting shader銆佺嫭绔?GBuffer decode/direct lighting 澶淬€乻tencil bit0 鍏ㄥ睆鍏夌収銆佹柟鍚戝厜+point/spot+闃村奖銆丼H9/IBL銆乫orward-only opaque pass銆乼ransparent 淇濇寔 M1锛汳2.2 鍚庣殑鏅€?deferred 鐢婚潰宸插畬鏁村厜鐓с€?
+- `M2.3 Cluster LightList`锛氭牳蹇冨畬鎴愩€侰PU 64脳64脳32 log-depth cluster銆乣R32_UINT` count+32 绱㈠紩 atlas銆乣u_cluster_params/u_cluster_depthParams`銆乼ransparent/forward-only 璧?cluster銆乨eferred/forward opaque 缁х画 FPTL銆乣--no-light-cluster` 鍥為€€銆乨ebug slice锛?2 legacy FPTL / -1 depth / 0..31 fixed锛夈€?
+- `M2.4 SSAO`锛氭牳蹇冨畬鎴愩€傚崐鍒嗚鲸鐜?8脳6 GTAO-lite锛坣ormal-plane occupancy锛夈€?脳5 depth/normal bilateral 鍘诲櫔銆佸叏鍒嗚鲸鐜?2脳2 bilateral upsample锛汥eferred Lighting stage 11 鍙箻 ambient/IBL锛沗supportSSAO`/`FrameSettings::SSAO`/`--ssao`/`--no-ssao`銆?脳1 鐧?fallback銆乣--debug-view=ssao`銆?
+- `M2.5 SSR`锛氭牳蹇冨畬鎴愩€傚叏鍒嗚鲸鐜?`ssr_trace -> ssr_composite`锛汫Buffer/depthPyramid 閲嶅缓銆?2 姝?world-distance march + crossing/thickness銆乫resnel/roughness/edge 鏉冮噸銆乤dditive 鍒?sceneColor锛涘懡涓澶栧姞灞忓箷鍙嶅皠锛宮iss 淇濇寔 deferred IBL锛沗supportSSR`/`FrameSettings::SSR`/`--ssr`/`--no-ssr`銆乣--debug-view=ssr`銆丏3D11/Vulkan 楠岃瘉銆?
+- `M2.6 SSGI`锛氭牳蹇冨畬鎴愩€傚崐鍒嗚鲸鐜?32 rays 脳 8 steps銆佸綋鍓嶅抚 sceneColor/depthPyramid/GBuffer2锛沗ssgi_trace -> ssgi_denoise -> ssgi_composite`锛?脳9 depth-aware denoise + 9脳9 upsample锛宎dditive stencil 鍚堟垚锛汼H/ambient fallback锛宍ambientBias=0.5` 閮ㄥ垎鎵ｉ櫎宸叉湁 ambient锛沗supportSSGI`/`FrameSettings::SSGI`/`--ssgi`/`--no-ssgi`銆乣--debug-view=ssgi`銆丏3D11/Vulkan 楠岃瘉銆?
+- `M2.7 Decals`锛氭牳蹇冨畬鎴愩€?RT DBuffer锛坅lbedo/encoded normal/packed MAOS锛夈€乻idecar 闈欐€?box decal銆佸叏灞?box-clip draw銆乤ngle fade銆丟Buffer `GBufferDecals` 鍙樹綋鍚堟垚锛沗supportDecals`/`FrameSettings::Decals`/`--decals`/`--no-decals`銆乣--debug-view=decals`銆丏3D11/Vulkan 楠岃瘉銆?
+- `M2.8 Reflection Probes`锛氭牳蹇冨畬鎴愩€俿idecar 鏈€澶?4 涓潤鎬?equirect probe锛孋PU 閫夋嫨鏈€杩?2 涓紱`worldToProbe` box projection銆乥lendDistance銆乸er-probe intensity/maxMip銆乻tage 14/15 绾圭悊銆乻ky fallback锛沗FrameSettings::ReflectionProbe`/`--reflection-probes`/`--no-reflection-probes`锛沠orward/deferred 鍏辩敤锛涗慨姝?forward instanced 鐨?environment/probe 缁戝畾銆侱3D11/Vulkan 楠岃瘉銆?
+- `M2.9 楠屾敹/鎬ц兘`锛氬畬鎴愩€俤eferred GBuffer debug 鏂板 metallic/AO/emissive锛汚lbedo/Roughness 鏀硅 GBuffer锛屼笉鍐?material 閲嶇粯锛涗慨姝?normal debug V 缈昏浆锛沗ForwardRenderer::FrameDiagnostics` + deferred MRT/stencil 鏃ュ織锛沗render-test` 杈撳嚭 avg frame/CPU/GPU/draw/passes锛?080p D3D11/VK base 145.9/348.5fps銆乫ull-feature 115.5/115.3fps锛涢粯璁?`frame_settings.json` 鍒?deferred銆?
+ - `M3.0 PostProcess 鍩虹`锛氬畬鎴愩€俙PostProcessChain`/`PostProcessProfile`/`PostProcessHistoryState` 鎺ュ叆锛沗config/postprocess.json` effects-off baseline + `--postprocess-profile` + TAA/FXAA/Bloom/DOF/Motion Blur CLI overrides锛?脳1 exposure ping/pong锛沗PostProcessUniforms` 澧炲姞 frame/screen/histogram锛沗TextureDesc::computeWrite`銆乣Encoder::setImage`銆乧ompute program 鍔犺浇銆乣PostProcessExposure` 1脳1 compute锛沗Final` LDR鈫抯RGB shader 鍙姞杞戒絾涓嶉粯璁よ皟鐢紱effects off 鍦?D3D11/Vulkan 涓?M2.9 `m28_blend_view` 鎴浘閫愬儚绱犱竴鑷达紱`--gfx-test` 鍙屽悗绔?compute dispatch 閫氳繃銆?
+- `M3.1 楂樼骇 Exposure`锛氬畬鎴愩€侳ixed/Automatic/Histogram锛?56脳256 log-luminance prepass 鈫?32脳32 鈫?1脳1銆?28-bin R32U histogram + `imageAtomicAdd`銆?0鈥?0% percentile銆佹椂闂撮€傚簲銆?脳1 exposure ping-pong銆乣Apply Exposure` HDR pass锛汧ixed 淇濇寔鏃?Tonemap 涓斾笉澧炲姞 pass锛沗--exposure-mode=fixed|auto|histogram`銆丏ebugUI銆乣--debug-view=exposure`銆侱3D11/VK histogram 杈撳嚭 PSNR 70.4 dB銆丄utomatic 69.6 dB锛汧ixed D3D11 閫愬儚绱犱竴鑷达紱RelWithDebInfo 1080p 300 甯?histogram D3D11 97.2 fps / Vulkan 201.4 fps銆丄utomatic D3D11 121.2 fps / Vulkan 257.2 fps銆俢ompute sampler stage 0 涓嶈兘涓庤緭鍑?image stage 0 鍚岀敤锛岃緭鍑?image 鐢?stage 1/2锛涙暟鍊?texture readback 浠嶅彈 vendored bgfx 闄愬埗锛屼互 D3D/VK debug 鍥鹃€愬儚绱犱竴鑷撮獙鏀躲€?
+- `M3.2 Uber/Color Grading`锛氬畬鎴愩€俙ColorGradingSettings`/`VignetteSettings`銆丆PU 64鲁 LUT -> 64脳4096 RGBA16F strip锛?,097,152 B锛夈€乄hite Balance/Contrast/Color Filter/Split Toning/Channel Mixer/SMH/LGG/Hue/Saturation銆乁ber HDR pass銆丗inal sRGB銆乣--color-grading`銆丏ebugUI銆乣--debug-view=color-grading`銆侺UT 鍙樻洿鍙笂浼犱竴娆★紱neutral fixed ACES 涓庝慨姝ｅ悗鐨?M2.9 Tonemap PSNR 60.36 dB锛孌3D/VK Uber 64.28 dB锛?080p 300 甯?grading D3D11 107.3 fps / Vulkan 183.1 fps銆備慨姝ｅ叏灞?Tonemap/ApplyExposure source 閲囨牱 Y 缈昏浆锛屾棫 M2.9 鎴浘绛変环浜庢棆杞?180掳銆?
+- `M3.3 Bloom`锛氬畬鎴愩€侶DRP threshold锛坓amma 2.2 + soft knee锛夈€乭alf/quarter base銆佹渶澶?8 mip transient chain銆乵ip0 9-tap separable blur銆?脳3 tent/bicubic upsample + scatter銆乴uminance-normalized tint銆乁ber composite锛坄2^intensity-1`锛夛紱`--bloom` 鍙傛暟銆丏ebugUI銆乣--debug-view=bloom`銆侭loom off 涓?M3.2 閫愬儚绱犱竴鑷达紱D3D/VK bloom-on 64.50 dB銆乨ebug 73.96 dB锛?080p 300 甯?D3D11 97.9 fps / Vulkan 297.0 fps銆?
+- `M3.4 TAA`锛氬畬鎴愩€侶DRP jitter/Halton 搴忓垪銆佸弻缂撳啿 `RGBA16F` history銆乵otion reproject銆乭istory bilinear銆?脳3 min/max clamp銆乨epth/luma/motion rejection銆佸彲閫?post-sharpen锛汿AA 鍦?Apply Exposure 鍚庛€丅loom/DOF 鍓嶏紝TAA off 涓?M3.3 閫愬儚绱犱竴鑷淬€侱3D/VK TAA 64.22 dB銆乀AA history debug 65.84 dB銆?080p 300 甯?D3D11 96.2 fps / Vulkan 280.8 fps锛涗笉鍋?TAAU/閫忔槑 MV/Blackman-Harris銆?
+- `M3.5 Depth of Field`锛氬畬鎴愩€侻anual ranges near/far focus銆乻igned CoC銆乭alf/quarter/full CoC+gather銆?/12-tap depth-aware gather銆乫ull-res sharp combine銆乵ax blur銆乣--dof-*`銆丏ebugUI銆乣--debug-view=dof`锛汥OF off 涓?M3.4 閫愬儚绱犱竴鑷淬€侱3D/VK DOF 68.43 dB銆乫arfocus 66.55 dB銆丠Q 68.59 dB銆丆oC debug 閫愬儚绱犱竴鑷淬€乀AA+DOF+Bloom 68.53 dB锛?080p 300 甯?DOF D3D11 162.7 fps / Vulkan 233.7 fps锛宖ull stack 119.5 / 260.5 fps锛涗笉鍋氱墿鐞嗙浉鏈?tile-based/CoC reprojection銆?
+- `M3.6 Motion Blur`锛氬畬鎴愩€侶DRP 璇箟 intensity/max velocity 200 px/min velocity 2 px/cameraMotionBlur/sampleCount 8/depth extent 1锛涘崟 raster pass 3脳3 local max 杩戜技 tile neighborhood锛?/16 taps銆乨epth compare銆乼op/back layer blend銆乧amera MV 鍙€夋墸闄わ紱`--motion-blur-*`銆丏ebugUI銆俹ff 0 diff銆侀潤鎬?0 diff銆丏3D/VK **58.39 dB**銆乀AA+DOF+MB+Bloom **63.25 dB**锛?080p 300 甯?MB D3D11 281.6 fps / Vulkan 353.0 fps锛宖ull stack 202.0 / 270.3 fps锛涗笉鍋?tile min/max/scattering/merge銆乼ransparent MV銆乻pecial camera clamp銆?
+- `M3.7 FXAA + Final`锛氬畬鎴愩€俙AntialiasingMode`/`resolveAntialiasingMode` 鍥哄畾 TAA 浼樺厛锛沗final.fs.sc` 缂栬瘧 FXAA off/FXAA 涓や釜鍙樹綋锛孎XAA port 鑷?HDRP `FXAA.hlsl` 闈?HDR 鍒嗘敮锛坙uma edge銆乨irReduce/span clamp銆?-tap blend锛夛紝鍦?sRGB 鍓嶆墽琛岋紱FXAA 寮€鍚椂寮哄埗 Uber Post 浜х敓 LDR linear锛孎inalPass 缁熶竴 sRGB銆俙--aa=fxaa`/`--fxaa`/`--no-fxaa`銆乸rofile銆丏ebugUI銆乣--debug-view=fxaa`銆乣supportFXAA=true`銆俹ff 涓?M3.6 閫愬儚绱犱竴鑷达紱D3D/VK FXAA **64.27 dB**銆丗XAA+DOF+Bloom+MB **66.55 dB**锛?080p 300 甯?FXAA D3D11 288.9 fps / Vulkan 251.0 fps锛宖ull stack 219.1 / 204.6 fps锛涗笉鍋?SMAA/TAAU銆乤lpha FXAA銆丠DR output encoding銆?
+- `M3.8 M3 楠屾敹`锛氬畬鎴愩€俙render performance` 澧炲姞 `postprocess_ms`锛圕PU graph-record wall锛宎vg锛夈€乪ffect flags锛坋xposure/uber/bloom/taa/dof/motion_blur/fxaa锛夊拰鏃㈡湁 `post_passes`銆乣gpu_frame_ms`锛汥3D11/Vulkan 鍚?25 寮犳埅鍥撅紙exposure/bloom/grading/TAA/DOF/MB/FXAA/all/debug锛夈€俥ffects off D3D/VK **64.22 dB**锛宍m3_base_off_d3d.png` 涓?M3.7 鍩虹嚎 **0 diff**锛沠ull 1080p 300 甯ч噸澶?3 娆?**195.7鈥?12.3 fps (D3D11) / 204.4鈥?15.4 fps (Vulkan)**锛宖orward **222.2 / 199.1 fps**锛宲ost wall 绾?**0.33鈥?.39 ms**锛?.5 render scale 涓?TAA **960脳540**銆乭alf DOF **480脳270**銆乫inal **1920脳1080**锛孌3D/VK **105.66 dB**銆俁enderDoc/F11 浠嶆湭瀹夎锛屼繚鐣欏弻鍚庣鎴浘 + bgfx stats + graph diagnostics 楠屾敹銆?
+- `M4.0 Global Volumetric Fog v1`锛氬畬鎴愩€俙VolumetricFogSettings`/JSON profile/`--fog-profile`銆乣fog.idl`銆乣volumetric_fog.fs.sc`锛涘崟 pass screen-space 16-step height fog ray march锛孒DRP `ComputeHeightFogMultiplier`/Cornette-Shanks 鐩镐綅鍜?primary directional shadow锛涘湪 scene color 鍚庛€乸ostprocess 鍓嶅悎鎴愶紝`FrameSettings::AtmosphericScattering/Volumetrics` + `supportVolumetrics` 闂ㄦ帶銆俧og off 涓?M3.8 鍩虹嚎 D3D11 **96.87 dB**/Vulkan **0 diff**锛沠og on 1280脳720 D3D/VK **64.36 dB**锛宖ull post 1080p **69.09 dB**锛宖orward D3D/VK **64.36 dB**锛?.5 scale **64.35 dB**锛?080p 300 甯?fog-only D3D11/Vulkan **203.5/199.6 fps**锛堟棤 fog **264.5/320.0**锛夛紝full post+fog **106.8鈥?40.2/142.3鈥?60.0 fps**銆傝竟鐣岋細涓嶆槸 HDRP 3D VBuffer锛屾棤 temporal/浣庡垎杈ㄧ巼/灞€閮ㄩ浘/鐐瑰厜浣撶Н鍏?debug view銆傝瑙?[m4-checklist.md](m4-checklist.md)銆?
+- `M4.1 Fog 浣庡垎杈ㄧ巼/Temporal/Punctual`锛氬畬鎴愩€俙resolutionScale=0.5` 鐨?low-res raymarch 杈撳嚭 `(inScattering.rgb, transmittance)`锛宍volumetric_fog_composite` 鍏ㄥ垎杈ㄧ巼 4-tap depth-aware upsample锛沴ow-res history 鍙岀紦鍐?+ motion reprojection + depth rejection + 鍙€?step jitter锛沺oint/spot 璧?cluster/tile/FPTL fallback銆佸彲閫?punctual shadow锛岄粯璁ゆ渶澶?8 鐏€倀emporal off 闈欐€?no-jitter 涓?temporal on **0 diff**锛沶o-point fog 瀵?M4.0 scale 1.0 **66.39 dB**銆乻cale 0.5 **65.59 dB**锛汥3D/VK no temporal **64.40 dB**銆乼emporal **62.10 dB**锛宖ull post **66.32 dB**锛?080p 300 甯?fog-only D3D11/Vulkan **170.0/189.5 fps**锛堟棤 fog **232.7/224.0**锛夛紝full post+fog **154.6/156.4 fps**锛宲ost wall **0.381/0.343 ms**銆傝竟鐣岋細2D screen-space + 2D history锛屼笉鏄?HDRP 3D VBuffer锛沺oint/spot 鏄€?step 杩戜技锛屼笉鍚?area/box light銆乴ocal fog/VFX/clouds銆傝瑙?[m4-checklist.md](m4-checklist.md)銆?
+- `M4.2 Local fog volumes`锛氬畬鎴愩€俙LocalFogVolume` sidecar锛坆ox/sphere銆丱BB/妞悆 falloff銆丠DRP face/distance fade銆乴inear/exponential銆?D 鎶曞奖 density mask锛夛紝`fog.idl` 8 缁?local volume + 4 mask 妲斤紝fog raymarch 鍚堝苟 local extinction/scattering锛沗--fog-local-volumes`/`--no-fog-local-volumes`銆乣fog_local`/`fog_local_masks`銆侻4.1 no-local regression **94.77 dB**锛沴ocal box D3D/VK **82.34 dB**銆乻phere **82.33 dB**銆乵ask on/off **47.54 dB**銆乼emporal **62.71 dB**銆乫ull post **64.91 dB**锛?080p 300 甯?fog-only local D3D/VK **215.3/206.7 fps**锛堝悓鍦烘櫙 no-local **213.6/208.8**锛夛紝full post **179.8/170.4 fps**锛宲ost wall **0.337/0.333 ms**銆傝竟鐣岋細闈欐€?sidecar銆?D mask 涓嶆槸 Texture3D銆佸彧鍋?additive銆佹棤 VBuffer/voxelization銆傝瑙?[m4-checklist.md](m4-checklist.md)銆?
+- `M4.3 M4 楠屾敹`锛氬畬鎴愩€傛渶缁?D3D11/Vulkan 鐭╅樀锛歠og off 涓?M3.8 鍙屽悗绔?**0 diff**锛孧4.1 no-local 鍥炲綊 D3D **96.21 dB**/VK **0 diff**锛沢lobal temporal **64.41 dB**銆乴ocal box **62.72 dB**銆乻phere **62.71 dB**銆乵ask on/off **48.76 dB**銆乫orward local **62.74 dB**銆乫ull post+local **64.69 dB**銆乸oint/spot **84.44/96.75 dB**銆乼ransparent **93.46 dB**锛沗--debug-view=normal` fog on/off **0 diff**銆?080p 300 甯?full post+local 3 娆?**153.1鈥?71.8 / 156.3鈥?76.2 fps**锛宲ost wall **0.367鈥?.394 / 0.333鈥?.371 ms**锛沠og-only local **177.5/200.7 fps**銆俙--fog-steps` 瀵归綈 sanitize 涓?**4..64**銆傛祴璇?**177/177锛?8,104 assertions**銆傝瑙?[m4-checklist.md](m4-checklist.md)銆?
+- `M5.0 Shadow settings/atlas/culling/alpha test`锛氬畬鎴愩€傛柊澧?`ShadowSettings`/`config/shadows.json`銆乣--shadow-*` CLI锛沗GpuShadowContext` 10 texels銆乧ontext 64 琛岋紱cascade 1鈥?銆乨irectional/point/spot resolution銆乤tlas 1024/2048/4096銆?4 requests锛沗DrawList::buildCulled` 鍋?per-request frustum cull 骞舵毚闇?`shadow_drawn/shadow_culled`锛泂hadow caster 鎺?alpha mask material variant銆乥ase color texture 鍜?cutoff锛沗pcf7x7/pcss` 鍦?M5.0 鍏堝洖閫€ 5脳5銆傞獙璇侊細**184 cases / 18,212 assertions**锛泂hadow off D3D/VK **109.54 dB**锛沜ascade2/1024 atlas D3D/VK **109.54 dB**锛沜ulling 鍓嶅悗 **0 diff**锛沜utout cube shadow atlas 鏈夐晜绌恒€侶DRP `useScreenSpaceShadows` 鏄?ray tracing only锛孧5 涓嶄吉瑁?DXR銆傝瑙?[m5-checklist.md](m5-checklist.md)銆?
 
-核心映射：
-
-| 本工程 | HDRP |
-|---|---|
-| `RenderGraph` | RenderGraph |
-| `ViewState` | HDCamera / ViewConstants |
-| `DrawList` | RendererList |
-| `LightListBuilder` | BuildGPULightList |
-| `ShadowManager` | HDShadowManager / HDShadowAtlas |
-| `MaterialSystem` | Material + shader 库 |
-| `PostProcessChain` | RenderPostProcess |
+- `M5.1 Soft shadows/bias/micro shadows`锛氬畬鎴愩€俙--shadow-quality`/filter mode 0鈥?锛汬DRP tent PCF 3脳3/5脳5/7脳7锛?/9/16 bilinear taps锛変笌 Fibonacci-disk PCSS锛堥粯璁?blocker/filter 16/24锛宮inFilterSize 0.01锛夛紱point depth blocker sampler 鍦?forward/deferred stage 12/13锛宖og 鍥為€€ tent锛沶ormal bias 浣跨敤 world texel + perspective 璺濈锛宻lope bias 鍐?shadow caster view depth bias锛宻hadowNearPlane 杩涘叆 point/spot锛沗cascadeFade` 鍦ㄦ渶澶ц窛绂诲墠娣″嚭锛沝irectional micro shadow 閫氳繃 `shadowParams.y` 鎺ュ叆 forward/deferred锛岄粯璁ゅ叧銆傞獙璇侊細**192 cases / 18,416 assertions**锛沵edium D3D/VK **112.55 dB**锛孭CSS **74.58 dB**锛宻pot PCSS **0 diff**锛宲oint PCSS **61.41 dB**锛宒eferred PCSS D3D/VK **74.53 dB**锛宮icro helmet on/off **41.31 dB**锛汥ebug 1080p 300 甯?medium D3D/VK **79.3/70.8 fps**銆乭igh **63.2/53.3 fps**锛汻elWithDebInfo 鍚屽満鏅?medium **96.0/81.0 fps**銆乭igh **83.9/128.5 fps**銆傝瑙?[m5-checklist.md](m5-checklist.md)銆?
+- `M5.2 Contact shadows`锛氬畬鎴愩€傛柊澧?`ContactShadowSettings`/`--contact-shadows`/`--contact-shadow-*`锛沠orward 杈撳嚭 stage 11 RGBA8 contact texture锛宒eferred 鍐?GBuffer1.b/.a锛宧alf-res 2x2 灞曞紑锛沜ompute 浠?full-res depth 閲嶅缓 world position锛屼笘鐣岀┖闂村帤搴﹀垽瀹氾紝璺宠繃鍓嶄笁涓?step锛孖GN dither銆佽窛绂?fade銆佸睆骞?vignette锛沗GpuLightData.shadowFlags.z` 瀛?8-bit contact mask锛坉irectional bit0锛宲unctual bit1..7锛夛紝`hbgContactShadowVisibility` 鍙箻鐩存帴鍏夛紱閫忔槑鐗╀欢绂佺敤銆傞獙璇侊細**192 cases / 18,416 assertions**锛汥3D/VK full **88.43 dB**锛? pixel max21锛夛紝half 閫愬儚绱犱竴鑷达紝forward half **112.55 dB**锛沜ontact on/off **45.63 dB**锛宖ull/half **46.38 dB**锛?080p RelWithDebInfo full10 **190.0鈥?53.2 / 211.2鈥?85.0 fps**锛圖3D/VK 澶氭鍗曟娴嬮噺锛沷ff 182.4銆乭alf 186.9銆? samples 198.7銆?6 samples 113.7 fps锛夈€傝瑙?[m5-checklist.md](m5-checklist.md)銆?
+- `M5.3 Per-light controls/cached punctual shadows`锛氬畬鎴愩€俙LightShadowSettings` + sidecar `lights[].shadow`锛坉immer/fadeDistance/nearPlane/resolution/tint/penumbraTint/updateMode/contactShadows/softness/samples锛夛紱`GpuLightData` 鎵╁埌 6 texels锛宍light_loop`/`direct_lighting` 搴旂敤 dimmer + HDRP `ComputeShadowColor`锛宑ontact mask 缁х画鍦?texel3.z锛沺oint/spot atlas viewport銆乶ear plane銆丳CSS samples 鏀寔 per-light锛?0%鈥?00% fadeDistance 绾挎€ц“鍑忓苟鍓旈櫎瓒呰窛 request锛沜ached punctual v1 浣跨敤鐙珛 cached atlas銆佸唴瀹?hash 澶辨晥銆乧ached request 涓嶉噸缁樹絾淇濈暀绌?view 浠ヤ繚鎸?bgfx depth texture 鐘舵€侊紝`shadow_cache/shadow_cached` 璇婃柇锛宒ebug punctual atlas 鑷姩鎶戝埗 cache銆傞獙璇侊細**199 cases / 18,574 assertions**锛汥3D/VK cached vs every-frame 闈欐€?**0 diff**锛孌3D/VK per-light sidecar **103.52 dB**锛宻idecar 鐩稿鍩虹嚎 **39.63 dB**锛?080p 300 甯?D3D cache **243.1 vs 173.9 fps**锛坉raw 54 vs 60锛宻hadow_drawn 8 vs 14锛夛紝Vulkan 鍗曟 **292.0鈥?34.6 vs 348.9 fps**锛堟尝鍔ㄥぇ锛孧5.4 澶嶆祴锛夈€傝瑙?[m5-checklist.md](m5-checklist.md)銆?
+- `M5.4 M5 楠屾敹`锛氬畬鎴愩€傛柊澧?`DebugDisplayMode::ShadowCascade` / `ShadowFilter` 涓?`--debug-view=shadow-cascade|shadow-filter`锛圚DRP cascade 鑹层€佹柟鍚戝厜 filtered visibility锛夛紱`--no-shadows` 鏃?shadow/contact pass锛坧asses 30锛宻hadow on 40锛宍shadow_drawn=0`銆乣contact=false`锛夛紝D3D/VK **64.24 dB**锛坢ax 4锛夈€侻4.3 鏈€缁堝浘甯﹂槾褰憋紝鏃犲彲鐢?shadow-off 0-diff 鍙傝€冿紝鏈吉閫犺鎸囨爣銆?280脳720锛歠ilter D3D/VK max 4鈥?锛孭CSS vs medium **51.72 dB**锛沜ontact full D3D/VK **56.42 dB**锛坢ax 13锛夛紝full vs off **52.05 dB**锛沘lphaMask/opaque **21.46 dB**锛宎lpha blend 涓嶆姇褰憋紱cache on/off 鍙屽悗绔?**0 diff**锛沠orward/deferred **49.97 dB**锛坈ontact 璺緞锛夈€?080p 300 甯?full post **180.5鈥?42.1/218.3鈥?88.5 fps**锛圖3D/VK锛?4 post passes锛夛紝shadow-only **205.3/396.3 fps**锛宑ache off鈫抩n D3D **268.2鈫?88.3/282.3**銆乂K **345.3鈫?24.7/343.4 fps**銆傞棬绂?**199/18,580**銆乧test 2/2銆佸弻鍚庣 gfx銆乨ocs/diff銆傝瑙?[m5-checklist.md](m5-checklist.md)銆?
+- 褰撳墠楠岃瘉锛歚ctest` 203 涓敤渚嬨€?9,713 assertions + `hbg_idl_check` 閫氳繃锛圡1 鍩虹嚎 86/15842锛夛紱鍙屽悗绔?`--gfx-test`锛汳2.0/M2.1 D3D11/Vulkan deferred 2 甯с€?RT GBuffer normal/normal-map/double-sided銆乤lpha 鍗婅鍓€乣--render-scale=0.5`锛?40脳360 GBuffer / 1280脳720 presentation锛夈€丏32F fallback锛汳2.2 forward/deferred parity锛氬熀纭€鐞?67.39 dB銆佸鍏夋簮+闃村奖 58.46 dB銆乁ffizi+IBL 64.00 dB銆乶ormal-map 67.34 dB銆?.5 scale 59.46 dB銆乽nlit pair 58.77 dB锛汥3D/Vulkan deferred light scene 92.38 dB銆乻ky 57.72 dB锛汳2.3 1080p cluster `30脳17脳32` / `990脳544` / 2,154,240 B锛泃ransparent scene cluster vs FPTL 涓ゅ悗绔€愬儚绱犱竴鑷达紝debug slice D3D11/Vulkan 閫愬儚绱犱竴鑷达紝闅忔満 16 鐏?FPTL union/depth range 鍗曟祴閫氳繃锛汳2.4 1080p AO `960脳540 trace + 1920脳1080 upsample`锛宐oxes scene AO debug D3D/Vulkan 91.34 dB銆丄O on/off 宸€?98.08 dB锛?40脳360 graph 30锛堝紑锛?27锛堝叧锛夛紝`--ssao`/`--no-ssao` 涓?`--debug-view=ssao` 楠岃瘉锛汳2.5 Uffizi 閲戝睘鍦烘櫙 SSR on/off 3.282 RMSE / 37.81 dB銆丏3D/Vulkan debug 90.24 dB銆乷n 鍥?D3D/VK 58.39 dB锛宺oughness 0.65 涓?unlit 鍦烘櫙 on/off 閫愬儚绱犱竴鑷达紝graph 43锛堝紑锛?41锛堝叧锛夛紝`--ssr`/`--no-ssr` 涓?`--debug-view=ssr` 楠岃瘉锛汳2.6 corner 鍦烘櫙 SSGI on/off 0.06597 RMSE / 23.61 dB锛孌3D/VK on 鍥?69.59 dB銆乨ebug 69.46 dB銆乷ff 102.13 dB锛実raph 42锛堝紑锛?39锛堝叧锛夛紝SSR+SSGI 44锛宖orward 37锛坥n/off 閫愬儚绱犱竴鑷达級锛?080p trace 960脳540 / gpuFrame=5锛宍--ssgi`/`--no-ssgi` 涓?`--debug-view=ssgi` 楠岃瘉锛汳2.7 3 涓?box decal 鐨?DBuffer 3RT锛歰n/off 0.053227 RMSE / 25.48 dB锛孌3D/VK on 101.09 dB銆乷ff 102.13 dB銆乨ebug 閫愬儚绱犱竴鑷达紝graph 43锛堝紑锛?39锛堝叧锛夛紝鍗曚釜 decal 41锛宖orward on/off 37 閫愬儚绱犱竴鑷达紝1280脳720 DBuffer 11,059,200 B銆?080p 24,883,200 B / gpuFrame=5锛宍--decals`/`--no-decals` 涓?`--debug-view=decals` 楠岃瘉锛汳2.8 闈欐€?probe锛氬崟 probe on/off 0.315103 RMSE / 10.03 dB锛孌3D/VK on 64.17 dB銆乷ff 61.70 dB锛屽弻 probe blend 64.22 dB銆乺otation 64.21 dB锛宖orward/deferred on 56.52 dB銆乷ff 48.21 dB锛宍--no-reflection-probes` 涓庢棤 probe sidecar 閫愬儚绱犱竴鑷达紝5 probe 鍛婅骞跺彇鍓?4锛?080p graph 40/40锛汳2.9 deferred base D3D/VK 64.2224 dB銆乫orward D3D/VK 64.2174 dB銆乫orward/deferred 56.7363 dB銆佸叏鐗规€?D3D/VK 69.6591 dB锛汫Buffer debug albedo/normal 閫愬儚绱犱竴鑷达紝roughness/metallic/AO/emissive D3D/VK 49.79/49.80/39.56/76.16 dB锛沠eature-off 涓?forward feature flags 閫愬儚绱犱竴鑷达紱render-scale 0.5 涓?960脳540 GBuffer / 1920脳1080 presentation锛?080p D3D11 deferred/forward 145.9/140.5fps锛宖ull-feature 115.5fps锛沄ulkan 348.5/323.5fps锛宖ull-feature 115.3fps锛汥amagedHelmet 鏍囧噯/prepass銆侀噸澶?helmet instancing銆乻hadow scene銆乸oint/spot LightList 涓庨槾褰便€侀€忔槑鍦烘櫙銆両mGui/debug light-data 鎴浘锛泂hadow scene graph `37/37`锛宲oint `33/33`锛宻pot `28/28`锛汳1.8 鍙屽悗绔?sky graph `28/28`锛孶ffizi/DefaultHDRI 澶╃┖銆侀噾灞炲弽灏勩€丼kyReflection 寮€鍏筹紱M1.9 鍥哄畾/鑷姩鏇濆厜銆丄CES/Neutral銆丏3D11/Vulkan 涓€鑷存€э紱M1.10 depth/normal/motion/cluster/鍙?atlas/albedo/roughness/SSAO 鍙屽悗绔埅鍥撅紝shadow atlas debug graph `38/38`銆乵aterial `27/27`锛汼ponza 103 draw items / 27,013,502 triangles锛堟湰鍦拌创鍥剧己澶憋級銆?
+- 閬楃暀楠屾敹锛歛lphaMask 澶栭儴鍦烘櫙銆並hronos 鍙傝€冭瑙夊榻愩€乻ampler wrap/鍘嬬缉绾圭悊銆乻hadow 瑙嗚缁嗗寲锛汻enderDoc 鎶撳抚闇€瀹夎 RenderDoc 鍚庤ˉ銆侻1.5 杈圭晫锛氶€忔槑鐗╀綋 MV銆乵oving object prevWorld authoring 鏈帴锛汿AA/motion blur 宸插湪 M3.4/M3.6 鎺ュ叆锛涙繁搴﹂噾瀛楀涓?RG32F min/max + scratch銆侻1.6 杈圭晫锛歀ightList 涓?CPU 灞忓箷绌洪棿 AABB v1锛屼笉鏄?HDRP GPU compute/cluster锛涙棤 depth fine pruning/per-voxel clusters/light layers/categories/probes/decals銆侻1.7 杈圭晫锛歁5.0 宸茶ˉ鍙厤缃?atlas/cascade/resolution銆乸er-request frustum cull 鍜?alphaMask shadow锛涗粛鏃?shadow cache銆乻hadow mask/screen-space/contact shadow锛汳5.1 宸叉帴 tent PCF/PCSS銆乥ias銆乧ascade fade 鍜?directional micro shadow锛涗粛鏃?EVSM/VSM 鍜?volume 閰嶇疆銆侻1.8 杈圭晫锛欼BL 涓?1024脳512 equirect 7 mips銆乻ky 2048脳1024 raw锛孋PU GGX 32 samples/mip锛涙棤 cubemap BSDF LUT銆佸弽灏勬帰閽?SSR/SSGI銆佸姩鎬佸ぉ绌?cloud/backplate/distortion锛汼H9 闈欐€侊紝SkyReflection 鍙叧 specular銆侻1.9 杈圭晫锛氳嚜鍔ㄦ洕鍏変负鏈€缁?pass 鍐?4脳4 center-weighted 鐬椂娴嬪厜锛屼笉鏄?HDRP GPU histogram/adaptation锛汳1.9 鏃舵棤 Bloom/ColorGrading/鑷畾涔?LUT锛孧3.2 宸茶ˉ ColorGrading LUT锛汚CES 涓?HDRP approximate銆佹棤 HDR 杈撳嚭銆侻1.10 杈圭晫锛歀ightCluster 鍦?M2.3 鍗囩骇涓?CPU 64脳64脳32 cluster锛坄-2` 淇濈暀 16脳16 FPTL legacy锛夛紝涓嶆槸 HDRP ray cluster锛泂hadow atlas 涓?debug-only clear + raw depth 瀵规瘮搴﹁鍥撅紱Material debug 浠?opaque/depth prepass锛汳otion 鏃犵澶寸綉鏍?Intensity 瀛愭ā寮忥紱DepthPyramid 鍥哄畾 mip0銆?
+- `M6.0 GPU light-list 鍩虹璁炬柦 + screen AABB`锛氬畬鎴愩€俙PipelineSettings::supportGpuLightList` M6.0 寮€鍙戞湡榛樿 false锛圡6.4 宸插垏 true锛夈€乣--gpu-light-list/--no-gpu-light-list`锛涙柊澧?`light_screen_aabb.cs.sc`銆丷GBA32F `2*32脳1` `lightScreenBounds`銆乣LightListBuilder::projectLightScreenBounds` CPU reference锛沜ompute pass 鍦?Camera Motion Vectors 鍚庛€丟Buffer 鍓嶏紝stage 5 璇?`lightData`銆乻tage 1 鍐?image锛宍allowCulling(false)`锛沜ompute/program/texture 涓嶅彲鐢ㄦ椂涓€娆℃€у憡璀﹀苟淇濇寔 CPU list銆傞獙璇侊細**201 cases / 18,607 assertions**锛汥3D11/Vulkan GPU off/on **0 diff**锛孏PU 寮€鍚?pass 鏁?29鈫?0銆乣compute=1`锛屽叧闂仮澶?passes=29锛涢甯ф棩蹇椾笌 `render performance` 杈撳嚭 `gpu_light_list`/`light_list_passes`銆傝瑙?[m6-checklist.md](m6-checklist.md)銆?
+- `M6.1 GPU big-tile + FPTL`锛氬畬鎴愩€傛柊澧?`light_big_tile.cs.sc`銆乣light_fptl.cs.sc`锛孉ABB 鈫?big-tile 鈫?FPTL 涓変釜 compute pass锛沚ig-tile/FPTL 閮界敤 `gl_WorkGroupID` 涓€涓?group 瀵瑰簲涓€涓?tile锛孎PTL 鐨?coarse tile 涓?`tile >> 2`锛岃緭鍑轰繚鎸?`count + 32 indices`銆佸崌搴忋€侫ABB view-proj/view rows 鏀逛负 6脳1 RGBA32F `lightViewRows` 涓婁紶锛坧itch=6脳16锛夛紝灞忓箷灏哄/light counts 閫氳繃 `ClusterUniforms` 闀滃儚缁?compute銆傞獙璇侊細D3D11 640脳360 鍗婂垎杈ㄧ巼 1/8/32/full銆?280脳720銆?920脳1080銆乨eferred銆乫orward銆乧luster/no-cluster銆乧ontact shadows銆乶o shadows 鐨?CPU/GPU 鍧?**0 diff**锛沄ulkan CPU/GPU **0 diff**锛沗passes=3`銆侻6.1 鏃?GPU 寮€鍏充粛榛樿鍏抽棴锛圡6.4 宸插垏 true锛夈€傝瑙?[m6-checklist.md](m6-checklist.md)銆?
+- `M6.2 GPU cluster`锛氬畬鎴愩€傛柊澧?`light_cluster.cs.sc`锛孉ABB 鈫?big-tile 鈫?FPTL 鈫?cluster 鍥涗釜 compute pass锛涗竴涓?workgroup 瀵瑰簲涓€涓?`(64脳64 tile, 32 slice)`锛屼粠 big-tile list + `s_lightData`/`s_lightViewRows` 璁＄畻 CPU 绛変环娣卞害鑼冨洿锛岃緭鍑虹幇鏈?`clusterLightList` 鐨?`count + 32 indices`銆俙m_clusterLightListTexture` 寮€鍚?`computeWrite`锛汫PU 寮€鍚椂涓嶅啀璋冪敤 CPU `LightListBuilder::build()`锛屽け璐ユ椂瀹屾暣 CPU 鍥為€€銆傞獙璇侊細debug slice `-1/0/5/15/31` D3D11/Vulkan CPU/GPU 0 diff锛泃ransparent 1280/1080銆乂ulkan deferred/fog/no-cluster銆丏3D11 contact/fog/no-cluster銆?080p FPTL opaque 鍏ㄩ儴 **0 diff**锛沗passes=4`銆傚叧閿慨姝ｏ細compute 鐨?`u_cluster_params.w`/`u_pass_lightCounts`/`u_pass_lightScreenSize` 璇诲彇涓嶅彲闈狅紝slice 鏁板浐瀹?32锛宑ounts/screen 闀滃儚鍒?`ClusterUniforms`锛沗lightViewRows` pitch 淇涓?6脳16銆傝瑙?[m6-checklist.md](m6-checklist.md)銆?
+- `M6.3 闆嗘垚/鍥為€€/debug`锛氬畬鎴愩€俙updateLightList()` 鎷嗕负 `updateCpuLightList()` + `addGpuLightListPasses()`锛汫PU 寮€鍚椂 CPU builder 閫愬抚 0锛屽け璐ュ洖閫€ CPU锛汥ebugUI 澧炲姞 GPU light list toggle 涓庤矾寰?pass/CPU build 鐘舵€侊紱`FrameDiagnostics`/`render performance` 澧炲姞 requested/active/fallback銆乸asses銆乣light_list_cpu_ms`锛涙墍鏈?list 绾圭悊 `computeWrite=true`锛屼竴娆℃€?warning銆傞獙璇侊細deferred/transparent/contact/no-cluster/fog锛坥paque锛?8/16 lights 鍚屽悗绔?CPU/GPU **0 diff**锛沝ebug `-2` D3D/VK 0 diff锛?.5 render scale 鍚屽悗绔?0 diff锛?080p RelWithDebInfo 300 甯?forward 8/16/32銆乧luster on/off銆乨eferred銆乼ransparent銆乫og 鍧囧畬鎴愶紝GPU `light_list_cpu_ms=0`銆傚凡鐭?`transparent + fog` 缁勫悎瑙﹀彂鏃㈡湁 Motion Vectors transient graph error锛岀暀 M6.4 杈圭晫銆傝瑙?[m6-checklist.md](m6-checklist.md)銆?
+- `M6.4 M6 楠屾敹`锛氬畬鎴愩€備慨澶?transparent-only + fog 鐨?Motion Vectors producer 缂哄け锛歚Camera Motion Vectors` 鍦ㄦ棤 depth pyramid 鏃舵敼鐢?scene depth锛圚DRP `Prepass.cs:1651-1675` 鐩存帴浣跨敤 depthBuffer锛夛紱transparent+fog D3D/VK CPU/GPU **0 diff**锛孌3D/VK **84.91 dB**銆俙supportGpuLightList`/`config/pipeline.json` 榛樿鍒?**true**锛宍--no-gpu-light-list` 淇濈暀 CPU 鍥為€€锛涘垵濮嬪寲鏃舵彁鍓嶅垱寤?big-tile 绾圭悊锛屽け璐ヨ嚜鍔?fallback銆傛渶缁堢煩闃碉細forward/deferred/transparent/fog/contact/8/16/32/no-cluster/0.5 scale/spot 鍚屽悗绔?CPU/GPU 鍏?**0 diff**锛孌3D/VK GPU on **84.91鈥?3.52 dB**锛坰pot 99.00锛夛紱M5.4 base GPU off D3D/VK **0 diff**銆?080p 300 甯?full post锛?2 lights + Uffizi锛孴AA/Bloom/DOF/MB锛塂3D CPU **99.6鈥?14.7** / GPU **112.3鈥?22.2** fps锛孷ulkan CPU **90.9鈥?4.0** / GPU **91.1鈥?9.2** fps锛屽潎 >60锛涢粯璁?GPU 澶嶆祴 D3D **121.9** / Vulkan **99.8** fps锛宍light_list_cpu_ms=0`銆俠ase 32 鎺ヨ繎鎸佸钩/鐣ユ參宸茶褰曪紝涓嶄互 GPU 璺緞澹扮О鎵€鏈?workload 鏇村揩銆傝瑙?[m6-checklist.md](m6-checklist.md)銆?
+- `M7 瀹炵幇`锛歁7.0鈥揗7.8 瀹屾垚銆侻7.0 buffer/indirect 鍩虹璁炬柦銆丮7.1 buffer producers銆丮7.2 buffer consumers銆丮7.3 indirect dispatch銆丮7.4/M7.5 GPU shadow culling/indirect draw銆丮7.6 async 鍙鎬ч獙璇併€丮7.7 闆嗘垚/鎬ц兘銆丮7.8 楠屾敹鍧囧畬鎴愩€侫ABB/big-tile/FPTL/cluster 鍏ㄨ蛋 `Buffer<uint>`锛宍light_list_cpu_ms=0`銆侱3D11/Vulkan 涓?cluster debug slice `-2/0/5/15/31`銆乣m61_full` deferred/forward銆乣m61_transparent`銆乫og銆乧ontact銆乻pot銆?2-light stress銆?.5 scale銆乶o-cluster 涓?CPU **鍏ㄩ儴 0 diff**锛汫PU shadow culling+indirect vs CPU shadow **0 diff**锛沘lpha/cache/cascade锛坈ascade 1/2/4銆乧ache 6 requests锛夊湪 forward/deferred銆佸弻鍚庣 **0 diff**銆傞粯璁ゅ喅绛栵細buffer path 榛樿 true锛宨ndirect/shadow GPU/async 淇濇寔 false/experimental銆?080p 300 甯?full post锛欴3D11 CPU/texture/buffer/indirect+shadow **109.5/121.4/121.8/119.8** fps锛孷ulkan **107.7/114.8/117.7/115.1** fps銆俙ctest` 203 cases/19,713 assertions + idl check 閫氳繃銆傚叧閿慨澶嶏細shaderc include 鏂囦欢 BOM 瀵艰嚧浼?`#endif without #if`锛沝ebug light-cluster 閲嶅 upload 瀵艰嚧 bgfx uniform fatal銆?
+- `M8 瀹炵幇`锛歁8.0/M8.1 瀹屾垚锛孧8.2 鏈紑濮嬨€侻8.0 钀?`PipelineSettings::lightListCapacity`锛?2/64/128锛岄潪娉曞€兼寜妗ｄ綅鍥為€€锛夈€乣--light-capacity`銆丣SON銆丏ebugUI requested/effective銆乣lightListParams2` IDL锛屼互鍙?`kMaxGpuLights=128`/`kLightListStrideMax=129`锛汳8.1 钀?`LightBuilder`/`LightListBuilder` 鐨?32/64/128 CPU reference銆佽繍琛屾椂 `capacity+1` stride銆乧luster 32/cell 鍜?`truncatedLightCount`銆侴PU shader 浠嶅浐瀹?33/32锛屽閲?>32 鏆?gate 鍒?32 骞朵竴娆℃€ц鍛婏紱M8.2 绉婚櫎 gate銆俙ctest` 207 cases/20,170 assertions + IDL check 閫氳繃锛汥3D11/Vulkan buffer/texture 32-light 瀵?M7 鎴浘 **0 diff**銆侻7 閬楃暀鐨?layered offset銆?6-bit packing銆乧ategory/layer/feature variants銆乧ookies 鏄庣‘涓嶈繘鍏?M8锛岀暀 M9/鍚庣画锛汳8.6 閫氳繃闂ㄧ鍚庡啀鍐冲畾 64 鏄惁榛樿锛?28 淇濇寔 experimental銆?
+- 涓嬩竴浠诲姟锛氫粠 M8.2 寮€濮嬶紝鎶?`light_screen_aabb_buffer`銆乣light_big_tile_buffer`銆乣light_fptl_buffer` 鏀规垚 128 slot / 4脳mask / 鍔ㄦ€?`lightListParams2` stride锛屽苟绉婚櫎 GPU 璺緞鐨?32 瀹归噺 gate銆侻8 瀹炵幇鍓嶄笉瑕佷慨鏀?light-list 鏁版嵁甯冨眬銆俁enderDoc 瀹夎鍚庤ˉ F11/GPU 鎶撳抚銆?
+- 楠岃瘉鍛戒护锛歚cmake --preset vs2022` 鈫?`cmake --build --preset vs2022-debug` 鈫?`ctest --test-dir build/vs2022 -C Debug --output-on-failure`锛涘啋鐑?`hbg --render-test=<scene.gltf> --frames=3 --screenshot=out.png`锛涜缃?`--pipeline-settings=config/pipeline.json --frame-settings=config/frame_settings.json`锛涢槾褰?`--shadow-profile=config/shadows.json --shadow-filter=pcf5x5 --shadow-distance=200 --shadow-cascades=4 --shadow-atlas-size=2048`锛汻T scale `--render-scale=0.5`锛沀I `hbg --scene=<scene.gltf> --frames=3 --screenshot=ui.png`锛涜皟璇?`--debug-light-data`/`--debug-wireframe --no-shadows`锛沺repass/debug `--debug-view=depth|depth-pyramid|normal|motion-vectors|light-cluster|directional-shadow-atlas|punctual-shadow-atlas|shadow-cascade|shadow-filter|contact-shadows|albedo|roughness|ssao|ssr|ssgi|decals`锛汼ky/IBL `hbg --render-test=<scene.gltf> --sky=<hdri.hdr|exr> --sky-intensity=1 --sky-rotation=0 --frames=3 --screenshot=sky.png`锛涗綋绉浘 `--volumetric-fog --fog-profile=config/volumetric_fog.json`锛堝彲閰?`--fog-mean-free-path/--fog-anisotropy/--fog-depth-extent/--fog-steps/--no-fog-shadows/--fog-scale/--no-fog-temporal/--no-fog-jitter/--no-fog-punctual-lights/--no-fog-punctual-shadows/--fog-max-punctual-lights/--fog-local-volumes/--no-fog-local-volumes`锛夛紱鏈€缁堣緭鍑?`--exposure-mode=fixed|auto|histogram --exposure-compensation=<ev> --tonemap=aces|neutral|none --debug-exposure=<ev>`銆?
 
 ---
 
-## 2. 数据契约
+## 0. 鑼冨洿閿佸畾涓庡墠缃粨璁?
 
-### 2.1 GBuffer
+- 鍚庣锛欴3D11 + Vulkan锛堝厛璺戦€氳繖涓や釜锛孌3D12 鍚庣疆锛夈€?
+- 璧勪骇锛歡lTF 鐢?cgltf锛岃创鍥剧敤 bimg锛岃繍琛屾椂璋冭瘯闈㈡澘鐢?ImGui锛堜笉绠楃紪杈戝櫒锛夈€?
+> 閫愪换鍔￠獙璇佷笌 HDRP `file:line`锛歁0 瑙?`docs/m0-checklist.md`锛孧1 瑙?`docs/m1-checklist.md`銆?
 
-| RT | 格式 | 内容 |
+| 浠诲姟 | 浜у嚭 | 鐘舵€?|
 |---|---|---|
-| RT0 | RGBA8 | baseColor + alpha |
-| RT1 | RGBA8 | metallic/roughness/AO |
-| RT2 | RGBA8 | 888 oct normal + roughness |
-| RT3 | RGBA16F | emissive |
-| Depth | D24S8/D32F | depth + stencil |
-
-当前 forward-only；GBuffer pass tag 已完成，录制顺延。
-
-### 2.2 GPU LightData
-
-- `LightDataTex`：`RGBA32F`，4×32；每灯 4 texels：
-  - `texel0`: position.xyz, range
-  - `texel1`: color.rgb, intensity
-  - `texel2`: direction.xyz, cosOuterAngle
-  - `texel3`: shadowIndex, cosInnerAngle, layerMask, flags
-- flags 低 2 位为 type（directional/point/spot），bit2 为 cast shadow。
-- 方向光 shadowIndex=0（级联基址）；point/spot 为 ShadowContext 请求基址，point 加 0..5 face。
-
-### 2.3 LightList
-
-- v1 CPU FPTL：16×16 tile，64×64 big-tile 候选中间层；`R32_UINT` 2D 纹理布局 `width=33*tileCountX`、`height=tileCountY`，每 tile 为 1 count + 最多 32 个绝对 GpuLight 索引。
-- 方向光不写入 tile list，shader 单独循环；punctual 由世界坐标投影到 tile 后 `texelFetch`。
-- 后续可对齐 HDRP GPU compute：每类别独立列表、depth min/max fine pruning、32/64 log depth clusters。
-
-### 2.4 ShadowContext
-
-- `RGBA32F` 8×32，8 texels/request，最多 32 requests：
-  - texel 0..3：world-to-shadow 矩阵列（C++ 按列写入）。
-  - texel 4：`atlasScale.xy, atlasOffset.xy`。
-  - texel 5：`depthBias, normalBias, invViewportWidth, invViewportHeight`。
-  - texel 6：`type, faceIndex, 0, enabled`。
-  - texel 7：保留。
-- bgfx `mat4` 构造布局要求 shader `transpose` 后 `mul(M, position)`；已在 D3D11/Vulkan 验证。
-
-### 2.5 全局常量
-
-- Global CB 864 bytes / 19 descriptors：view/invView/proj/invProj/viewProj/invViewProj/nonJittered/prev、screenSize、cameraPos、prevCameraPos、taaJitter、taaFrameInfo、rtScale、dynamicResolutionScale、time、frustumPlanes[6]。
-- Pass CB 240 bytes / 9 descriptors：shadowMatrix、shadowViewProj、shadowParams、shadowCascadeSplits、lightDirection、lightColor、ambientColor、lightCounts、lightListParams。
-- Environment CB 128 bytes / 8 descriptors：skyParams(intensity,maxMip,enabled,reflection) + shAr/shAg/shAb/shBr/shBg/shBb/shCr（7×vec4 SH9 packing）；sky/IBL 纹理走 stage 10。
-
----
-
-## 3. 帧顺序
-
-```text
-beginFrame
-for each view:
-  ViewState.update()
-  graph:
-    1  Shadow（每个 request 一个 raster pass）
-    2  Scene Clear
-    3  Forward Depth Prepass
-    4  Objects Motion Vectors
-    5  Camera Motion Vectors
-    6  Depth Pyramid
-    7  Sky（有环境贴图时；独立 fullscreen pass）
-    8  Forward Opaque
-    9  Forward Transparent
-   10  Wireframe
-   11  Presentation / Debug
-UI
-```
-
-M1.7 后 shadow pass 数取决于 request：4 方向光 + 6 point faces/spot；FrameSettings 关闭 ShadowMaps 时完全跳过。
-
----
-
-## 4. 任务分解
-
-| 任务 | 产出 | 状态 |
-|---|---|---|
-| M0.1 工程骨架 | CMake + C++20 + 依赖 + 双后端窗口 | `[x]` |
-| M0.2 gfx 封装 | Device/Encoder/Texture/Buffer/FrameBuffer/ResourceManager | `[x]` |
-| M0.3 IDL/常量 | `idl_gen.py`、C++/shader 生成、反射校验 | `[x]` |
-| M0.4 glTF | cgltf、材质/贴图/相机/灯光、MikkTSpace、sidecar | `[x]` |
-| M0.5 Forward PBR | MaterialSystem、HDR、ACES、render-test | `[x]` |
-| M0.6 光照/阴影 v0 | LightData、方向光阴影、PCF | `[x]` |
-| M0.7 调试设施 | ImGui、Profiler、wireframe、截图 | `[x]` |
-| M1.1 RenderGraph | Handle/PassBuilder/compile/execute/裁剪/池 | `[x]` |
-| M1.2 FrameSettings | 128 位、PipelineSettings、JSON | `[x]` |
-| M1.3 ViewState | 矩阵/抖动/历史/RT scale/全局 CB | `[x]` |
+| M0.1 宸ョ▼楠ㄦ灦 | CMake + C++20 + 渚濊禆 + 鍙屽悗绔獥鍙?| `[x]` |
+| M0.2 gfx 灏佽 | Device/Encoder/Texture/Buffer/FrameBuffer/ResourceManager | `[x]` |
+| M0.3 IDL/甯搁噺 | `idl_gen.py`銆丆++/shader 鐢熸垚銆佸弽灏勬牎楠?| `[x]` |
+| M0.4 glTF | cgltf銆佹潗璐?璐村浘/鐩告満/鐏厜銆丮ikkTSpace銆乻idecar | `[x]` |
+| M0.5 Forward PBR | MaterialSystem銆丠DR銆丄CES銆乺ender-test | `[x]` |
+| M0.6 鍏夌収/闃村奖 v0 | LightData銆佹柟鍚戝厜闃村奖銆丳CF | `[x]` |
+| M0.7 璋冭瘯璁炬柦 | ImGui銆丳rofiler銆亀ireframe銆佹埅鍥?| `[x]` |
+| M1.1 RenderGraph | Handle/PassBuilder/compile/execute/瑁佸壀/姹?| `[x]` |
+| M1.2 FrameSettings | 128 浣嶃€丳ipelineSettings銆丣SON | `[x]` |
+| M1.3 ViewState | 鐭╅樀/鎶栧姩/鍘嗗彶/RT scale/鍏ㄥ眬 CB | `[x]` |
 | M1.4 DrawList | queue/pass tag/frustum cull/sort/instancing | `[x]` |
 | M1.5 Prepass | depth/normal/motion/depth pyramid | `[x]` |
-| M1.6 光照 v1 | CPU LightList、R32_UINT、Forward LightLoop | `[x]` |
-| M1.7 阴影 v1 | 4 级联、point/spot、双 atlas、ShadowContext、PCF | `[x]` |
-| M1.8 Sky/IBL | HDRI 天空、SH9 环境光、GGX mip、天空反射 | `[x]` |
-| M1.9 最终输出 | 固定/简单自动曝光、ACES/Neutral、sRGB、Debug 覆盖 | `[x]` |
-| M1.10 Debug | 深度/法线/速度/Cluster/阴影图集/Albedo/Roughness | `[x]` |
+| M1.6 鍏夌収 v1 | CPU LightList銆丷32_UINT銆丗orward LightLoop | `[x]` |
+| M1.7 闃村奖 v1 | 4 绾ц仈銆乸oint/spot銆佸弻 atlas銆丼hadowContext銆丳CF | `[x]` |
+| M1.8 Sky/IBL | HDRI 澶╃┖銆丼H9 鐜鍏夈€丟GX mip銆佸ぉ绌哄弽灏?| `[x]` |
+| M1.9 鏈€缁堣緭鍑?| 鍥哄畾/绠€鍗曡嚜鍔ㄦ洕鍏夈€丄CES/Neutral銆乻RGB銆丏ebug 瑕嗙洊 | `[x]` |
+| M1.10 Debug | 娣卞害/娉曠嚎/閫熷害/Cluster/闃村奖鍥鹃泦/Albedo/Roughness | `[x]` |
+| M2.0 Deferred 鍩虹 | LitShaderMode/鍙岃矾寰勩€丟Buffer 璧勬簮銆丮RT/stencil銆丆LI銆佸抚椤哄簭 | `[x]` |
+| M2.1 GBuffer | 4 RT銆丩it GBuffer pass銆佹繁搴?prepass銆乻tencil銆佹竻灞?| `[x]` |
+| M2.2 Deferred Lighting | 鍏ㄥ睆鍏夌収銆丟Buffer 瑙ｇ爜銆侀槾褰?IBL銆乫orward-only 鐗╀綋 | `[x]` |
+| M2.3 Cluster LightList | 64脳64脳32 娣卞害绨囥€丆PU 鏋勫缓銆侀€忔槑/Forward 浣跨敤 | `[x]` |
+| M2.4 SSAO | 鍗婂垎杈ㄧ巼 GTAO-lite銆佺┖闂村幓鍣€佸叏鍒嗚鲸鐜?bilateral upsample銆乤mbient 搴旂敤 | `[x]` |
+| M2.5 SSR | 鍏ㄥ垎杈ㄧ巼 trace銆両BL fallback銆乻tencil 鍚堟垚銆丼SR debug | `[x]` |
+| M2.6 SSGI | 鍗婂垎杈ㄧ巼灞忓箷绌洪棿闂存帴婕弽灏勩€乫allback銆佸悎鎴?| `[x]` |
+| M2.7 Decals | DBuffer 3RT銆乻idecar decal銆丟Buffer 鍚堟垚 | `[x]` |
+| M2.8 Reflection Probes | 闈欐€佹帰閽堛€乥ox projection銆? 鎺㈤拡娣峰悎銆佸ぉ绌?fallback | `[x]` |
+| M2.9 楠屾敹/鎬ц兘 | Debug銆佸弻鍚庣銆佸浘楠岃瘉銆佹€ц兘銆佹枃妗ｅ洖濉?| `[x]` |
+| M3.0 PostProcess 鍩虹 | PostProcessChain銆乸rofile銆乭istory銆乧ompute/UAV銆丗inalPass | `[x]` |
+| M3.1 楂樼骇 Exposure | Histogram/鑷姩鏇濆厜銆佹椂闂撮€傚簲銆丄pply Exposure | `[x]` |
+| M3.2 Uber/Color Grading | Uber Post銆?4鲁 LUT銆乂ignette銆乀onemap | `[x]` |
+| M3.3 Bloom | Threshold銆乵ip down/up銆乻catter銆乁ber 鍚堟垚 | `[x]` |
+| M3.4 TAA | Jitter銆乭istory銆乵otion reprojection銆乶eighborhood clamp | `[x]` |
+| M3.5 DOF | Manual focus銆丆oC銆乭alf-res gather銆乧ombine銆乨ebug CoC | `[x]` |
+| M3.6 Motion Blur | Camera/object MV銆侀噰鏍枫€乨epth weight | `[x]` |
+| M3.7 FXAA/Final | FXAA銆乻RGB銆丄A 浜掓枼 | `[x]` |
+| M3.8 M3 楠屾敹 | Debug銆佸弻鍚庣銆佹€ц兘銆佹枃妗ｅ洖濉?| `[x]` |
+| M4.0 Global Volumetric Fog v1 | Height fog raymarch銆佹柟鍚戝厜闃村奖銆佽缃?CLI/鍙屽悗绔?| `[x]` |
+| M4.1 Fog quality/optimization | 浣庡垎杈ㄧ巼閲嶇粍銆乼emporal銆佺偣/鑱氬厜浣撶Н鍏?| `[x]` |
+| M4.2 Local fog volumes | 灞€閮ㄩ浘浣撱€乫alloff銆乵ask | `[x]` |
+| M4.3 M4 楠屾敹 | 鍙屽悗绔煩闃点€佹€ц兘銆乨ebug銆佹枃妗?| `[x]` |
+| M5.0 Shadow settings/atlas/culling | 鍙厤缃?cascade/filter/resolution銆乸er-request cull銆乤lpha-tested caster | `[x]` |
+| M5.1 Soft shadows/bias/micro | PCF5脳5/7脳7銆丳CSS銆乶ormal/slope bias銆乧ascade fade銆乵icro shadow | `[x]` |
+| M5.2 Contact shadows | 灞忓箷绌洪棿 ray march銆佸崐鍒嗚鲸鐜囥€乸acked mask銆乴ight loop 搴旂敤 | `[x]` |
+| M5.3 Per-light controls/cache | dimmer/fade/tint/near plane/resolution/update mode銆侀潤鎬?punctual cache | `[x]` |
+| M5.4 M5 楠屾敹 | 鍙屽悗绔煩闃点€佹€ц兘銆乨ebug銆佹枃妗ｃ€佽竟鐣?| `[x]` |
+| M6.0 GPU light-list 鍩虹璁炬柦/screen AABB | GPU 寮€鍏?鍥為€€銆乧ompute pass銆乻creen-space 鍏夋簮鍖呭洿鐩?| `[x]` |
+| M6.1 GPU big-tile/FPTL | 64脳64 coarse list + 16脳16 FPTL锛宒eferred/forward opaque | `[x]` |
+| M6.2 GPU cluster | 64脳64脳32 cluster list锛屾浛鎹?CPU cluster | `[x]` |
+| M6.3 闆嗘垚/鍥為€€/debug | 鎵€鏈夋秷璐硅€呫€丆PU fallback銆佽瘖鏂€佹€ц兘鎺ョ嚎 | `[x]` |
+| M6.4 M6 楠屾敹 | D3D/VK銆丆PU/GPU 瀵圭収銆佹€ц兘銆佹枃妗ｃ€佽竟鐣?| `[x]` |
+| M8.0鈥揗8.7 M8 | 32/64/128 瀹归噺銆佸姩鎬?stride銆乧luster 32/cell銆乼exture clamp銆侀獙鏀?| `[x]` M8.0鈥揗8.1锛汳8.2 鏈紑濮?|
 
-**M1 出口标准**：glTF + HDRI + 级联阴影 + 聚类灯光 + 运动矢量 + Tonemap + RenderGraph + FrameSettings；1080p 60fps（GTX 1660/RX 5600 级）。
+**M4.0 鍑哄彛鏍囧噯**锛歠og off 涓嶆敼鍙?M3.8锛沠og on 鍙屽悗绔竴鑷翠笖鏈夋柟鍚戝厜闃村奖锛?080p full post >60fps锛涜缃?CLI/鍗曟祴/鏂囨。榻愬叏銆?
 
----
+**M4.1 鍑哄彛鏍囧噯**锛歭ow-res fog + depth-aware upsample锛泃emporal no-jitter 闈欐€佷笉鏀瑰彉鍍忕礌锛沺oint/spot 鍙屽悗绔竴鑷达紱1080p full post >60fps锛汣LI/鍗曟祴/鏂囨。榻愬叏銆?
 
-## 5. HDRP/Core 源码索引
+**M4.2 鍑哄彛鏍囧噯**锛歴idecar box/sphere 灞€閮ㄤ綋绉彲鍔犺浇锛汬DRP face/distance/exponential falloff 鏈夊崟娴嬶紱mask on/off 鍙锛汥3D/VK 涓€鑷达紱M4.1 no-local 鍥炲綊淇濇寔锛沜lose 鍚庢棤璧勬簮娉勬紡銆?
 
-| 模块 | HDRP/Core |
-|---|---|
-| RenderGraph | `RenderGraph.cs:1448/1490/1540`；`NativePassCompiler.cs:475/490/539`；`RenderGraphResourcePool.cs:54/65/197` |
-| FrameSettings | `FrameSettings.cs:107/429/455/508/658/820`；`FrameSettingsDefaults.cs:7/92/149`；`RenderPipelineSettings.cs:31/259/337/350/387/399` |
-| ViewState / jitter | `HDCamera.cs:24/32/1137/1436-1451/2107/2338`；`HDCamera.cs:1594/1625`；`ShaderVariablesGlobal.cs:40` |
-| DrawList | `HDRenderQueue.cs:16-174`；`HDStringConstants.cs:4-120`；`HDUtils.cs:23`；`HDRenderPipeline.cs:177-199/3410-3500/3556-3560` |
-| Prepass | `HDRenderPipeline.Prepass.cs:84-121/146-161/185-201/275-420/485-645/648-707/1651-1670`；`NormalBuffer.hlsl:20/44`；`Packing.hlsl:57/71/527/538`；`DepthPyramid.compute`；`MipGenerator.cs:62-118` |
-| LightList | `HDRenderPipeline.LightLoop.cs:179-313/665-697`；`LightLoop.cs:106-108/558-565/635-653/1921-1954/1963-1966/2030-2043`；`LightLoopDef.hlsl:245-330`；`LightLoop.hlsl:187/252-312`；`lightlistbuild*.compute`；`HDGpuLightsBuilder.Jobs.cs:422-462/639-651` |
-| 阴影管理 | `Lighting/Shadow/HDShadowManager.cs:615`；`HDShadowData :73`；`ReserveShadowResolutions :929`；`CreateShadowData :1014`；`LayoutShadowMaps :1072`；`PrepareGPUShadowDatas :1110`；`RenderShadows :1414` |
-| 阴影 atlas/请求 | `HDShadowAtlas.cs:102/207/758`；`HDDynamicShadowAtlas.cs:39/72/129`；`HDShadowUtils.cs:45/101/161/298/374`；`HDShadowContext.hlsl`；`HDShadowSampling.hlsl:14-111`；`HDShadowAlgorithms.hlsl:36-144` |
-| Sky/IBL | `Sky/HDRISky/HDRISkyRenderer.cs:90-161`；`HDRISky.shader`；`Sky/SkyUtils.hlsl:14-39`；`Sky/AmbientProbeConvolution.compute:51-215`；`Material/GGXConvolution/IBLFilterGGX.cs:129-194`；`GGXConvolve.shader`；Core `SphericalHarmonics.hlsl`/`ImageBasedLighting.hlsl` |
-| Lit pass 名 | `Material/Lit/Lit.shader`（GBuffer:435、Forward:956、ShadowCaster:602、DepthOnly:640、MotionVectors:705） |
-| Volume | Core `Runtime/Volume/VolumeManager.cs` |
-| 最终输出 | `HDRenderPipeline.PostProcess.cs:1455-1585`；`PostProcessing/Shaders/Exposure.compute:15-153`；`ExposureCommon.hlsl:26-121`；Core `ShaderLibrary/PhysicalCamera.hlsl:12-74`；`ColorUtils.cs:39-55/224-288`；`Tonemapping.cs`；Core `Color.hlsl:608-786`；`FinalPass.shader:170-205` |
-| 后处理 | `HDRenderPipeline.PostProcess.cs:802` |
+**M4.3 鍑哄彛鏍囧噯**锛歁4.0鈥揗4.2 鍙屽悗绔煩闃点€佹€ц兘銆乨ebug銆佹枃妗ｅ拰杈圭晫瀹屾垚锛沠og off 涓?M3.8 0 diff锛汳4.1 no-local 鍥炲綊淇濇寔锛沠ull post+local 1080p >60fps锛涙祴璇?IDL/gfx/docs 闂ㄧ閫氳繃銆?
 
----
+**M5 鍑哄彛鏍囧噯**锛歴hadow 璁剧疆/atlas/culling/alpha test 鐢熸晥锛汬DRP 妗ｄ綅 PCF/PCSS 涓?contact shadows 鍙屽悗绔竴鑷达紱contact mask 涓嶆敼鍙?ambient/閫忔槑锛沺er-light dimmer/fade/tint 涓庨潤鎬?punctual cache 澶辨晥姝ｇ‘锛泂hadow off 鏃?shadow/contact pass锛圡4.3 鏈€缁堝浘甯﹂槾褰憋紝0-diff 鍙傝€冧笉鍙敤锛岃 M5.4锛夛紱full post 1080p >60fps锛涙祴璇?IDL/gfx/docs 闂ㄧ閫氳繃銆?
 
-## 6. M2~M6 路线
+**M6 璁″垝鍑哄彛鏍囧噯**锛欸PU screen AABB/big-tile/FPTL/cluster 涓?CPU reference 鐨?list 璇箟涓€鑷达紱GPU on/off銆丏3D/VK銆乫orward/deferred/transparent/fog/contact 鍙鐓э紱GPU 寮€鍚椂涓嶅啀璋冪敤 CPU `LightListBuilder::build()`锛沠ull post 1080p >60fps 涓旀棤鍥為€€锛涙祴璇?IDL/gfx/docs 闂ㄧ閫氳繃銆侻6 v1 涓?texture-backed锛屼笉鍚?GPU shadow culling/indirect draw銆?
 
-- **M2 Deferred**：GBuffer、Deferred Lighting、Cluster、SSR/SSAO/SSGI、Decals、Reflection Probes。
-- **M3 后处理**：高级 Exposure/histogram、TAA、DOF、Motion Blur、Bloom、Color Grading、Uber、FXAA。
-- **M4 阴影/光照完善**：cached/mixed shadow、PCSS/EVSM、area light shadow、screen-space/contact shadow、light layers。
-- **M5 资产/材质**：glTF 完整特性、压缩纹理、skin/morph/animation、Sponza/Khronos 对齐。
-- **M6 性能/工具**：Async compute、indirect、GPU cluster、RenderDoc 金图、PSNR/SSIM。
+**M8 璁″垝鍑哄彛鏍囧噯**锛?2-light M7 鍩虹嚎 0 diff锛?4/128 鐨?CPU/texture/buffer list 璇箟涓€鑷达紱128 璧?buffer 鎴栨寜 texture 瀹藉害 clamp锛沜luster 淇濇寔 32/cell 涓旀湁 overflow 璇婃柇锛?4 鍙屽悗绔?1080p full post >60fps锛?28 鏈夌湡瀹炴€ц兘璁板綍锛況esize/4K/鍥為€€/娴嬭瘯/IDL/gfx/docs 榻愬叏銆侻8 涓嶅疄鐜?layered offset銆?6-bit packing銆乧ategory/layer/cookie銆?
 
-### 6.1 性能目标
-
-- Shadow Atlas：2048² 起步；方向光级联单独 atlas；punctual atlas 动态布局。
-- LightData：32 灯 × 4 texel × 16 B ≈ 2 KB；ShadowContext 8×32×16 B = 4 KB。
-- DrawCall 目标 < 3000/帧；按 Program/材质排序减少状态切换。
-- 验证：单元测试（Graph 编译、阴影打包、Volume 混合、排序键）+ 固定场景金图（PSNR/SSIM）+ RenderDoc + bgfx stats。
-
----
-
-## 7. 最大风险与对策
-
-1. **Shader 重写量最大**：只移植 Lit/Unlit/Decal/SSS/后处理数学，不追求全材质；用变体 Key 严格收敛。
-2. **图形阶段无 Storage Buffer**：灯光/阴影/探针全走 Data Texture，注意布局紧凑和缓存命中。
-3. **ShadowContext 矩阵布局易错**：C++ 按列写，shader `transpose` 后 `mul(M,v)`；新增请求时用 D3D11/Vulkan 双后端截图和 CPU 单测同时验证。
-4. **点光/聚光阴影边界**：固定 face 分辨率与 dominant-axis 选择会有 face 边界；M2 再补 seam、PCSS 和 cached shadow。
-5. **RenderDoc 缺失**：本机无法 F11 抓帧；M1 验收用双后端截图 + bgfx stats + RenderGraph diagnostics。
+**M1 鍑哄彛鏍囧噯**锛歡lTF + HDRI + 绾ц仈闃村奖 + 鑱氱被鐏厜 + 杩愬姩鐭㈤噺 + Tonemap + RenderGraph + FrameSettings锛?080p 60fps锛圙TX 1660/RX 5600 绾э級銆?

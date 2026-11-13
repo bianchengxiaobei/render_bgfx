@@ -164,8 +164,26 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
         m_materials.push_back(gpuMaterial);
     }
 
-    HBG_LOGI("material system: {} meshes, {} materials, {} textures", m_meshes.size(), m_materials.size(),
-             m_textureCache.size());
+    const auto textureForDecal = [&](int imageIndex, bool srgb, bool normalMap) {
+        if (imageIndex < 0) {
+            return gfx::TextureHandle{};
+        }
+        asset::TextureRef ref;
+        ref.imageIndex = imageIndex;
+        return textureForImage(resources, scene, ref, srgb, normalMap);
+    };
+
+    m_decals.reserve(scene.decals.size());
+    for (const render::Decal& decal : scene.decals) {
+        GpuDecalTextures textures;
+        textures.albedo = textureForDecal(decal.albedoImage, true, false);
+        textures.normal = textureForDecal(decal.normalImage, false, true);
+        textures.mask = textureForDecal(decal.maskImage, false, false);
+        m_decals.push_back(textures);
+    }
+
+    HBG_LOGI("material system: {} meshes, {} materials, {} decals, {} textures", m_meshes.size(),
+             m_materials.size(), m_decals.size(), m_textureCache.size());
     return true;
 }
 
@@ -275,6 +293,7 @@ void MaterialSystem::shutdown(gfx::ResourceManager& resources) {
 
     m_samplers.shutdown(resources);
     m_materials.clear();
+    m_decals.clear();
     m_resources = nullptr;
 }
 

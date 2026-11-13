@@ -1,4 +1,5 @@
 #include "render/camera/view_state.h"
+#include "render/culling/frustum.h"
 #include "render/lighting/light_builder.h"
 #include "render/scene/render_scene.h"
 #include "render/shadows/shadow_manager.h"
@@ -93,6 +94,66 @@ TEST_CASE("shadow manager builds four directional cascades") {
     CHECK(manager.contextData().requestCount == kDirectionalCascadeCount);
     CHECK(manager.contextData().texels[4].x == doctest::Approx(0.5f));
     CHECK(manager.contextData().texels[6].w == doctest::Approx(1.0f));
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(3.0f));
+    CHECK(manager.contextData().texels[7].z > 0.0f);
+    CHECK(manager.contextData().texels[8].x > 0.0f);
+    CHECK(manager.contextData().texels[9].x == doctest::Approx(16.0f));
+    CHECK(manager.contextData().texels[9].y == doctest::Approx(24.0f));
+    CHECK(manager.contextData().texels[9].z == doctest::Approx(0.01f));
+    CHECK(manager.contextData().texels[9].w > 0.0f);
+}
+
+TEST_CASE("shadow settings drive cascade count, resolution and context layout") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeDirectional());
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.maxDistance = 50.0f;
+    settings.cascadeCount = 2;
+    settings.cascadeSplits = {0.2f, 0.6f, 1.0f, 1.0f};
+    settings.directionalResolution = 512;
+    settings.directionalFilter = ShadowFilter::Pcf5x5;
+    settings.normalBias = 0.4f;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+
+    REQUIRE(manager.requests().size() == 2);
+    CHECK(manager.directionalRequestCount() == 2);
+    CHECK(manager.requests()[0].viewportWidth == 512);
+    CHECK(manager.requests()[0].viewportHeight == 512);
+    CHECK(manager.requests()[1].viewportWidth == 512);
+    CHECK(manager.requests()[0].normalBias == doctest::Approx(0.4f));
+    CHECK(manager.requests()[0].softness == doctest::Approx(0.5f));
+    CHECK(manager.requests()[0].worldTexelSize > 0.0f);
+    CHECK(manager.requests()[0].slopeBias == doctest::Approx(2.5f));
+    CHECK(manager.requests()[0].blockerSamples == 16);
+    CHECK(manager.requests()[0].filterSamples == 24);
+    CHECK(manager.requests()[0].fadeScale > 0.0f);
+    CHECK(manager.requests()[0].fadeBias < 0.0f);
+    CHECK(manager.requests()[0].filter == ShadowFilter::Pcf5x5);
+    CHECK(manager.cascadeSplits().x == doctest::Approx(10.08f));
+    CHECK(manager.cascadeSplits().y == doctest::Approx(50.0f));
+    CHECK(manager.cascadeSplits().z == doctest::Approx(50.0f));
+    CHECK(manager.cascadeSplits().w == doctest::Approx(50.0f));
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(2.0f));
+    CHECK(manager.contextData().texels[8].z == doctest::Approx(0.0f));
+
+    Bounds inside;
+    inside.expand(Vec3(-1.0f, 0.0f, -1.0f));
+    inside.expand(Vec3(1.0f, 2.0f, 1.0f));
+    Bounds outside;
+    outside.expand(Vec3(999.0f, 0.0f, 999.0f));
+    outside.expand(Vec3(1001.0f, 2.0f, 1001.0f));
+    CHECK(intersectsFrustum(manager.requests()[0].frustumPlanes, inside));
+    CHECK_FALSE(intersectsFrustum(manager.requests()[0].frustumPlanes, outside));
 }
 
 TEST_CASE("shadow manager builds point faces and patches light shadow indices") {
@@ -114,7 +175,7 @@ TEST_CASE("shadow manager builds point faces and patches light shadow indices") 
     CHECK(manager.requests().size() == kDirectionalCascadeCount + 6);
     CHECK(manager.shadowedLightCount() == 2);
     CHECK(builder.data().texels[3].x == doctest::Approx(0.0f));
-    CHECK(builder.data().texels[4 + 3].x == doctest::Approx(4.0f));
+    CHECK(builder.data().texels[kGpuLightTexels + 3].x == doctest::Approx(4.0f));
 
     for (uint32_t face = 0; face < 6; ++face) {
         const ShadowRequest& request = manager.requests()[kDirectionalCascadeCount + face];

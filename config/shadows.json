@@ -1,0 +1,43 @@
+{
+  "maxDistance": 200.0,
+  "cascadeCount": 4,
+  "cascadeSplits": [0.10, 0.25, 0.50, 1.0],
+  "cascadeFade": 0.10,
+  "directionalFilter": "pcf7x7",
+  "punctualFilter": "pcf5x5",
+  "directionalResolution": 1024,
+  "pointResolution": 256,
+  "spotResolution": 512,
+  "atlasSize": 2048,
+  "maxRequests": 64,
+  "normalBias": 0.2,
+  "slopeBias": 0.5,
+  "shadowNearPlane": 0.1,
+  "softness": 0.5,
+  "blockerSamples": 16,
+  "filterSamples": 24,
+  "minFilterSize": 0.01,
+  "microShadows": {
+    "enabled": false,
+    "opacity": 1.0
+  },
+  "contactShadows": {
+    "enabled": true,
+    "directionalOnly": false,
+    "halfResolution": false,
+    "length": 0.15,
+    "opacity": 1.0,
+    "distanceScaleFactor": 0.5,
+    "minDistance": 0.0,
+    "maxDistance": 50.0,
+    "fadeDistance": 5.0,
+    "fadeInDistance": 0.0,
+    "rayBias": 0.2,
+    "thicknessScale": 0.15,
+    "sampleCount": 10
+  },
+  "shadowDimmer": 1.0,
+  "shadowFadeDistance": 10000.0,
+  "shadowTint": [0.0, 0.0, 0.0],
+  "cachedPunctualShadows": false
+}

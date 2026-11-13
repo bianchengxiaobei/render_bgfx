@@ -1,0 +1,19 @@
+block Fog {
+    vec4 params;  # x=baseHeight, y=rcpScaleHeight, z=extinction, w=anisotropy
+    vec4 params2; # x=depthExtent, y=stepCount, z=enabled, w=globalLightProbeDimmer
+    vec4 albedo;  # rgb=albedo
+    vec4 params3; # x=directionalShadows, y=punctualLights, z=temporal, w=punctualShadows
+    vec4 params4; # x=lowResWidth, y=lowResHeight, z=temporalHistoryWeight, w=historyValid
+    vec4 params5; # x=maxPunctualLights, y=temporalJitter, z=useCluster
+    vec4 params6; # x=localVolumeCount, y=localMaskCount, z=localVolumesEnabled, w=maxLocalVolumes
+    vec4 localObbRight[8]; # xyz=unit right, w=shape (0 box, 1 sphere)
+    vec4 localObbUp[8]; # xyz=unit up, w=mask slot (-1 none)
+    vec4 localObbExtents[8]; # xyz=half extents
+    vec4 localObbCenter[8]; # xyz=center
+    vec4 localScattering[8]; # rgb=albedo*extinction, w=extinction
+    vec4 localFaceFadePos[8]; # xyz=1/positiveFade, w=invertFade
+    vec4 localFaceFadeNeg[8]; # xyz=1/negativeFade, w=falloffMode
+    vec4 localDistanceFade[8]; # x=1/distanceFadeLength, y=end/len
+    vec4 localMaskTiling[8]; # xy=tiling, z=intensity, w=plane (0 xy, 1 xz, 2 yz)
+    vec4 localMaskScroll[8]; # xy=scroll, z=invert
+}

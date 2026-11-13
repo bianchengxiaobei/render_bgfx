@@ -1,0 +1,9 @@
+block Probe {
+    mat4 worldToProbe0;
+    mat4 worldToProbe1;
+    vec4 extents0;      # xyz half extents, w blend distance
+    vec4 extents1;
+    vec4 params0;       # enabled, intensity, max mip, unused
+    vec4 params1;
+    vec4 global;        # active count, loaded count, sky fallback enabled, unused
+}

@@ -14,6 +14,8 @@ enum class BufferType : uint8_t {
     Index,
     DynamicVertex,
     DynamicIndex,
+    Storage,
+    StorageVertex,
     Indirect,
 };
 
@@ -72,6 +74,7 @@ class Buffer {
     Buffer& operator=(Buffer&& other) noexcept;
 
     bool create(const BufferDesc& desc);
+    bool update(const void* data, uint32_t size, uint32_t offset = 0);
     void destroy();
 
     bool valid() const;
@@ -79,7 +82,13 @@ class Buffer {
     uint16_t nativeIndex() const { return m_nativeIndex; }
     uint32_t size() const { return m_size; }
     uint32_t count() const { return m_count; }
+    uint32_t stride() const { return m_stride; }
+    uint16_t flags() const { return m_flags; }
     const std::string& name() const { return m_name; }
+
+    bool storage() const {
+        return m_type == BufferType::Storage || m_type == BufferType::StorageVertex;
+    }
 
     BufferNative takeNative();
 
@@ -90,6 +99,8 @@ class Buffer {
     uint16_t m_nativeIndex = bgfx::kInvalidHandle;
     uint32_t m_size = 0;
     uint32_t m_count = 0;
+    uint32_t m_stride = 0;
+    uint16_t m_flags = BGFX_BUFFER_NONE;
     std::string m_name;
 };
 

@@ -716,6 +716,15 @@ void FrameSettings::sanitize(const PipelineSettings& pipeline, bool reflection, 
     allowed(FrameSettingsField::LightLayers, pipeline.supportLightLayers && !preview);
     allowed(FrameSettingsField::ExposureControl, (!reflection || planarReflection) && !preview);
     allowed(FrameSettingsField::Postprocess, !reflection && !preview);
+    const bool postprocess = isEnabled(FrameSettingsField::Postprocess);
+    allowed(FrameSettingsField::StopNaN, postprocess);
+    allowed(FrameSettingsField::DepthOfField, postprocess && pipeline.supportDepthOfField);
+    allowed(FrameSettingsField::MotionBlur,
+            postprocess && pipeline.supportMotionBlur && isEnabled(FrameSettingsField::MotionVectors) &&
+                pipeline.supportMotionVectors && !preview);
+    allowed(FrameSettingsField::Bloom, postprocess && pipeline.supportBloom);
+    allowed(FrameSettingsField::ColorGrading, postprocess && pipeline.supportColorGrading);
+    allowed(FrameSettingsField::Antialiasing, postprocess && (pipeline.supportTAA || pipeline.supportFXAA));
     allowed(FrameSettingsField::TransparentPrepass,
             pipeline.supportTransparentDepthPrepass && !preview && transparentObjects);
     const bool motionVectors =

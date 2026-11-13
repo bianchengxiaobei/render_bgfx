@@ -4,25 +4,13 @@
 #include "common/common.sc"
 #include "common/packing.sc"
 #include "common/brdf.sc"
+#include "material/surface_data_types.sc"
 
 SAMPLER2D(s_baseColorMap, 0);
 SAMPLER2D(s_metallicRoughnessMap, 1);
 SAMPLER2D(s_normalMap, 2);
 SAMPLER2D(s_occlusionMap, 3);
 SAMPLER2D(s_emissiveMap, 4);
-
-struct SurfaceData
-{
-    vec3  baseColor;
-    float alpha;
-    float metallic;
-    float perceptualRoughness;
-    float roughness;
-    float ambientOcclusion;
-    vec3  normalWS;
-    vec3  geometricNormalWS;
-    vec3  emissive;
-};
 
 SurfaceData hbgMakeSurfaceData(vec3 worldPos, vec3 geometricNormalWS, vec3 tangentWS, vec3 bitangentWS,
                                vec2 uv, float viewSign)
@@ -47,6 +35,7 @@ SurfaceData hbgMakeSurfaceData(vec3 worldPos, vec3 geometricNormalWS, vec3 tange
 #else
     surfaceData.ambientOcclusion = 1.0;
 #endif
+    surfaceData.materialAmbientOcclusion = surfaceData.ambientOcclusion;
 
     surfaceData.metallic = hbgSaturate(metallic);
     surfaceData.perceptualRoughness = hbgSaturate(roughness);
@@ -92,6 +81,8 @@ SurfaceData hbgMakeSurfaceData(vec3 worldPos, vec3 geometricNormalWS, vec3 tange
 
     vec3 emissive = texture2D(s_emissiveMap, uv).rgb * u_material_emissiveFactor.rgb;
     surfaceData.emissive = max(emissive, vec3(0.0, 0.0, 0.0));
+    surfaceData.contactShadowMask = 0.0;
+    surfaceData.contactShadowFade = 0.0;
 
     return surfaceData;
 }

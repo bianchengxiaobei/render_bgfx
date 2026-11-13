@@ -33,14 +33,59 @@ uniform vec4 u_pass_lightColor;
 uniform vec4 u_pass_ambientColor;
 uniform vec4 u_pass_lightCounts;
 uniform vec4 u_pass_lightListParams;
+uniform vec4 u_pass_lightListParams2;
+uniform vec4 u_pass_lightScreenSize;
+
+// Cluster
+uniform vec4 u_cluster_params;
+uniform vec4 u_cluster_depthParams;
+uniform vec4 u_cluster_lightCounts;
+uniform vec4 u_cluster_screenSize;
+uniform vec4 u_cluster_lightListParams2;
+
+// Ssao
+uniform vec4 u_ssao_params;
+uniform vec4 u_ssao_params2;
+
+// Ssr
+uniform vec4 u_ssr_params;
+uniform vec4 u_ssr_params2;
+
+// Ssgi
+uniform vec4 u_ssgi_params;
+uniform vec4 u_ssgi_params2;
+uniform vec4 u_ssgi_params3;
 
 // Material
 uniform vec4 u_material_baseColorFactor;
 uniform vec4 u_material_metallicRoughness;
 uniform vec4 u_material_emissiveFactor;
 
+// Probe
+uniform mat4 u_probe_worldToProbe0;
+uniform mat4 u_probe_worldToProbe1;
+uniform vec4 u_probe_extents0;
+uniform vec4 u_probe_extents1;
+uniform vec4 u_probe_params0;
+uniform vec4 u_probe_params1;
+uniform vec4 u_probe_global;
+
+// Contact
+uniform vec4 u_contact_params;
+uniform vec4 u_contact_params2;
+uniform vec4 u_contact_params3;
+uniform vec4 u_contact_params4;
+
 // Debug
 uniform vec4 u_debug_depthParams;
+uniform vec4 u_debug_clusterParams;
+
+// Decal
+uniform mat4 u_decal_worldToDecal;
+uniform mat4 u_decal_decalToWorld;
+uniform vec4 u_decal_params;
+uniform vec4 u_decal_params2;
+uniform vec4 u_decal_baseColor;
 
 // Environment
 uniform vec4 u_environment_skyParams;
@@ -52,6 +97,25 @@ uniform vec4 u_environment_shBg;
 uniform vec4 u_environment_shBb;
 uniform vec4 u_environment_shCr;
 
+// Fog
+uniform vec4 u_fog_params;
+uniform vec4 u_fog_params2;
+uniform vec4 u_fog_albedo;
+uniform vec4 u_fog_params3;
+uniform vec4 u_fog_params4;
+uniform vec4 u_fog_params5;
+uniform vec4 u_fog_params6;
+uniform vec4 u_fog_localObbRight[8];
+uniform vec4 u_fog_localObbUp[8];
+uniform vec4 u_fog_localObbExtents[8];
+uniform vec4 u_fog_localObbCenter[8];
+uniform vec4 u_fog_localScattering[8];
+uniform vec4 u_fog_localFaceFadePos[8];
+uniform vec4 u_fog_localFaceFadeNeg[8];
+uniform vec4 u_fog_localDistanceFade[8];
+uniform vec4 u_fog_localMaskTiling[8];
+uniform vec4 u_fog_localMaskScroll[8];
+
 // Object
 uniform mat4 u_object_prevModel;
 
@@ -59,6 +123,24 @@ uniform mat4 u_object_prevModel;
 uniform vec4 u_postprocess_exposureParams;
 uniform vec4 u_postprocess_autoExposureParams;
 uniform vec4 u_postprocess_tonemapParams;
+uniform vec4 u_postprocess_frameParams;
+uniform vec4 u_postprocess_screenParams;
+uniform vec4 u_postprocess_histogramParams;
+uniform vec4 u_postprocess_gradingParams;
+uniform vec4 u_postprocess_vignetteParams;
+uniform vec4 u_postprocess_vignetteParams2;
+uniform vec4 u_postprocess_vignetteColor;
+uniform vec4 u_postprocess_bloomParams;
+uniform vec4 u_postprocess_bloomTint;
+uniform vec4 u_postprocess_bloomTexelSize;
+uniform vec4 u_postprocess_taaParams;
+uniform vec4 u_postprocess_taaParams2;
+uniform vec4 u_postprocess_taaHistorySize;
+uniform vec4 u_postprocess_dofParams;
+uniform vec4 u_postprocess_dofParams2;
+uniform vec4 u_postprocess_dofCocSize;
+uniform vec4 u_postprocess_motionBlurParams;
+uniform vec4 u_postprocess_motionBlurParams2;
 
 // Prepass
 uniform vec4 u_prepass_depthPyramidParams;

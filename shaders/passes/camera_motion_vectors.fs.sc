@@ -9,12 +9,6 @@ void main()
     const vec2 ndc = v_texcoord0 * 2.0 - 1.0;
     const float depth = texture2D(s_depthSource, v_texcoord0).r;
 
-    if (depth >= 0.999999)
-    {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
-
     // bgfx targets D3D11/Vulkan with homogeneousDepth=false, so clip/depth z
     // is in [0, 1]. Reconstruct the world position from the depth buffer using
     // the current view-projection (including TAA jitter when enabled), then

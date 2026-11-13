@@ -37,8 +37,11 @@ std::string_view shaderPassName(ShaderPass pass) {
 }
 
 ShaderPassMask defaultShaderPassMask(const asset::Material& material) {
-    ShaderPassMask mask = shaderPassMask(ShaderPass::ShadowCaster) | shaderPassMask(ShaderPass::MotionVectors);
+    ShaderPassMask mask = shaderPassMask(ShaderPass::MotionVectors);
     const bool transparent = material.alphaMode == asset::AlphaMode::Blend;
+    if (!transparent) {
+        mask |= shaderPassMask(ShaderPass::ShadowCaster);
+    }
 
     if (material.type == asset::MaterialType::Unlit) {
         mask |= shaderPassMask(ShaderPass::ForwardOnly) | shaderPassMask(ShaderPass::DepthForwardOnly);

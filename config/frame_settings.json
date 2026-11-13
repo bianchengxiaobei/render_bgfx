@@ -1,5 +1,5 @@
 {
-  "litShaderMode": "forward",
+  "litShaderMode": "deferred",
   "lodBias": 1.0,
   "lodBiasMode": "fromQualitySettings",
   "lodBiasQualityLevel": 0,

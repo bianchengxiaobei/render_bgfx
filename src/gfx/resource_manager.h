@@ -39,6 +39,7 @@ class ResourceManager {
                        uint16_t pitch, uint16_t layer = 0, uint8_t mip = 0, uint16_t x = 0, uint16_t y = 0);
 
     BufferHandle createBuffer(const BufferDesc& desc);
+    bool updateBuffer(BufferHandle handle, const void* data, uint32_t size, uint32_t offset = 0);
     void destroyBuffer(BufferHandle handle);
     Buffer* buffer(BufferHandle handle);
     const Buffer* buffer(BufferHandle handle) const;
@@ -53,6 +54,8 @@ class ResourceManager {
                                 uint32_t fragmentSize, const std::string& name = {});
     ProgramHandle createProgramFromFiles(const std::string& vertexPath, const std::string& fragmentPath,
                                          const std::string& name = {});
+    ProgramHandle createComputeProgram(const void* computeData, uint32_t computeSize, const std::string& name = {});
+    ProgramHandle createComputeProgramFromFiles(const std::string& computePath, const std::string& name = {});
     void destroyProgram(ProgramHandle handle);
     Program* program(ProgramHandle handle);
     const Program* program(ProgramHandle handle) const;

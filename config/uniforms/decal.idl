@@ -1,0 +1,7 @@
+block Decal {
+    mat4 worldToDecal;
+    mat4 decalToWorld;
+    vec4 params;             # opacity, angle fade degrees, normal blend, texture flags
+    vec4 params2;            # metallic, ambient occlusion, roughness, unused
+    vec4 baseColor;
+}

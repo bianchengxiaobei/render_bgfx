@@ -1,0 +1,7 @@
+block Cluster {
+    vec4 params;      # tile size, tile count x, tile count y, slice count
+    vec4 depthParams; # near, far, log base, enabled
+    vec4 lightCounts; # total, directional, punctual, shadowed
+    vec4 screenSize;  # render width, render height, inverse width, inverse height
+    vec4 lightListParams2; # list stride, capacity, max fptl lights, max big-tile lights
+}

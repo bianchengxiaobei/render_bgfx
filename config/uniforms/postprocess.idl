@@ -1,5 +1,23 @@
 block PostProcess {
     vec4 exposureParams;     # mode: fixed/auto/disabled, fixed exposure multiplier, compensation, lens exposure scale
     vec4 autoExposureParams; # min EV100, max EV100, speed dark-to-light, speed light-to-dark
-    vec4 tonemapParams;      # mode, history valid, adaptation mode, unused
+    vec4 tonemapParams;      # mode, adaptation enabled, metering mode, delta seconds
+    vec4 frameParams;        # postprocess enabled, advanced effects enabled, compute supported, history valid
+    vec4 screenParams;       # render width, render height, target width, target height
+    vec4 histogramParams;    # EV range scale, EV range bias, min percentile, max percentile
+    vec4 gradingParams;      # post exposure scale, LUT size, grading enabled, vignette enabled
+    vec4 vignetteParams;     # center x, center y, intensity, smoothness
+    vec4 vignetteParams2;    # roundness, rounded, opacity, unused
+    vec4 vignetteColor;      # vignette rgb, unused
+    vec4 bloomParams;        # effective intensity, threshold linear, enabled, scatter
+    vec4 bloomTint;          # normalized bloom tint rgb, unused
+    vec4 bloomTexelSize;     # source width, source height, 1/width, 1/height
+    vec4 taaParams;          # history valid, base history weight, motion rejection, unused
+    vec4 taaParams2;         # quality, sharpening, history frame, jitter scale
+    vec4 taaHistorySize;     # history width, history height, 1/width, 1/height
+    vec4 dofParams;          # near focus start, near focus end, far focus start, far focus end
+    vec4 dofParams2;         # near max blur pixels, far max blur pixels, CoC resolution scale, high quality
+    vec4 dofCocSize;         # CoC width, CoC height, 1/width, 1/height
+    vec4 motionBlurParams;   # intensity, max velocity in NDC, min velocity in pixels, sample count
+    vec4 motionBlurParams2;  # screen magnitude, depth comparison extent, camera motion scale, unused
 }

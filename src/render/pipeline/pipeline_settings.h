@@ -39,6 +39,13 @@ struct PipelineSettings {
 
     bool supportShadows = true;
     bool supportShadowMask = false;
+    bool supportGpuLightList = true;
+    bool supportGpuLightListBuffers = true;
+    bool supportGpuLightListIndirect = false;
+    uint32_t lightListCapacity = 32;
+    bool supportGpuShadowCulling = false;
+    bool supportGpuShadowIndirect = false;
+    bool supportAsyncGpuLightList = false;
     bool supportContactShadows = false;
     bool supportScreenSpaceShadows = false;
     bool supportSSR = false;
@@ -49,6 +56,13 @@ struct PipelineSettings {
     bool supportVolumetrics = false;
     bool supportVolumetricClouds = false;
     bool supportMotionVectors = true;
+    bool supportTAA = false;
+    bool supportBloom = false;
+    bool supportColorGrading = false;
+    bool supportDepthOfField = false;
+    bool supportMotionBlur = false;
+    bool supportFXAA = false;
+    bool supportExposureHistogram = false;
     bool supportTransparentDepthPrepass = false;
     bool supportTransparentDepthPostpass = false;
     bool supportLowResTransparent = false;

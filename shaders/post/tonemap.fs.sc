@@ -224,7 +224,8 @@ vec3 hbgNeutralTonemap(vec3 x)
 
 void main()
 {
-    vec3 hdr = max(texture2D(s_hdrColor, v_texcoord0).rgb, vec3(0.0, 0.0, 0.0));
+    vec2 uv = vec2(v_texcoord0.x, 1.0 - v_texcoord0.y);
+    vec3 hdr = max(texture2D(s_hdrColor, uv).rgb, vec3(0.0, 0.0, 0.0));
     float exposure = 1.0;
     if (u_postprocess_exposureParams.x < 0.5) {
         exposure = u_postprocess_exposureParams.y;

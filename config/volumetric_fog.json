@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "meanFreePath": 400.0,
+  "albedo": [1.0, 1.0, 1.0],
+  "baseHeight": 0.0,
+  "maximumHeight": 50.0,
+  "anisotropy": 0.5,
+  "depthExtent": 64.0,
+  "stepCount": 16,
+  "directionalShadows": true,
+  "globalLightProbeDimmer": 1.0,
+  "resolutionScale": 0.5,
+  "temporal": true,
+  "temporalHistoryWeight": 0.85,
+  "temporalJitter": true,
+  "punctualLights": true,
+  "punctualShadows": true,
+  "maxPunctualLights": 8,
+  "localVolumes": true
+}

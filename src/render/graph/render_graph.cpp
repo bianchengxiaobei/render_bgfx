@@ -17,7 +17,7 @@ bool sameTextureShape(const gfx::TextureDesc& lhs, const gfx::TextureDesc& rhs) 
     return lhs.width == rhs.width && lhs.height == rhs.height && lhs.layers == rhs.layers &&
            lhs.mipCount == rhs.mipCount && lhs.msaaSamples == rhs.msaaSamples && lhs.format == rhs.format &&
            lhs.flags == rhs.flags && lhs.renderTarget == rhs.renderTarget && lhs.depthStencil == rhs.depthStencil &&
-           lhs.cubeMap == rhs.cubeMap;
+           lhs.computeWrite == rhs.computeWrite && lhs.cubeMap == rhs.cubeMap;
 }
 
 bool sameBufferShape(const gfx::BufferDesc& lhs, const gfx::BufferDesc& rhs) {
@@ -76,6 +76,11 @@ RenderGraphBuilder& RenderGraphBuilder::setColorAttachment(RenderGraphTextureHan
 
 RenderGraphBuilder& RenderGraphBuilder::setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip) {
     m_graph.setDepthAttachment(m_passIndex, handle, mip);
+    return *this;
+}
+
+RenderGraphBuilder& RenderGraphBuilder::setViewSize(uint16_t width, uint16_t height) {
+    m_graph.setViewSize(m_passIndex, width, height);
     return *this;
 }
 
@@ -308,6 +313,19 @@ void RenderGraph::setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandl
     addTextureWrite(passIndex, handle);
 }
 
+void RenderGraph::setViewSize(uint32_t passIndex, uint16_t width, uint16_t height) {
+    if (passIndex >= m_passes.size()) {
+        return;
+    }
+    if (width == 0 || height == 0) {
+        recordError("invalid pass view size");
+        return;
+    }
+    Pass& pass = m_passes[passIndex];
+    pass.viewWidth = width;
+    pass.viewHeight = height;
+}
+
 void RenderGraph::setBackbuffer(uint32_t passIndex) {
     if (passIndex >= m_passes.size()) {
         return;
@@ -382,6 +400,10 @@ bool RenderGraph::validatePasses() {
                 recordError("pass '" + pass.name + "' references an invalid depth attachment mip");
                 return false;
             }
+        }
+        if ((pass.viewWidth == 0) != (pass.viewHeight == 0)) {
+            recordError("pass '" + pass.name + "' has an incomplete view size");
+            return false;
         }
 
         for (RenderGraphTextureHandle write : pass.textureWrites) {
@@ -790,6 +812,15 @@ void RenderGraph::prunePool(gfx::ResourceManager& resources) {
     }
 }
 
+std::vector<std::string> RenderGraph::passNames() const {
+    std::vector<std::string> names;
+    names.reserve(m_passes.size());
+    for (const Pass& pass : m_passes) {
+        names.push_back(pass.name);
+    }
+    return names;
+}
+
 bool RenderGraph::execute(gfx::Encoder& encoder, gfx::ResourceManager& resources) {
     if (!m_compiled && !compile()) {
         HBG_LOGE("render graph '{}': {}", m_name, m_error);
@@ -831,8 +862,11 @@ bool RenderGraph::execute(gfx::Encoder& encoder, gfx::ResourceManager& resources
             return false;
         }
 
+
         encoder.setViewName(pass.viewId, pass.name.c_str());
-        RenderGraphContext context(encoder, resources, pass.viewId, m_width, m_height, frameBuffer, pass.backbuffer,
+        const uint16_t viewWidth = pass.viewWidth != 0 ? pass.viewWidth : m_width;
+        const uint16_t viewHeight = pass.viewHeight != 0 ? pass.viewHeight : m_height;
+        RenderGraphContext context(encoder, resources, pass.viewId, viewWidth, viewHeight, frameBuffer, pass.backbuffer,
                                    textures, buffers);
         pass.renderFunc(context);
     }

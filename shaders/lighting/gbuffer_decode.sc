@@ -30,6 +30,12 @@ SurfaceData hbgDecodeGBufferSurface(vec2 uv)
     surfaceData.emissive = max(gbuffer3.rgb, vec3(0.0, 0.0, 0.0));
     surfaceData.contactShadowMask = floor(hbgSaturate(gbuffer1.b) * 255.0 + 0.5);
     surfaceData.contactShadowFade = hbgSaturate(gbuffer1.a);
+    surfaceData.lightLayerMask = 65535.0;
+    if (u_object_lightLayerMask.w > 0.5)
+    {
+        surfaceData.lightLayerMask = floor(hbgSaturate(gbuffer0.a) * 255.0 + 0.5) +
+                                     floor(hbgSaturate(gbuffer3.a) * 255.0 + 0.5) * 256.0;
+    }
     return surfaceData;
 }
 

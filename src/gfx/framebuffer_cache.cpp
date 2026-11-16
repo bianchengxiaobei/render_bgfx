@@ -64,24 +64,20 @@ bool FrameBuffer::create(const FrameBufferKey& frameBufferKey,
         return index < frameBufferKey.mips.size() ? frameBufferKey.mips[index] : static_cast<uint16_t>(0);
     };
 
-    bool useMipAttachments = false;
-    for (std::size_t index = 0; index < nativeAttachments.size(); ++index) {
-        useMipAttachments = useMipAttachments || mipAt(index) != 0;
-    }
-
     const uint8_t count = static_cast<uint8_t>(nativeAttachments.size());
-    if (useMipAttachments) {
-        std::vector<bgfx::Attachment> attachments;
-        attachments.reserve(nativeAttachments.size());
-        for (std::size_t index = 0; index < nativeAttachments.size(); ++index) {
-            bgfx::Attachment attachment;
-            attachment.init(nativeAttachments[index], bgfx::Access::Write, 0, 1, mipAt(index), 0);
-            attachments.push_back(attachment);
-        }
-        m_native = bgfx::createFrameBuffer(count, attachments.data(), false);
-    } else {
-        m_native = bgfx::createFrameBuffer(count, nativeAttachments.data(), false);
+    // Always use explicit attachments. The TextureHandle overload lets bgfx
+    // auto-generate mips for non-depth attachments that own a mip chain; that
+    // is invalid on formats without BGFX_CAPS_FORMAT_TEXTURE_MIP_AUTOGEN.
+    // Explicit attachments also preserve the requested mip for downsample passes.
+    std::vector<bgfx::Attachment> attachments;
+    attachments.reserve(nativeAttachments.size());
+    for (std::size_t index = 0; index < nativeAttachments.size(); ++index) {
+        bgfx::Attachment attachment;
+        attachment.init(nativeAttachments[index], bgfx::Access::Write, 0, 1, mipAt(index),
+                        BGFX_ATTACHMENT_NONE);
+        attachments.push_back(attachment);
     }
+    m_native = bgfx::createFrameBuffer(count, attachments.data(), false);
     if (!valid()) {
         HBG_LOGE("failed to create frame buffer '{}'", name);
         return false;

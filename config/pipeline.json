@@ -8,7 +8,7 @@
   "supportGpuLightList": true,
   "supportGpuLightListBuffers": true,
   "supportGpuLightListIndirect": false,
-  "lightListCapacity": 32,
+  "lightListCapacity": 64,
   "supportGpuShadowCulling": false,
   "supportGpuShadowIndirect": false,
   "supportAsyncGpuLightList": false,

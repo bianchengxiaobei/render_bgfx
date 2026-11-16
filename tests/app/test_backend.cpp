@@ -35,6 +35,7 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK(result.options.debugLightClusterSlice == -1);
     CHECK_FALSE(result.options.disableLightCluster);
     CHECK_FALSE(result.options.gpuLightList.has_value());
+    CHECK_FALSE(result.options.lightListFeatureFlags.has_value());
     CHECK_FALSE(result.options.lightListCapacity.has_value());
     CHECK_FALSE(result.options.cameraOrbit);
     CHECK_FALSE(result.options.debugWireframe);
@@ -224,8 +225,13 @@ TEST_CASE("parseCommandLine parses shadow settings") {
     CHECK_FALSE(parseCommandLine(2, invalidCascades).ok);
     const char* invalidAtlas[] = {"hbg", "--shadow-atlas-size=512"};
     CHECK_FALSE(parseCommandLine(2, invalidAtlas).ok);
-    const char* invalidRequests[] = {"hbg", "--shadow-max-requests=65"};
+    const char* invalidRequests[] = {"hbg", "--shadow-max-requests=129"};
     CHECK_FALSE(parseCommandLine(2, invalidRequests).ok);
+    const char* validRequests[] = {"hbg", "--shadow-max-requests=128"};
+    const CommandLineResult validRequestsResult = parseCommandLine(2, validRequests);
+    CHECK(validRequestsResult.ok);
+    REQUIRE(validRequestsResult.options.shadowOverrides.maxRequests.has_value());
+    CHECK(*validRequestsResult.options.shadowOverrides.maxRequests == 128u);
     const char* invalidQuality[] = {"hbg", "--shadow-quality=bogus"};
     CHECK_FALSE(parseCommandLine(2, invalidQuality).ok);
     const char* invalidBlockers[] = {"hbg", "--shadow-blocker-samples=0"};
@@ -239,12 +245,14 @@ TEST_CASE("parseCommandLine parses shadow settings") {
 }
 
 TEST_CASE("parseCommandLine parses per-light shadow defaults and cache") {
-    const char* argv[] = {"hbg", "--shadow-cache", "--shadow-dimmer=0.5", "--shadow-fade-distance=50",
-                          "--shadow-tint=0.1,0.2,0.3"};
-    const CommandLineResult result = parseCommandLine(5, argv);
+    const char* argv[] = {"hbg", "--shadow-cache", "--area-shadow-cache", "--shadow-dimmer=0.5",
+                          "--shadow-fade-distance=50", "--shadow-tint=0.1,0.2,0.3"};
+    const CommandLineResult result = parseCommandLine(6, argv);
     REQUIRE(result.ok);
     REQUIRE(result.options.shadowOverrides.cachedPunctualShadows.has_value());
     CHECK(*result.options.shadowOverrides.cachedPunctualShadows);
+    REQUIRE(result.options.shadowOverrides.cachedAreaShadows.has_value());
+    CHECK(*result.options.shadowOverrides.cachedAreaShadows);
     REQUIRE(result.options.shadowOverrides.shadowDimmer.has_value());
     CHECK(*result.options.shadowOverrides.shadowDimmer == doctest::Approx(0.5f));
     REQUIRE(result.options.shadowOverrides.shadowFadeDistance.has_value());
@@ -256,15 +264,19 @@ TEST_CASE("parseCommandLine parses per-light shadow defaults and cache") {
     applyShadowOverrides(result.options.shadowOverrides, settings);
     render::sanitizeShadowSettings(settings);
     CHECK(settings.cachedPunctualShadows);
+    CHECK(settings.cachedAreaShadows);
     CHECK(settings.shadowDimmer == doctest::Approx(0.5f));
     CHECK(settings.shadowFadeDistance == doctest::Approx(50.0f));
     CHECK(settings.shadowTint == Vec3(0.1f, 0.2f, 0.3f));
 
-    const char* disabled[] = {"hbg", "--shadow-cache", "--no-shadow-cache"};
-    const CommandLineResult disabledResult = parseCommandLine(3, disabled);
+    const char* disabled[] = {"hbg", "--shadow-cache", "--no-shadow-cache", "--area-shadow-cache",
+                              "--no-area-shadow-cache"};
+    const CommandLineResult disabledResult = parseCommandLine(5, disabled);
     REQUIRE(disabledResult.ok);
     REQUIRE(disabledResult.options.shadowOverrides.cachedPunctualShadows.has_value());
     CHECK_FALSE(*disabledResult.options.shadowOverrides.cachedPunctualShadows);
+    REQUIRE(disabledResult.options.shadowOverrides.cachedAreaShadows.has_value());
+    CHECK_FALSE(*disabledResult.options.shadowOverrides.cachedAreaShadows);
 
     const char* invalidTint[] = {"hbg", "--shadow-tint=1,2"};
     CHECK_FALSE(parseCommandLine(2, invalidTint).ok);
@@ -439,6 +451,26 @@ TEST_CASE("parseCommandLine parses light-list capacity") {
 
     const char* invalid[] = {"hbg", "--light-capacity=48"};
     CHECK_FALSE(parseCommandLine(2, invalid).ok);
+}
+
+TEST_CASE("parseCommandLine parses light-list feature flags") {
+    const char* enabled[] = {"hbg", "--light-list-feature-flags"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.lightListFeatureFlags.has_value());
+    CHECK(*enabledResult.options.lightListFeatureFlags);
+
+    const char* disabled[] = {"hbg", "--no-light-list-feature-flags"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.lightListFeatureFlags.has_value());
+    CHECK_FALSE(*disabledResult.options.lightListFeatureFlags);
+
+    const char* lastWins[] = {"hbg", "--light-list-feature-flags", "--no-light-list-feature-flags"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.lightListFeatureFlags.has_value());
+    CHECK_FALSE(*lastWinsResult.options.lightListFeatureFlags);
 }
 
 TEST_CASE("parseCommandLine can disable the debug UI") {

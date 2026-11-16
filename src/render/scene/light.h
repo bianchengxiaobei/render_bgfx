@@ -2,12 +2,16 @@
 
 #include "core/math.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 
 namespace hbg::render {
 
-enum class LightType : uint8_t { Directional, Point, Spot };
+enum class LightType : uint8_t { Directional, Point, Spot, Area };
+enum class LightCookieMode : uint8_t { None, Clamp, Repeat };
+enum class LightCookieType : uint8_t { None, Spot2D, PointOctahedral };
+enum class LightAreaShape : uint8_t { Rectangle, Tube, Disc };
 
 enum class ShadowUpdateMode : uint8_t {
     EveryFrame = 0,
@@ -37,9 +41,22 @@ struct Light {
     float range = 10.0f;
     float innerConeAngle = 0.0f;
     float outerConeAngle = 0.78539816339f;
+    LightAreaShape areaShape = LightAreaShape::Rectangle;
+    float areaWidth = 1.0f;
+    float areaHeight = 1.0f;
+    float areaShadowCone = 120.0f;
     Mat4 world = Mat4::identity();
     bool castShadows = false;
     bool shadowConfigured = false;
+    uint16_t lightLayerMask = 0xffffu;
+    LightCookieMode cookieMode = LightCookieMode::None;
+    LightCookieType cookieType = LightCookieType::None;
+    Vec2 cookieScale{1.0f, 1.0f};
+    Vec2 cookieOffset{0.0f, 0.0f};
+    std::array<float, 64> cookieSamples{};
+    std::array<float, 8> iesSamples{};
+    float iesCut = 0.0f;
+    bool hasIes = false;
     LightShadowSettings shadow;
 };
 

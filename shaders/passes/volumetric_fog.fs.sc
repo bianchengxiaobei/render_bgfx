@@ -101,7 +101,7 @@ vec3 hbgFogPunctualRadiance(vec3 samplePosition, vec3 rayDirection, float anisot
         return vec3(0.0, 0.0, 0.0);
     }
 
-    const int lightCount = min(int(u_pass_lightCounts.x + 0.5), 32);
+    const int lightCount = min(int(u_pass_lightCounts.x + 0.5), hbgLightListCapacity());
     const int directionalCount = min(int(u_pass_lightCounts.y + 0.5), lightCount);
     const int maxLights = clamp(int(u_fog_params5.x + 0.5), 0, 16);
     if (maxLights <= 0)
@@ -114,14 +114,14 @@ vec3 hbgFogPunctualRadiance(vec3 samplePosition, vec3 rayDirection, float anisot
     {
         const ivec2 tile = hbgLightClusterTileCoord(samplePosition);
         const int slice = hbgClusterSliceForDepth(hbgLinearDepth(samplePosition));
-        const int clusterLightCount = min(int(hbgClusterLightListCount(tile, slice)), maxLights);
+        const int clusterLightCount = min(int(hbgClusterLightListCount(tile, slice, 0)), maxLights);
         for (int offset = 0; offset < 16; ++offset)
         {
             if (offset >= clusterLightCount)
             {
                 break;
             }
-            const int index = int(hbgClusterLightListIndex(tile, slice, offset));
+            const int index = int(hbgClusterLightListIndex(tile, slice, offset, 0));
             if (index >= directionalCount && index < lightCount)
             {
                 radiance += hbgFogPunctualLight(hbgLoadLightData(index), samplePosition, rayDirection,
@@ -134,14 +134,14 @@ vec3 hbgFogPunctualRadiance(vec3 samplePosition, vec3 rayDirection, float anisot
     if (u_pass_lightListParams.w > 0.5)
     {
         const ivec2 tile = hbgLightTileCoord(samplePosition);
-        const int tileLightCount = min(int(hbgLightListCount(tile)), maxLights);
+        const int tileLightCount = min(int(hbgLightListCount(tile, 0)), maxLights);
         for (int offset = 0; offset < 16; ++offset)
         {
             if (offset >= tileLightCount)
             {
                 break;
             }
-            const int index = int(hbgLightListIndex(tile, offset));
+            const int index = int(hbgLightListIndex(tile, offset, 0));
             if (index >= directionalCount && index < lightCount)
             {
                 radiance += hbgFogPunctualLight(hbgLoadLightData(index), samplePosition, rayDirection,

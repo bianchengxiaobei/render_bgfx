@@ -16,11 +16,16 @@ TEST_CASE("shadow settings defaults and filter mapping") {
     CHECK(settings.cascadeFade == doctest::Approx(0.10f));
     CHECK(settings.directionalFilter == ShadowFilter::Pcf7x7);
     CHECK(settings.punctualFilter == ShadowFilter::Pcf5x5);
+    CHECK(settings.areaFilter == ShadowFilter::Pcss);
     CHECK(settings.directionalResolution == 1024);
     CHECK(settings.pointResolution == 256);
     CHECK(settings.spotResolution == 512);
-    CHECK(settings.atlasSize == 2048);
-    CHECK(settings.maxRequests == kMaxShadowRequests);
+    CHECK(settings.areaResolution == kDefaultAreaShadowResolution);
+    CHECK(settings.atlasSize == kDefaultShadowAtlasSize);
+    CHECK(settings.areaAtlasSize == kDefaultAreaShadowAtlasSize);
+    CHECK(settings.maxRequests == kDefaultShadowRequests);
+    CHECK(kMaxShadowRequests == 128);
+    CHECK(kDefaultShadowRequests == 64);
     CHECK(settings.normalBias == doctest::Approx(0.2f));
     CHECK(settings.slopeBias == doctest::Approx(0.5f));
     CHECK(settings.shadowNearPlane == doctest::Approx(0.1f));
@@ -48,10 +53,13 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
         "cascadeFade": 0.2,
         "directionalFilter": "pcf5x5",
         "punctualFilter": "high",
+        "areaFilter": "pcf5x5",
         "directionalResolution": 512,
         "pointResolution": 256,
         "spotResolution": 1024,
+        "areaResolution": 1024,
         "atlasSize": 4096,
+        "areaAtlasSize": 2048,
         "maxRequests": 48,
         "normalBias": 0.4,
         "slopeBias": 1.5,
@@ -64,7 +72,8 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
         "shadowDimmer": 0.65,
         "shadowFadeDistance": 55.0,
         "shadowTint": [0.2, 0.3, 0.4],
-        "cachedPunctualShadows": true
+        "cachedPunctualShadows": true,
+        "cachedAreaShadows": true
     })";
 
     ShadowSettings settings;
@@ -78,7 +87,10 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
     CHECK(settings.cascadeFade == doctest::Approx(0.2f));
     CHECK(settings.directionalFilter == ShadowFilter::Pcf5x5);
     CHECK(settings.punctualFilter == ShadowFilter::Pcss);
+    CHECK(settings.areaFilter == ShadowFilter::Pcf5x5);
+    CHECK(settings.areaResolution == 1024);
     CHECK(settings.atlasSize == 4096);
+    CHECK(settings.areaAtlasSize == 2048);
     CHECK(settings.maxRequests == 48);
     CHECK(settings.slopeBias == doctest::Approx(1.5f));
     CHECK(settings.shadowNearPlane == doctest::Approx(0.25f));
@@ -89,6 +101,7 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
     CHECK(settings.microShadows);
     CHECK(settings.microShadowOpacity == doctest::Approx(0.6f));
     CHECK(settings.cachedPunctualShadows);
+    CHECK(settings.cachedAreaShadows);
     CHECK(settings.shadowDimmer == doctest::Approx(0.65f));
     CHECK(settings.shadowFadeDistance == doctest::Approx(55.0f));
     CHECK(settings.shadowTint == Vec3(0.2f, 0.3f, 0.4f));
@@ -107,16 +120,18 @@ TEST_CASE("shadow settings reject malformed values and sanitize ranges") {
 
     REQUIRE(parseShadowSettings(
         R"({"cascadeCount": 9, "directionalResolution": 16, "pointResolution": 0,
-            "spotResolution": 8192, "atlasSize": 12, "maxRequests": 500, "normalBias": -1,
-            "slopeBias": 99, "shadowNearPlane": 0, "softness": 9, "blockerSamples": 0,
-            "filterSamples": 100, "minFilterSize": 2, "cascadeFade": -1,
-            "microShadows": {"enabled": true, "opacity": 2}})",
+            "spotResolution": 8192, "areaResolution": 128, "atlasSize": 12, "areaAtlasSize": 12,
+            "maxRequests": 500, "normalBias": -1, "slopeBias": 99, "shadowNearPlane": 0,
+            "softness": 9, "blockerSamples": 0, "filterSamples": 100, "minFilterSize": 2,
+            "cascadeFade": -1, "microShadows": {"enabled": true, "opacity": 2}})",
         settings, error));
     CHECK(settings.cascadeCount == 4);
     CHECK(settings.directionalResolution == 1024);
     CHECK(settings.pointResolution == 256);
     CHECK(settings.spotResolution == 512);
+    CHECK(settings.areaResolution == 512);
     CHECK(settings.atlasSize == 2048);
+    CHECK(settings.areaAtlasSize == 1024);
     CHECK(settings.maxRequests == kMaxShadowRequests);
     CHECK(settings.normalBias == doctest::Approx(0.0f));
     CHECK(settings.slopeBias == doctest::Approx(10.0f));
@@ -151,9 +166,12 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.cascadeSplits = {0.1f, 0.4f, 1.0f, 1.0f};
     source.directionalFilter = ShadowFilter::Pcf7x7;
     source.punctualFilter = ShadowFilter::Off;
+    source.areaFilter = ShadowFilter::Pcf5x5;
     source.pointResolution = 256;
     source.spotResolution = 2048;
+    source.areaResolution = 1024;
     source.atlasSize = 1024;
+    source.areaAtlasSize = 2048;
     source.maxRequests = 12;
     source.cascadeFade = 0.25f;
     source.slopeBias = 1.25f;
@@ -168,6 +186,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.shadowFadeDistance = 75.0f;
     source.shadowTint = Vec3(0.11f, 0.22f, 0.33f);
     source.cachedPunctualShadows = true;
+    source.cachedAreaShadows = true;
 
     ShadowSettings parsed;
     std::string error;
@@ -177,9 +196,12 @@ TEST_CASE("shadow settings round trip through JSON") {
     CHECK(parsed.cascadeFade == doctest::Approx(source.cascadeFade));
     CHECK(parsed.directionalFilter == source.directionalFilter);
     CHECK(parsed.punctualFilter == source.punctualFilter);
+    CHECK(parsed.areaFilter == source.areaFilter);
     CHECK(parsed.pointResolution == source.pointResolution);
     CHECK(parsed.spotResolution == source.spotResolution);
+    CHECK(parsed.areaResolution == source.areaResolution);
     CHECK(parsed.atlasSize == source.atlasSize);
+    CHECK(parsed.areaAtlasSize == source.areaAtlasSize);
     CHECK(parsed.maxRequests == source.maxRequests);
     CHECK(parsed.slopeBias == doctest::Approx(source.slopeBias));
     CHECK(parsed.shadowNearPlane == doctest::Approx(source.shadowNearPlane));
@@ -193,4 +215,5 @@ TEST_CASE("shadow settings round trip through JSON") {
     CHECK(parsed.shadowFadeDistance == doctest::Approx(source.shadowFadeDistance));
     CHECK(parsed.shadowTint == source.shadowTint);
     CHECK(parsed.cachedPunctualShadows);
+    CHECK(parsed.cachedAreaShadows);
 }

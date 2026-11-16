@@ -17,6 +17,7 @@ struct SurfaceData
     vec3  emissive;
     float contactShadowMask;
     float contactShadowFade;
+    float lightLayerMask;
 };
 
 #endif // HBG_SURFACE_DATA_TYPES_SC

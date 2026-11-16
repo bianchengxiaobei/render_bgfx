@@ -105,6 +105,8 @@ constexpr uint32_t kMaterialVariantMask =
     MaterialVariantNormalMap | MaterialVariantMaskMap | MaterialVariantAlphaClip | MaterialVariantDoubleSided;
 
 constexpr uint64_t kLightListBufferProgramKey = 1ull << 63;
+constexpr uint64_t kLightLayersProgramKey = 1ull << 62;
+constexpr uint32_t kMaterialVariantCount = 16;
 
 struct ProgramKey {
     PassId pass = PassId::Forward;

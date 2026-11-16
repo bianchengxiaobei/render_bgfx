@@ -66,6 +66,7 @@ struct ShadowOverrides {
     std::optional<float> shadowFadeDistance;
     std::optional<Vec3> shadowTint;
     std::optional<bool> cachedPunctualShadows;
+    std::optional<bool> cachedAreaShadows;
 };
 
 struct PostProcessOverrides {
@@ -117,6 +118,7 @@ struct AppOptions {
     bool verbose = false;
     bool bgfxDebug = false;
     bool gfxTest = false;
+    bool clusterStatsReadback = false;
     bool debugLightData = false;
     bool debugWireframe = false;
     render::DebugDisplayMode debugDisplayMode = render::DebugDisplayMode::None;
@@ -130,7 +132,9 @@ struct AppOptions {
     std::optional<bool> gpuLightList;
     std::optional<bool> gpuLightListBuffers;
     std::optional<bool> gpuLightListIndirect;
+    std::optional<bool> lightListFeatureFlags;
     std::optional<uint32_t> lightListCapacity;
+    std::optional<bool> lightLayers;
     std::optional<bool> gpuShadowCulling;
     std::optional<bool> gpuShadowIndirect;
     std::optional<bool> asyncGpuLightList;

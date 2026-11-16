@@ -17,8 +17,15 @@ void main()
     surfaceData = hbgApplyDecals(surfaceData, gl_FragCoord.xy * (vec2(1.0, 1.0) / screenSize));
 #endif
 
-    gl_FragData[0] = vec4(hbgSaturate(surfaceData.baseColor), surfaceData.alpha);
+    vec4 baseColorOut = vec4(hbgSaturate(surfaceData.baseColor), surfaceData.alpha);
+    vec4 emissiveOut = vec4(max(surfaceData.emissive, vec3(0.0, 0.0, 0.0)), 1.0);
+#ifdef HAS_LIGHT_LAYERS
+    const float layerMask = floor(u_object_lightLayerMask.x + 0.5);
+    baseColorOut.a = mod(layerMask, 256.0) / 255.0;
+    emissiveOut.a = floor(layerMask / 256.0) / 255.0;
+#endif
+    gl_FragData[0] = baseColorOut;
     gl_FragData[1] = vec4(hbgSaturate(surfaceData.metallic), hbgSaturate(surfaceData.ambientOcclusion), 0.0, 0.0);
     gl_FragData[2] = hbgEncodeNormalBuffer(surfaceData.normalWS, surfaceData.perceptualRoughness);
-    gl_FragData[3] = vec4(max(surfaceData.emissive, vec3(0.0, 0.0, 0.0)), 1.0);
+    gl_FragData[3] = emissiveOut;
 }

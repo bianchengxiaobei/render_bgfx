@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Compile the HBG shader variants and write shaders/manifest.json."""
 
 from __future__ import annotations
@@ -8,12 +8,37 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 _EXECUTOR: Optional[ThreadPoolExecutor] = None
 _FUTURES: List[Future[None]] = []
+_BUILD_TIMEOUT: Optional[float] = None
+_OPTIMIZATION = 3
+_PROGRESS_ENABLED = True
+_ONLY_FILTER = ""
+_WRITE_MANIFEST = True
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS = {"scheduled": 0, "completed": 0, "cached": 0, "compiled": 0, "failed": 0, "total": 0}
+_FAILURES: List["BuildFailure"] = []
+
+
+@dataclass
+class BuildFailure:
+    source: str
+    backend: str
+    shader_type: str
+    output: str
+    elapsed: float
+    reason: str
+    command: str
+    stdout: str
+    stderr: str
+
 
 VARIANT_BITS = (
     (0, "HAS_NORMAL_MAP"),
@@ -32,9 +57,18 @@ def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, outp
                    newest_input: float, varying_def: Optional[Path] = None) -> None:
     if _EXECUTOR is None:
         raise RuntimeError("shader compile executor is not initialized")
+    output_display = output.relative_to(root).as_posix()
+    if _ONLY_FILTER and _ONLY_FILTER not in output_display:
+        return
     output.parent.mkdir(parents=True, exist_ok=True)
+    source_display = source.relative_to(root).as_posix()
     newest = max(newest_input, source.stat().st_mtime)
+    with _PROGRESS_LOCK:
+        _PROGRESS["scheduled"] += 1
     if not force and output.exists() and output.stat().st_size > 0 and output.stat().st_mtime >= newest:
+        with _PROGRESS_LOCK:
+            _PROGRESS["completed"] += 1
+            _PROGRESS["cached"] += 1
         return
     command: List[str] = [
         str(shaderc),
@@ -45,26 +79,109 @@ def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, outp
         "-i", str(root / "shaders/include"),
         "-i", str(bgfx_src / "src"),
         *BACKENDS[backend],
-        "-O", "3",
+        "-O", str(_OPTIMIZATION),
         "--Werror",
     ]
     if shader_type != "compute":
         command.extend(["--varyingdef", str(varying_def or (root / "shaders/include/varying.def.sc"))])
     if defines:
         command.extend(["--define", ";".join(defines)])
+
     def run() -> None:
-        result = subprocess.run(command, cwd=root, text=True, capture_output=True)
-        if result.returncode != 0:
-            sys.stderr.write(f"shader build failed: {source} ({backend}, {shader_type})\n")
-            sys.stderr.write(result.stdout)
-            sys.stderr.write(result.stderr)
-            raise RuntimeError(f"shader build failed: {source} ({backend}, {shader_type})")
+        started = time.monotonic()
+        failure_reason: Optional[str] = None
+        stdout = ""
+        stderr = ""
+        try:
+            result = subprocess.run(command, cwd=root, text=True, capture_output=True,
+                                    timeout=_BUILD_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            failure_reason = f"timeout after {_BUILD_TIMEOUT:g}s"
+            stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+            stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
+        except OSError as error:
+            failure_reason = f"failed to launch shaderc: {error}"
+        else:
+            if result.returncode != 0:
+                failure_reason = f"exit code {result.returncode}"
+                stdout = result.stdout
+                stderr = result.stderr
+        elapsed = time.monotonic() - started
+        if failure_reason is not None:
+            failure = BuildFailure(
+                source=source_display,
+                backend=backend,
+                shader_type=shader_type,
+                output=output_display,
+                elapsed=elapsed,
+                reason=failure_reason,
+                command=subprocess.list2cmdline(command),
+                stdout=stdout[-4000:],
+                stderr=stderr[-4000:],
+            )
+            with _PROGRESS_LOCK:
+                _PROGRESS["failed"] += 1
+                _FAILURES.append(failure)
+        else:
+            with _PROGRESS_LOCK:
+                _PROGRESS["compiled"] += 1
+        with _PROGRESS_LOCK:
+            _PROGRESS["completed"] += 1
+            completed = _PROGRESS["completed"]
+            total = _PROGRESS["total"]
+        if _PROGRESS_ENABLED:
+            prefix = f"[{completed}/{total}]" if total > 0 else f"[{completed}]"
+            status = "FAILED" if failure_reason is not None else "ok"
+            print(f"shader build {prefix} {source_display} ({backend}, {shader_type}) "
+                  f"{status} {elapsed:.2f}s", flush=True)
 
     _FUTURES.append(_EXECUTOR.submit(run))
 
 
+
 def variant_defines(mask: int) -> List[str]:
     return [f"{name}=1" for bit, name in VARIANT_BITS if mask & (1 << bit)]
+
+
+def manifest_paths(node: object) -> List[str]:
+    paths: List[str] = []
+    if isinstance(node, str):
+        paths.append(node)
+    elif isinstance(node, dict):
+        for value in node.values():
+            paths.extend(manifest_paths(value))
+    elif isinstance(node, list):
+        for value in node:
+            paths.extend(manifest_paths(value))
+    return paths
+
+
+def validate_manifest_outputs(root: Path, manifest: Dict[str, object]) -> List[str]:
+    missing: List[str] = []
+    seen: set[str] = set()
+    for relative in manifest_paths(manifest["passes"]):
+        if not relative.startswith("build/") or relative in seen:
+            continue
+        seen.add(relative)
+        output = root / "shaders" / relative
+        if not output.is_file() or output.stat().st_size == 0:
+            missing.append(relative)
+    return missing
+
+
+def clean_stale_outputs(root: Path, manifest: Dict[str, object]) -> List[str]:
+    expected = {root / "shaders" / relative for relative in manifest_paths(manifest["passes"])
+                if relative.startswith("build/")}
+    removed: List[str] = []
+    for backend in BACKENDS:
+        backend_root = root / "shaders" / "build" / backend
+        if not backend_root.is_dir():
+            continue
+        for output in backend_root.rglob("*.bin"):
+            if output not in expected:
+                output.unlink()
+                removed.append(output.relative_to(root).as_posix())
+    return removed
 
 
 def main() -> int:
@@ -72,12 +189,29 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--shaderc", type=Path, required=True)
     parser.add_argument("--bgfx-src", type=Path, required=True)
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help="ignore cached outputs")
     parser.add_argument("--jobs", type=int, default=max(1, min(8, os.cpu_count() or 1)))
+    parser.add_argument("--optimization", type=int, choices=range(4), default=3,
+                        help="shaderc optimization level (default: 3; lower levels are not release builds)")
+    parser.add_argument("--timeout", type=float, default=600.0,
+                        help="per-variant timeout in seconds; 0 disables (default: 600)")
+    parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--only", default="",
+                        help="diagnostic: build only outputs whose path contains this text")
+    parser.add_argument("--no-manifest", action="store_true",
+                        help="diagnostic: do not write or validate shaders/manifest.json")
     args = parser.parse_args()
     if args.jobs < 1:
         print("--jobs must be at least 1", file=sys.stderr)
         return 1
+    if args.timeout < 0:
+        print("--timeout must be zero or positive", file=sys.stderr)
+        return 1
+    if args.only and not args.no_manifest:
+        print("--only requires --no-manifest", file=sys.stderr)
+        return 1
+    if args.optimization < 3:
+        print(f"warning: shader build optimization is O{args.optimization}, not release O3", file=sys.stderr)
 
     root = args.root.resolve()
     shaderc = args.shaderc.resolve()
@@ -86,11 +220,21 @@ def main() -> int:
         print(f"shaderc not found: {shaderc}", file=sys.stderr)
         return 1
 
+    global _BUILD_TIMEOUT, _OPTIMIZATION, _PROGRESS_ENABLED, _ONLY_FILTER, _WRITE_MANIFEST
+    _BUILD_TIMEOUT = args.timeout if args.timeout > 0 else None
+    _OPTIMIZATION = args.optimization
+    _PROGRESS_ENABLED = not args.no_progress
+    _ONLY_FILTER = args.only
+    _WRITE_MANIFEST = not args.no_manifest
+    started_at = time.monotonic()
+
     manifest: Dict[str, object] = {
         "version": 1,
         "generated_by": "tools/shader_build.py",
+        "optimization": args.optimization,
         "passes": {},
     }
+
     passes = manifest["passes"]
     assert isinstance(passes, dict)
 
@@ -105,7 +249,6 @@ def main() -> int:
 
     shader_inputs = [path for path in (root / "shaders").rglob("*.sc") if not is_compiled_source(path)]
     shader_inputs.extend([
-        shaderc,
         bgfx_src / "src" / "bgfx_shader.sh",
         bgfx_src / "src" / "bgfx_compute.sh",
     ])
@@ -154,6 +297,12 @@ def main() -> int:
                            fragment, "fragment", backend, variant_defines(mask), args.force,
                            newest_input)
             gbuffer_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+        for mask in range(1 << len(VARIANT_BITS)):
+            fragment = backend_root / f"gbuffer.fs.{16 + mask}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gbuffer.fs.sc",
+                           fragment, "fragment", backend,
+                           variant_defines(mask) + ["HAS_LIGHT_LAYERS=1"], args.force, newest_input)
+            gbuffer_fragments.append(fragment.relative_to(root / "shaders").as_posix())
 
         gbuffer_clear_fragment = backend_root / "gbuffer_clear.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gbuffer_clear.fs.sc",
@@ -165,6 +314,13 @@ def main() -> int:
             fragment = backend_root / f"gbuffer_decals.fs.{mask}.bin"
             compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gbuffer.fs.sc",
                            fragment, "fragment", backend, variant_defines(mask) + ["HAS_DECALS=1"],
+                           args.force, newest_input)
+            gbuffer_decals_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+        for mask in range(1 << len(VARIANT_BITS)):
+            fragment = backend_root / f"gbuffer_decals.fs.{16 + mask}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gbuffer.fs.sc",
+                           fragment, "fragment", backend,
+                           variant_defines(mask) + ["HAS_DECALS=1", "HAS_LIGHT_LAYERS=1"],
                            args.force, newest_input)
             gbuffer_decals_fragments.append(fragment.relative_to(root / "shaders").as_posix())
 
@@ -837,16 +993,52 @@ def main() -> int:
         }
         passes[backend] = backend_entry
 
+    with _PROGRESS_LOCK:
+        _PROGRESS["total"] = _PROGRESS["scheduled"]
     for future in _FUTURES:
         future.result()
     _EXECUTOR.shutdown()
     _EXECUTOR = None
     _FUTURES.clear()
 
+    elapsed = time.monotonic() - started_at
+    with _PROGRESS_LOCK:
+        compiled = _PROGRESS["compiled"]
+        cached = _PROGRESS["cached"]
+        failed = _PROGRESS["failed"]
+        scheduled = _PROGRESS["scheduled"]
+    print(f"shader build summary: {scheduled} variants, {compiled} compiled, {cached} cached, "
+          f"{failed} failed, {elapsed:.1f}s")
+
+    if _FAILURES:
+        for failure in _FAILURES:
+            print(f"shader build failed: {failure.source} ({failure.backend}, {failure.shader_type}) "
+                  f"after {failure.elapsed:.1f}s: {failure.reason}", file=sys.stderr)
+            print(f"  output: {failure.output}", file=sys.stderr)
+            print(f"  command: {failure.command}", file=sys.stderr)
+            if failure.stdout:
+                print(failure.stdout, file=sys.stderr)
+            if failure.stderr:
+                print(failure.stderr, file=sys.stderr)
+        return 1
+
+    if not _WRITE_MANIFEST:
+        return 0
+
+    missing = validate_manifest_outputs(root, manifest)
+    if missing:
+        for relative in missing:
+            print(f"shader build missing or empty output: {relative}", file=sys.stderr)
+        return 1
+    stale = clean_stale_outputs(root, manifest)
+    if stale:
+        print(f"shader build pruned {len(stale)} stale output(s)")
+
     manifest_path = root / "shaders" / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"shader build: {manifest_path}")
     return 0
+
 
 
 if __name__ == "__main__":

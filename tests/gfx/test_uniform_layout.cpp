@@ -1,4 +1,4 @@
-﻿#include "gfx/generated/uniforms.h"
+#include "gfx/generated/uniforms.h"
 
 #include <doctest/doctest.h>
 
@@ -49,7 +49,8 @@ static_assert(sizeof(PassUniforms) == 272);
 static_assert(sizeof(MaterialUniforms) == 48);
 static_assert(std::is_standard_layout_v<ObjectUniforms>);
 static_assert(offsetof(ObjectUniforms, prevModel) == 0);
-static_assert(sizeof(ObjectUniforms) == 64);
+static_assert(offsetof(ObjectUniforms, lightLayerMask) == 64);
+static_assert(sizeof(ObjectUniforms) == 80);
 static_assert(std::is_standard_layout_v<EnvironmentUniforms>);
 static_assert(offsetof(EnvironmentUniforms, skyParams) == 0);
 static_assert(offsetof(EnvironmentUniforms, shAr) == 16);
@@ -87,7 +88,8 @@ static_assert(offsetof(ClusterUniforms, depthParams) == 16);
 static_assert(offsetof(ClusterUniforms, lightCounts) == 32);
 static_assert(offsetof(ClusterUniforms, screenSize) == 48);
 static_assert(offsetof(ClusterUniforms, lightListParams2) == 64);
-static_assert(sizeof(ClusterUniforms) == 80);
+static_assert(offsetof(ClusterUniforms, params2) == 80);
+static_assert(sizeof(ClusterUniforms) == 96);
 static_assert(std::is_standard_layout_v<DebugUniforms>);
 static_assert(offsetof(DebugUniforms, depthParams) == 0);
 static_assert(offsetof(DebugUniforms, clusterParams) == 16);
@@ -169,7 +171,7 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(pass[10].name == "u_pass_lightScreenSize");
 
     const auto& cluster = ClusterUniformBinder::kDescriptors;
-    REQUIRE(cluster.size() == 5);
+    REQUIRE(cluster.size() == 6);
     CHECK(cluster[0].name == "u_cluster_params");
     CHECK(cluster[0].type == UniformType::Vec4);
     CHECK(cluster[1].name == "u_cluster_depthParams");
@@ -180,6 +182,8 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(cluster[3].type == UniformType::Vec4);
     CHECK(cluster[4].name == "u_cluster_lightListParams2");
     CHECK(cluster[4].type == UniformType::Vec4);
+    CHECK(cluster[5].name == "u_cluster_params2");
+    CHECK(cluster[5].type == UniformType::Vec4);
 
     const auto& material = MaterialUniformBinder::kDescriptors;
     REQUIRE(material.size() == 3);
@@ -188,10 +192,12 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(material[2].name == "u_material_emissiveFactor");
 
     const auto& object = ObjectUniformBinder::kDescriptors;
-    REQUIRE(object.size() == 1);
+    REQUIRE(object.size() == 2);
     CHECK(object[0].name == "u_object_prevModel");
     CHECK(object[0].type == UniformType::Mat4);
     CHECK(object[0].num == 1);
+    CHECK(object[1].name == "u_object_lightLayerMask");
+    CHECK(object[1].type == UniformType::Vec4);
 
     const auto& environment = EnvironmentUniformBinder::kDescriptors;
     REQUIRE(environment.size() == 8);
@@ -301,6 +307,7 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(probe[5].name == "u_probe_params1");
     CHECK(probe[6].name == "u_probe_global");
     CHECK(probe[6].type == UniformType::Vec4);
+
 }
 
 TEST_CASE("generated shader declarations are in sync with C++ descriptors") {

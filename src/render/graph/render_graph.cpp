@@ -832,7 +832,6 @@ bool RenderGraph::execute(gfx::Encoder& encoder, gfx::ResourceManager& resources
         m_poolHeight = m_height;
     }
     prunePool(resources);
-
     std::vector<gfx::TextureHandle> textures;
     std::vector<gfx::BufferHandle> buffers;
     if (!allocateResources(resources, textures, buffers)) {

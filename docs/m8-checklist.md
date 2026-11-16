@@ -1,5 +1,5 @@
-# M8 Scalable Light Lists锛?2/64/128 瀹归噺锛夎鍒?
-> 宸ョ▼鏍癸細`E:\Learn\hdrp-bgfx`銆?> 鐘舵€侊細**M8.0/M8.1 瀹屾垚锛孧8.2 鏈紑濮?*锛?026-11-13锛夈€侻8.0 宸茶惤瀹归噺璁剧疆銆丆LI/JSON/UI銆両DL 鍜?32 鍩虹嚎锛汳8.1 宸茶惤 CPU 32/64/128 reference銆侻8.2 璧风户缁敼 GPU shader/producer銆?> 鍘熷垯锛氬厛璇?HDRP 涓?vendored bgfx 婧愮爜鍐嶅疄鐜帮紱涓嶆敼鍙?M7 宸查獙璇佺殑瑙嗚璇箟锛涘閲忔墿灞曞繀椤讳繚鐣?32-light M7 鍩虹嚎鐨?**0 diff** 鍥為€€銆?> 鍓嶇疆鍩虹嚎锛歁7.8 宸插畬鎴愶紝`supportGpuLightList=true`銆乣supportGpuLightListBuffers=true` 榛樿寮€鍚紱texture/CPU 浠嶅彲鍥為€€锛汫PU 璺緞 effective punctual 浠?32銆乧luster 姣?cell 鍥哄畾 32锛岀洿鍒?M8.2銆?
+# M8 Scalable Light Lists（32/64/128 容量）规划
+> 工程根：`E:\Learn\hdrp-bgfx`。> 状态：**M8.0–M8.7 完成**（2026-11-14）；M8 验收通过。> 原则：先读 HDRP 与 vendored bgfx 源码再实现；不改动 M7 已验证的视觉语义；容量扩展必须保留 32-light M7 基线的 **0 diff** 回退。> 前置基线：M7.8 已完成，`supportGpuLightList=true`、`supportGpuLightListBuffers=true` 默认开启；texture/CPU 仍可回退；cluster 每 cell 固定 32。
 ---
 
 ## 0. 缁撹鎽樿
@@ -73,12 +73,12 @@ M8 淇濇寔鏈」鐩浐瀹?row锛歚count + 32 indices`锛宑luster strid
 |---|---|---|
 | **M8.0 瀹归噺濂戠害/鍩虹嚎閿?* | `32/64/128` 璁剧疆銆丆LI/JSON/UI銆両DL銆?2 baseline 鍥炲綊 | `[x]` 瀹屾垚锛圙PU >32 鏆?gate锛?|
 | **M8.1 CPU reference** | `LightBuilder`/`LightListBuilder` 瀹归噺鍙傛暟銆佽竟鐣?鎴柇娴嬭瘯 | `[x]` 瀹屾垚 |
-| **M8.2 GPU FPTL/big-tile** | 128-slot AABB銆?脳mask銆佸姩鎬?stride銆?4/128 0 diff | `[ ]` 鏈紑濮?|
-| **M8.3 GPU cluster** | 32/cell 淇濇寔锛?28 杈撳叆銆乷verflow/debug銆? diff | `[ ]` 鏈紑濮?|
-| **M8.4 Buffer/texture consumers** | forward/deferred/contact/fog/debug 绉婚櫎 32 纭紪鐮?| `[ ]` 鏈紑濮?|
-| **M8.5 闆嗘垚/鍥為€€/CLI/UI** | capacity 閫夋嫨銆乼exture 瀹藉害 clamp銆乺esize/4K銆佽瘖鏂?| `[ ]` 鏈紑濮?|
-| **M8.6 鎬ц兘涓庨粯璁ゅ喅绛?* | 32/64/128 1080p 300 甯с€佸唴瀛樸€侀粯璁ゅ€?| `[ ]` 鏈紑濮?|
-| **M8.7 M8 楠屾敹** | 鍙屽悗绔煩闃点€佹祴璇?IDL/gfx/docs銆佽竟鐣?| `[ ]` 鏈紑濮?|
+| **M8.2 GPU FPTL/big-tile** | 128-slot AABB、4×mask、动态 stride、64/128 0 diff | `[x]` 完成（2026-11-13） |
+| **M8.3 GPU cluster** | 32/cell 保持、128 输入、overflow 打包/debug、0 diff | `[x]` 完成（2026-11-13） |
+| **M8.4 Buffer/texture consumers** | forward/deferred/contact/fog/debug 移除 32 硬编码；texture/CPU 128→64→32 clamp | `[x]` 完成（2026-11-14） |
+| **M8.5 集成/回退/CLI/UI** | capacity 选择、texture 宽度 clamp、resize/4K、诊断 | [x] 完成（2026-11-14） |
+| **M8.6 性能与默认决策** | 32/64/128 1080p 300 帧、内存、默认值 | [x] 完成（2026-11-14） |
+| **M8.7 M8 验收** | 双后端矩阵、测试/IDL/gfx/docs、边界 | [x] 完成（2026-11-14） |
 
 渚濊禆锛歁8.0 鈫?M8.1 鈫?M8.2/M8.3 鈫?M8.4 鈫?M8.5 鈫?M8.6 鈫?M8.7銆侻8.2 涓?M8.3 鍦?M8.1 鍚庡彲浠ュ苟琛岋紝浣嗛兘蹇呴』鍏堟湁 CPU reference銆?
 ---
@@ -139,7 +139,11 @@ GBuffer / Forward / Contact / Fog / Debug consumers
 
 - `light_screen_aabb_buffer` 鐨?slot 寰幆瑕嗙洊 128锛?- cluster 浠嶈緭鍑?32/cell锛?- indirect dispatch 鐨?group 鏁颁笉鍥?light capacity 鏀瑰彉锛屽彧鏀瑰彉姣忎釜 group 鍐呯殑 slot 鏁般€?
 ### 4.7 涓?shadow/contact/fog 鐨勮竟鐣?
-- 1 涓?directional shadow 涓嶅彉锛泂hadow request 涓婇檺浠?64銆?- contact shadow mask 浠?32-bit锛涙渶澶?32 涓?punctual contact shadow 妲斤紝瓒呰繃閮ㄥ垎涓嶅垎閰?contact mask锛堜繚鎸?M5 璇箟锛夈€?- 浣撶Н闆?punctual light 涓婇檺浠嶇敱 fog settings锛堥粯璁?8锛夋帶鍒躲€?- shadowedCount/闃村奖绱㈠紩鍜?light capacity 瑙ｈ€︼紱涓嶅洜 capacity=128 鑷姩鍒涘缓 128 涓?shadow request銆?- M7 GPU shadow culling/indirect 浠嶆槸 opt-in锛孧8 涓嶄慨鏀瑰叾鏁版嵁甯冨眬銆?
+- 1 个 directional shadow 不变；shadow request 上限仍为 64。
+- contact shadow mask 实际为 **8-bit**；最多 8 个 contact shadow light，超过部分不分配 contact mask（保持 M5 语义）。
+- 体积雾 punctual light 上限仍由 fog settings（默认 8）控制。
+- shadowedCount/阴影索引和 light capacity 解耦；不因 capacity=128 自动创建 128 个 shadow request。
+- M7 GPU shadow culling/indirect 仍是 opt-in，M8 不修改其数据布局。
 ---
 
 ## 5. 瀛愪换鍔¤缁嗚璁?
@@ -148,7 +152,7 @@ GBuffer / Forward / Contact / Fog / Debug consumers
 鐩爣锛氬厛鍥哄畾鏁版嵁濂戠害鍜?32-light 鍥炲綊锛屼笉鏀硅瑙夈€?
 - 鏂板 `PipelineSettings::lightListCapacity`锛?2/64/128锛夛紝`sanitize` 鍒板悎娉曟。浣嶃€?- 鏂板 CLI `--light-capacity=32|64|128`锛汮SON key `lightListCapacity`锛汥ebugUI 鏄剧ず requested/effective銆?- `kMaxGpuLights=128`銆乣kLightListMaxLights=128`銆乣kLightListStrideMax=129`锛涘垹闄ゅ浐瀹?`kLightListStride=33` 鐨?C++ 缂栬瘧鏈熺敤娉曪紝`LightListBuilder` 浣跨敤杩愯鏃?`capacity+1`銆侴PU shader 鐨?33/32 鍥哄畾鍊煎湪 M8.2 鎵嶆浛鎹紱鍦ㄦ涔嬪墠 GPU 璺緞鎶婅姹傚閲?clamp 鍒?32 骞跺彧璀﹀憡涓€娆°€?- 鍏堥攣瀹?M7 32-light 鍩虹嚎锛歚m61_thirtytwo`銆乣m61_transparent`銆乫og銆乧ontact銆乨eferred銆乫orward锛屽湪 capacity=32銆乥uffer/texture/CPU 涓嬩笌 M7 鎴浘 **0 diff**銆?- 鍗曟祴锛歝apacity 鍚堟硶鍊笺€侀潪娉曞€煎洖閫€銆乪ffective capacity銆?2 baseline 涓嶈蛋 128 鍒嗘敮銆?
 楠屾敹锛?2-light 鍏ㄩ儴鏃㈡湁娴嬭瘯/鎴浘涓嶅彉锛涙柊璁剧疆鍙В鏋?搴忓垪鍖栵紱鏃?shader 缂栬瘧閿欒銆?
-M8.0 楠岃瘉锛歚ctest` **207 cases / 20,170 assertions** + IDL check 閫氳繃锛汥3D11/Vulkan 榛樿 buffer銆乼exture 鍜?`--no-gpu-light-list` CPU 璺緞瀵?M7 `default_*.png` **0 diff**锛沗--light-capacity=64` 浼氭槑纭鍛婂苟鍥為€€ 32锛?4/128 鐨?GPU 鏁版嵁甯冨眬鐣欑粰 M8.2銆?
+M8.0 验证：ctest **207 cases / 20,170 assertions** + IDL check 通过；D3D11/Vulkan 默认 buffer、texture 和 --no-gpu-light-list CPU 路径对 M7 default_*.png **0 diff**；M8.2 后 --light-capacity=64/128 不再 clamp，见第 12 节。
 ### M8.1 CPU reference
 
 鐩爣锛欳PU `LightListBuilder` 鍜?`LightBuilder` 鏀寔 32/64/128锛宑luster 浠?32/cell銆?
@@ -251,3 +255,248 @@ M8.1 楠岃瘉锛歚LightBuilder` 鍦?capacity=32 鎴柇 33 涓€欓€�
 - 姣忎釜瀛愪换鍔″畬鎴愬悗鏇存柊鏈枃浠剁姸鎬併€佸疄闄?`file:line`銆佹祴璇?鎴浘/鎬ц兘锛?- 鏇存柊 `docs/implementation-plan.md` 鐨?M8 鐘舵€佸拰涓嬩竴浠诲姟锛?- 鏇存柊 `AGENTS.md` 鐨勫閲?list stride/cluster 32 杈圭晫锛?- 涓存椂鍦烘櫙/鎴浘/鏃ュ織缁х画鏀惧湪 `C:\Users\chenfuling\AppData\Local\Temp\`锛屼笉鎻愪氦鍒颁粨搴擄紱
 - 鏈畬鎴愭垨闃诲鐨勮兘鍔涙槑纭啓鈥滄湭瀹炵幇/闃诲鈥濓紝涓嶆妸瑙勫垝鍐欐垚宸插畬鎴愩€?
 M8 鍑哄彛锛?2/64/128 瀹归噺濂戠害绋冲畾锛?2 M7 鍩虹嚎 0 diff锛?4 鍙屽悗绔?0 diff 涓?1080p >60锛?28 鏈夊彲杩愯鐨?buffer 璺緞鍜岀湡瀹炴€ц兘璁板綍锛泃exture/CPU 鍥為€€銆乺esize/4K銆佽瘖鏂€佹祴璇曞拰鏂囨。榻愬叏銆?
+
+---
+
+## 12. M8.2 实现记录（2026-11-13）
+
+### 12.1 代码
+- `light_screen_aabb_buffer.cs.sc` / `light_screen_aabb.cs.sc`：64 threads × 2 slots，覆盖 0..127；超出 effective capacity 的 slot 写零。
+- `light_big_tile_buffer.cs.sc` / `light_big_tile.cs.sc`、`light_fptl_buffer.cs.sc` / `light_fptl.cs.sc`：`uint mask[4]`、`shared list[128]`，capacity/stride 从 `u_pass_lightListParams2` 读取；64 threads 循环写 `capacity` 个 index。
+- `light_cluster_buffer.cs.sc` / `light_cluster.cs.sc`：big-tile 输入按 runtime stride 读取，候选 mask 扩到 128；输出保持 33 stride、32/cell，按升序取前 32。
+- `shaders/common/light_data.sc`：FPTL/big-tile count/index 使用 `u_pass_lightListParams2.x` 运行时 stride；新增 `hbgLightListCapacity()`。
+- `shaders/lighting/light_loop.sc`：light count/tile count/fallback 上限改为 capacity（128）。
+- `ForwardRenderer::setSettings()`：移除 32 容量 gate；`ensureLightDataTexture()` 在 capacity 变化时重建 light-data texture；buffer 日志输出 capacity/stride。
+- texture producer 同步支持 32/64/128；1280×720 / 1920×1080 的 128-light texture 宽度 10320/15480，未超 16384。
+
+### 12.2 验证
+- 构建：`cmake --build build/vs2022 --config Debug --parallel 8` 通过；shader 全量编译通过。
+- `ctest --preset vs2022-debug --output-on-failure`：2/2 通过（207 cases / 20,170 assertions + `hbg_idl_check`）。
+- `--gfx-test`：D3D11、Vulkan 通过。
+- 32-light M7 基线：stress scene，D3D11/Vulkan buffer/texture 对 `hbg_m78\default_*.png`、`default_tex_*.png` 均 **0 diff**；`--no-gpu-light-list` CPU 与 GPU 也 **0 diff**。
+- 64/128：自建 64/128 punctual 场景（32 个位置重复，保证同 tile 压力；单 tile/big-tile 最大 64/128）。
+  - buffer/texture、cluster/no-cluster、D3D11/Vulkan、forward/deferred/transparent、GPU vs CPU 全部 **0 diff**。
+  - 128-light forward buffer max lights tile=128、big tile=128；CPU cluster `overflow clusters=1440`，GPU 输出与 CPU **0 diff**。
+  - 128-light indirect buffer 路径（D3D11）与 CPU **0 diff**。
+  - `--render-scale=0.5` 128-light buffer 与 CPU **0 diff**。
+  - 1920×1080 128-light texture 路径与 CPU **0 diff**；2560×1440 128-light texture 超宽时按既有行为回退 CPU，与 CPU **0 diff**。
+  - directional + punctual 边界：1 个 directional + 127 punctual（capacity 128，max tile=127）与 1 + 63（capacity 64，max tile=63）GPU vs CPU **0 diff**。
+- 临时产物：`C:\Users\chenfuling\AppData\Local\Temp\hbg_m8_2\*`。
+
+### 12.3 剩余
+- M8.4：texture 路径 `maxTextureSize` clamp/诊断、contact/fog 既有 32 边界收尾、其余 debug/consumer 审计。
+- M8.5：CLI/UI 的 requested/effective/clamped 诊断与 resize/4K 矩阵。
+- M8.6：32/64/128 1080p 性能与默认容量决策。
+
+### 13. M8.3 实现记录（2026-11-13）
+
+#### 13.1 实现
+- `light_cluster_buffer.cs.sc` / `light_cluster.cs.sc`：
+  - big-tile 输入按 `u_pass_lightListParams2` 的 runtime stride 读取，候选上限为 effective capacity（32/64/128）。
+  - mask 扩到 4×32-bit；输出 shared list 保持 32。
+  - thread 0 升序扫描 mask，前 32 个写入 list；第 33 个起累加 `s_clusterOverflow`，不写越界。
+  - count texel 打包为 `count | (overflow << 8)`，低 8 bit 仍是 count，高 8 bit 是溢出候选数（最多 96）。
+- `shaders/common/light_data.sc`：
+  - 新增 `hbgClusterLightListRawCount` / `hbgClusterLightListOverflow`；`hbgClusterLightListCount` 只取低 8 bit。
+  - forward/deferred/transparent/fog 等消费者通过 helper 继续读取 32/cell count，M7 语义不变。
+- `debug_light_cluster.fs.sc`：
+  - `--debug-view=light-cluster` 的 overflow cell 显示为品红；绿色通道按 overflow 数量增强（1/8..1），便于区分 1 个和多个溢出。
+- `LightListBuilder`：
+  - CPU reference 同样按 cluster 记录 overflow count 并打包到 count texel；新增 `clusterOverflowCount()` 供测试/诊断。
+  - `overflowClusters` 仍统计“有溢出的 cluster 数”。
+- `tests/render/test_light_list.cpp`：
+  - 新增 33 个同位置 light、capacity=64 的边界用例：count=32、overflow=1、index 升序 0..31；capacity=32 时不产生 overflow。
+- HDRP 参考：`lightlistbuild-clustered.compute:453` 用 `min(iSum, MAX_NR_COARSE_ENTRIES)` 限制 cluster 写入、超限不越界；本实现保留同样的 32/cell 上限，并把超出数量额外写入 count 高 8 bit 作为诊断。
+
+#### 13.2 验证
+- shader 全量编译 + Debug 构建通过；`ctest` **208 cases / 20,209 assertions** + `hbg_idl_check` 通过；D3D11/Vulkan `--gfx-test` 通过。
+- 32-light M7 基线：D3D11/Vulkan buffer/texture 对 `default_*.png` / `default_tex_*.png` 仍为 **0 diff**。
+- 33-light 同位置边界（capacity=64）：CPU `max lights cluster=32, overflow clusters=1440`；GPU/CPU buffer、texture、D3D11、Vulkan `--debug-view=light-cluster --debug-light-cluster-slice=2` 均 **0 diff**；overflow 像素颜色 `(255,32,115)` 对应 overflow=1，证明第 33 个 light 计入 overflow 且前 32 个升序输出。
+- 64/128：normal forward/deferred/transparent、buffer/texture、cluster/no-cluster、D3D11/Vulkan GPU vs CPU 全部 **0 diff**；debug light-cluster slice 0/2 的 buffer/texture 与 CPU **0 diff**。
+- 128-light max lights tile=128、big tile=128；`--no-light-cluster` 仍能读取完整 128；`--debug-light-cluster-slice=0` 与 CPU 同 slice **0 diff**。
+- 临时产物：`C:\Users\chenfuling\AppData\Local\Temp\hbg_m8_2\m83_*`、`m8_lights33_same.gltf`。
+
+#### 13.3 剩余
+- M8.4：texture `maxTextureSize` clamp/诊断，contact/fog 既有 32 边界收尾，其余 consumer 审计。
+- M8.5：GPU overflow 数值 readback/CLI/UI 诊断（当前可经 debug view 观察，CPU reference 有 `clusterOverflowCount`）。
+- M8.6：32/64/128 性能与默认容量决策。
+
+### 14. M8.4 实现记录（2026-11-14）
+
+#### 14.1 实现
+- `LightListBuilder::textureFits()` / `textureCapacityFor()`：按 backend `maxTextureSize` 和 bgfx `uint16_t` pitch 的 16383 宽度上限，同时校验 FPTL、big-tile、cluster 三张 list 纹理；请求 128→64→32 逐档选择，0 表示没有可用档位。
+- `ForwardRenderer`：新增 `m_lightListTextureCapacity` / `m_lightListEffectiveCapacity`；texture/CPU 路径使用 clamped capacity，buffer 路径保持 requested capacity；clamp 只在档位变化时告警一次，并输出 requested/effective/clamped 诊断。
+- Consumers：`volumetric_fog.fs.sc` 的 `lightCount` 从硬编码 32 改为 `hbgLightListCapacity()`；`contact_shadows.cs.sc` 的 `lightCount` / `tileLightCount` 同样改为 capacity（contact mask 仍是 8 bit，最多 8 盏灯，不随 capacity 扩展）；`debug_light_data.fs.sc` 只显示 effective capacity 内的灯。
+- 文档修正：contact shadow mask 实际为 8 bit（最多 8 盏灯，含方向光），旧 checklist 的“32-bit mask”描述不再适用；fog punctual 上限仍由 fog settings 决定（默认 8）。
+- HDRP 参考：`LightLoop.hlsl` / `lightlistbuild-clustered.compute` 使用运行时 list count 和 `MAX_NR_COARSE_ENTRIES` 上限；本实现同样先取 effective capacity，再做 list/cluster 读取，不在 consumer 端写死 32。HDRP 没有 texture light-list 路径，`maxTextureSize` clamp 是本工程 texture 后端约束。
+
+#### 14.2 验证
+- shader 全量编译 + Debug 构建通过；`ctest` **209 cases / 20,225 assertions** + `hbg_idl_check` 通过；D3D11/Vulkan `--gfx-test` 通过。
+- 32-light M7 buffer/texture/CPU 基线 D3D11/Vulkan **0 diff**。
+- 64/128 normal/fog/contact：buffer/texture、forward、D3D11/Vulkan GPU vs CPU 全部 **0 diff**。
+- 1440p texture 128（D3D11 maxTextureSize=16384）自动 clamp 到 64，GPU/CPU **0 diff**；4K texture 128 在 D3D11/Vulkan 都因 16383 pitch 上限 clamp 到 64，GPU/CPU **0 diff**；4K texture 64/32 **0 diff**；4K buffer 128 保持 `capacity=128/128` 且无 fallback。
+- 1440p texture 128 debug light-cluster slice 0 GPU/CPU **0 diff**；4K buffer 128 日志为 `path=buffer, capacity=128/128`。
+
+#### 14.3 剩余
+- M8.5：CLI/UI 的 requested/effective/clamped 完整展示、resize/RT scale/4K 矩阵（已覆盖主要路径）、GPU overflow 数值 readback。
+- M8.6：32/64/128 1080p 性能与默认容量决策；contact shadow 在 128 下遍历更多候选，性能需实测。
+
+
+### 15. M8.5 实现记录（2026-11-14）
+
+#### 15.1 实现
+- DebugUI：capacity 行显示 requested/effective/stride/truncated/clamped；新增 `Read GPU cluster stats` 按钮，显示 clusters/active/overflow clusters/overflow lights/max overflow/max lights。
+- CLI：新增 `--cluster-stats-readback`；render test 自动补足 8 帧等待异步 readback；`render performance` 增加 `light_list_capacity_requested/effective/stride/truncated/clamped` 与 `cluster_stats_*` 字段。
+- Buffer 路径：`bgfx::read(BufferRegion)` 直接读回 `lighting.lightClusterBuffer`；Texture 路径：创建 `R32U` + `BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK` staging texture，经诊断 view 4093 从 `lighting.clusterLightList` blit 后 `bgfx::read(TextureRegion)`；按 33-word stride 解析 count/overflow。
+- `gfx::Buffer::native()` / `ResourceManager::native(BufferHandle)` 暴露 bgfx handle；readback 资源在 shutdown 释放，pending 时拒绝重复请求。
+- clamp 告警改为仅在 texture/CPU 路径实际使用时输出；buffer 路径 4K 不再误报 texture clamp。
+- HDRP 参考：`LightLoop.hlsl` / `LightLoopDef.hlsl` 的 runtime cluster count、`lightlistbuild-clustered.compute` 的 `MAX_NR_COARSE_ENTRIES` clamp；HDRP 不暴露 overflow 数值，本实现为诊断扩展。
+
+#### 15.2 验证
+- `ctest` **209 cases / 20,225 assertions** + IDL check 通过。
+- 33 lights 同位置、capacity 64/128：CPU、D3D11/Vulkan buffer、D3D11/Vulkan texture 的 readback 均为 `clusters=7680 active=1440 overflow_clusters=1440 overflow_lights=1440 max_overflow=1 max_lights=32`（1280x720）。
+- 1440p：`clusters=23040 active=4320 overflow_clusters=4320`；4K：`clusters=34560 active=6480 overflow_clusters=6480`；buffer/texture、D3D11/Vulkan 与 CPU reference 一致。
+- 4K buffer 128 无 texture clamp 告警且 `effective=128/stride=129`；4K texture 128 告警 clamp 到 64（`effective=64/stride=65`），readback 仍与 CPU 一致。
+- 32-light M7 baseline、gfx-test、`git diff --check` 通过。
+
+#### 15.3 剩余
+- M8.6：已完成，见 §16（默认容量切换为 64；128 保持 opt-in）。
+- M8.7：M8 收尾、性能/内存/IDL/gfx/docs 全量验收。
+
+
+---
+
+## 16. M8.6 性能与默认决策（2026-11-14）
+
+### 16.1 测试方法
+
+- 构建：RelWithDebInfo；GPU：RTX 2060 SUPER；1920x1080；300 帧；`--no-vsync`。
+- 场景：
+  - 32-light：`m61_thirtytwo.gltf`（32 个 point light，32 个不同位置）；
+  - 64-light：`m8_lights64_perf.gltf`（64 个 light node，32 个位置，每位置 2 个）；
+  - 128-light：`m8_lights128.gltf`（128 个 light node，32 个位置，每位置 4 个）。
+- 统一设置：`--pipeline-settings=config/pipeline.json --frame-settings=config/frame_settings.json --lit-shader-mode=forward --postprocess-profile=config/postprocess_quality.json`，Uffizi sky，shadows on，contact off（16.4 单独打开）。
+- 每个 case 重复 7 次；wall fps 受桌面/DWM present 节流影响，结论以 GPU timer 和 CPU submit 为主，fps 只用于 60 门禁。表中为 min–max（avg）。
+
+### 16.2 1080p 300 帧性能
+
+| case | capacity | D3D11 fps | D3D11 GPU ms | Vulkan fps | Vulkan GPU ms |
+|---|---:|---:|---:|---:|---:|
+| 32-light | 32 | 67.7–75.9 (72.7) | 6.27–11.44 (8.53) | 88.2–104.2 (100.7) | 8.06–8.78 (8.35) |
+| 32-light | 64 | 67.4–81.4 (73.2) | 6.40–10.16 (8.19) | 99.9–105.1 (102.0) | 8.10–10.01 (8.60) |
+| 32-light | 128 | 66.8–74.2 (71.0) | 6.80–9.55 (8.16) | 100.1–109.8 (103.7) | 7.46–8.59 (8.15) |
+| 64-light | 64 | 60.8–64.9 (63.1) | 12.33–20.51 (15.05) | 75.1–79.7 (77.0) | 10.94–11.91 (11.58) |
+| 128-light | 128 | 40.0–43.8 (42.0) | 19.82–22.66 (21.32) | 48.2–51.3 (50.0) | 17.65–18.95 (18.53) |
+
+CPU submit 平均：32-light/32 D3D11 8.94 ms / Vulkan 9.20 ms；64-light/64 15.29 / 12.58 ms；128-light/128 21.39 / 19.95 ms。所有 case light_list_truncated=0；shadow_drawn 分别为 130 / 134 / 138，未出现回退或空 list；fog 在性能矩阵关闭，contact 见 16.4。
+
+结论：
+
+- 32-light 场景下 capacity 32/64/128 的 GPU timer 在噪声范围内，没有“容量越大越慢”的稳定趋势；64 在双后端均 >60 fps。
+- 64-light/64 的 D3D11 最低 60.8 fps、平均 63.1 fps；Vulkan 75.1–79.7 fps，满足 1080p >60 门禁，但 D3D11 余量较小。
+- 128-light/128 双后端均 <60 fps（D3D11 40–44、Vulkan 48–51），不满足默认门禁；128 只保留 opt-in/experimental。
+- 默认 deferred 路径复核（3 次）：64-light/64 D3D11 **63.4–65.2 fps**（GPU 12.79–14.52 ms）、Vulkan **75.1–84.0 fps**（GPU 10.61–11.98 ms），同样 >60。
+
+### 16.3 1080p light-list 内存
+
+| capacity | FPTL bytes | big-tile bytes | cluster bytes | bounds bytes | total buffers | light data |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 1,077,120 | 67,320 | 2,154,240 | 4,096 | 3,302,776 | 3,072 |
+| 64 | 2,121,600 | 132,600 | 2,154,240 | 4,096 | 4,412,536 | 6,144 |
+| 128 | 4,210,560 | 263,160 | 2,154,240 | 4,096 | 6,632,056 | 12,288 |
+
+- runtime 日志已增加实际字节数：`light list buffers: capacity=... stride=... bounds=... B, big=... B, fptl=... B, cluster=... B, total=... B`。
+- 64 相对 32 增加约 **1.11 MB**（1080p），远小于 texture/cluster 固定成本；1080p texture 宽度 7800，4K texture 宽度 15600，均低于 16383 pitch 上限。
+- 4K texture/64 实测 `capacity=64/64`、`clamped=false`，FPTL 宽度 15600；默认 64 在 4K texture/CPU 路径不需要 clamp。
+
+### 16.4 Contact shadows 在 128 capacity 的成本
+
+| case | contact | D3D11 GPU ms | Vulkan GPU ms |
+|---|---:|---:|---:|
+| 32-light / 32 | off | 8.53 | 8.35 |
+| 32-light / 32 | on | 10.40 | 11.31 |
+| 128-light / 128 | off | 21.32 | 18.53 |
+| 128-light / 128 | on | 25.95 | 23.77 |
+
+- contact mask 仍只有 **8 bit**（`kMaxContactShadowLights=8`），但 shader 需要遍历 tile 的 effective capacity 才能找到有 mask 的 light；因此 128 capacity 下 contact 额外 **4.6–5.2 ms**，32 capacity 下约 **1.9–3.0 ms**。
+- 128-light + contact 双后端 36–39 fps，明确低于 60；文档和 UI 不应把 128 宣传为“全功能 128 灯 contact”。
+- fog 仍最多 8 个 punctual，shadow requests 仍最多 64；128 不等于 contact/fog/shadow 全部扩容。
+
+### 16.5 默认容量决策
+
+- **默认 64**：`config/pipeline.json`、`PipelineSettings::lightListCapacity`、`kLightListDefaultCapacity` 统一为 64；`--light-capacity=32` 保留安全回退，`128` 保持 opt-in/experimental。
+- 依据：32-light 基线 **0 diff** 且无性能退化；64-light 双后端 >60 fps；4K texture 路径不 clamp；内存增加约 1.11 MB；HDRP 的 coarse cluster 上限为 128、fine cell 默认 8/上限 24，64 总容量处于合理区间。
+- 不默认 128：128-light/128 双后端 <60 fps，1440p+ texture 路径会 clamp，contact 额外成本明显。
+- 不为了容量牺牲 60 fps 门禁；如果后续场景在目标 GPU 上 64 明显退化，可继续用 32 作为默认回退并记录 64 opt-in。
+
+### 16.6 验证
+
+- 默认 64、32-light M7 基线：D3D11/Vulkan 对 `hbg_m78/default_*.png` **0 diff**。
+- 默认 64、64-light 场景：D3D11/Vulkan 的 GPU buffer vs CPU reference **0 diff**，`light_list_truncated=0`。
+- 4K texture/64：`capacity=64/64`、`clamped=false`。
+- `ctest` 209 cases / 20,225 assertions + IDL check 通过。
+
+---
+
+## 17. M8.7 验收记录（2026-11-14）
+
+### 17.1 方法
+
+- Debug/RelWithDebInfo 双构建；RelWithDebInfo 用于截图/性能；GPU RTX 2060 SUPER；D3D11 + Vulkan。
+- 核心视觉矩阵：1280×720、3 帧、`--no-vsync`、`config/pipeline.json` + `config/frame_settings.json`；64/128-light 场景分别覆盖 forward、deferred、fog、contact、debug `light-cluster` slice 2、transparent、transparent + `--no-light-cluster`。
+- 每类场景三路径：GPU buffer（`--gpu-light-list-path=buffer`）、GPU texture（`--gpu-light-list-path=texture`）、CPU reference（`--no-gpu-light-list`）。
+- M7 基线：`m5_shadow_stress.gltf`，1280×720，capacity=32，forward + contact，与 `hbg_m78/default_d3d.png`、`default_vk.png`、`default_tex_*.png` 对比。
+- 边界场景：`m8_lights33_same.gltf`（33 个同位置灯）、`m8_lights127_dir.gltf`（128 punctual + 1 directional，共 129 候选）、`m8_lights64/128.gltf`。
+- 读回统计：`--cluster-stats-readback`，buffer 直接 `bgfx::read`，texture 走 READ_BACK staging blit；CPU 路径输出同格式统计。
+- HDRP 参考：`LightLoopDef.hlsl:232-262` 的 runtime count/index 读取、`lightlistbuild-clustered.compute:388,453,475-482` 的 `MAX_NR_COARSE_ENTRIES`/`iSpaceAvail` 上限、`GlobalLightLoopSettings.cs:207` 的 cluster cell 默认 8/上限 24。
+
+### 17.2 视觉与数值结果
+
+- **M7 32-light 基线**：D3D11/Vulkan × buffer/texture/CPU 共 10 组对比，全部 **0 diff**。
+- **64/128 核心矩阵**：2 capacity × 7 场景 × 3 路径 × 2 后端 = 84 组 GPU/CPU 及 buffer/texture 对比，全部 **0 diff**，所有进程 exit=0。
+- **1080p / 128**：`path=texture, capacity=128/128, stride=129, clamped=false`，FPTL 宽度 15480；buffer/texture/CPU 三路径在 D3D11/Vulkan 均 **0 diff**。
+- **边界/读回**：
+  - 33 个同位置灯，capacity 64/128：CPU、GPU buffer、GPU texture 的 `clusters=7680 active=1440 overflow_clusters=1440 overflow_lights=1440 max_overflow=1 max_lights=32` 完全一致；第 33 个灯只进 overflow，不越界。
+  - 64-light/64：`overflow_lights=42240 max_overflow=32 max_lights=32`，CPU tile/big-tile 最大值均为 64；GPU buffer/texture 与 CPU 统计一致。
+  - 128-light/128：`overflow_lights=130560 max_overflow=96 max_lights=32`，CPU tile/big-tile 最大值均为 128；GPU buffer/texture 与 CPU 统计一致。
+  - 129 候选（128 punctual + 1 directional）：capacity 64 时 `truncated=65`、CPU tile 最大 63；capacity 128 时 `truncated=1`、CPU tile 最大 127；两种情况下 cluster 仍为 32/cell，overflow 统计 CPU/GPU 一致。
+- **0.5/高分辨率**：
+  - 1280×720 `--render-scale=0.5`、capacity 128：buffer/texture GPU 与 CPU **0 diff**。
+  - 3840 宽度（4K 水平）/capacity 32/64：buffer/texture/CPU 全部 **0 diff**；texture/64 `capacity=64/64`、无 clamp。
+  - 2560/3840 宽度、capacity 128 texture：按 16383 pitch 上限 clamp 到 64，texture GPU vs CPU（同 clamp）**0 diff**；buffer 保持 `capacity=128/128`。注意 buffer 128 与 CPU 64 的截图不同是预期行为，不是回归。
+  - 桌面高度限制使 1440/4K 窗口 framebuffer 高度为 1141；FPTL/big-tile 宽度与 clamp 仅由宽度和 stride 决定，因此不影响本次容量结论。
+- **Resize/资源重建**：
+  - texture 路径 1280×720 → 2544×1141 → 1264×681：观察到 `light list texture capacity: 128 -> 64` 与 `64 -> 128`，双后端一致。
+  - buffer 路径同一 resize：`light list buffers` 从 2,999,296 B（1280）重建为 9,324,064 B（2544×1141），再重建为 2,799,748 B（1264×681）；旧 buffer 先 destroy 再 create，无 `ERROR`/validation。
+- **Debug/回退验证**：`--bgfx-debug` + texture/128 + readback 无 validation error；仅缺少 RenderDoc/Aftermath DLL 的既有警告。禁用 buffer（`--no-gpu-light-list-buffers`）时 128/1280 自动走 `path=texture`，D3D11/Vulkan 与显式 texture 路径 **0 diff**；`--no-gpu-light-list` 的 CPU reference 也一致。
+- **Fog 边界诊断**：shader 仍以 `u_fog_params5.x` 将每采样 punctual light 限制为 8；`fog_lights` 诊断改为 `min(punctualCount, maxPunctualLights)`，capacity=128 时日志为 `fog_lights=8`，不再误报 128。
+- 本轮自动矩阵共 130 组对比：**126 组 0 diff**；其余 4 组是 1440p/4K 的 buffer/128 vs CPU/64，属于 CPU texture-width clamp 的设计内差异，不是回归。
+
+### 17.3 1080p 性能复核
+
+- 方法：RelWithDebInfo、1920×1080、300 帧、`--no-vsync`、Uffizi、full post、forward、capacity=64/128；64 为 7 次，128 为 3 次。
+- 64-light/64 forward：
+  - D3D11：**58.9–66.5 fps**（avg 63.8、median 64.1），GPU timer **11.67–16.14 ms**（avg 13.31）。最低一次 CPU submit 38.2 ms，属于桌面/DWM 抖动；GPU timer 仍低于 16.67 ms。
+  - Vulkan：**69.1–76.3 fps**（avg 73.2），GPU **11.26–11.85 ms**。
+- 64-light/64 默认 deferred：
+  - D3D11：**47.1–62.5 fps**（avg 57.9、median 61.7），GPU **12.14–18.27 ms**；7 次中 2 次受系统调度影响明显，deferred 路径在 D3D11 上接近 60 fps 门禁，不承诺稳定余量。
+  - Vulkan：**73.0–75.2 fps**，GPU **12.41–13.17 ms**。
+- 128-light/128 forward：
+  - D3D11：**40.8–46.5 fps**（avg 43.0），GPU **20.54–20.59 ms**。
+  - Vulkan：**50.5–51.1 fps**（avg 50.7），GPU **17.80–19.11 ms**。
+- 结论：M8.6 的 forward 64-light >60 门禁仍成立；deferred D3D11 余量较小，保留 32 为安全回退，128 继续 experimental。
+
+### 17.4 门禁
+
+- `hbg_tests`：**209 cases / 20,225 assertions**，全部通过。
+- `ctest --preset vs2022-debug`：`hbg_tests` + `hbg_idl_check` 100% 通过。
+- `--gfx-test`：D3D11、Vulkan 均通过（draw=true, compute=true）。
+- `git diff --check`：无 whitespace error（仅工作区 LF→CRLF 提示）。
+- Debug/RelWithDebInfo 构建通过，shader 全量变体编译通过。
+
+### 17.5 M8 结论与边界
+
+- M8 出口达成：32/64/128 契约稳定；32-light M7 基线 0 diff；64/128 双后端三路径 0 diff；cluster 32/cell 边界、overflow、truncation、texture clamp、resize 资源重建均有数值/截图证据。
+- 默认保持 **64**（HDRP coarse cluster 128 / fine cell 默认 8、上限 24；本项目固定 32/cell）；32 是安全回退；128 是 opt-in/experimental。
+- 已知限制：128 texture 在 1440p+ 自动 clamp 到 64；buffer 128 没有同分辨率满容量 CPU 对照（CPU 路径受 texture width 限制）；contact 最多 8 盏、fog punctual 默认 8、shadow requests 最多 64；D3D11 deferred 64-light 性能接近 60 fps，需在目标场景复核。
+- M9 可继续 layered cluster offset、16-bit packing、category/feature variants、light layers、cookies/IES、GPU shadow atlas；M8 不引入这些。

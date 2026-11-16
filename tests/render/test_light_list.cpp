@@ -1,4 +1,4 @@
-﻿#include "render/camera/view_state.h"
+#include "render/camera/view_state.h"
 #include "render/lighting/light_builder.h"
 #include "render/lighting/light_list_builder.h"
 #include "render/scene/render_scene.h"
@@ -32,6 +32,7 @@ void addPointLight(GpuLightData& data, uint32_t index, const Vec3& position, flo
     data.texels[base + 1] = Vec4(1.0f, 1.0f, 1.0f, intensity);
     data.texels[base + 2] = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
     data.texels[base + 3] = Vec4(-1.0f, 0.0f, 1.0f, 1.0f);
+    data.texels[base + 6] = Vec4(65535.0f, 0.0f, 1.0f, 0.0f);
 }
 
 GpuLightData makePunctualData(uint32_t lightCount) {
@@ -76,27 +77,103 @@ TEST_CASE("light screen bounds match CPU screen-space and depth semantics") {
     CHECK(bounds.min.w == doctest::Approx(2.0f));
 }
 
+TEST_CASE("area lights use HDRP oriented screen bounds and one-sided depth") {
+    const ViewState state = makeViewState(320, 180);
+    const ViewConstants& constants = state.constants();
+
+    LightBounds rectangle;
+    rectangle.position = Vec3(0.0f, 0.0f, 0.0f);
+    rectangle.forward = Vec3(0.0f, 0.0f, -1.0f);
+    rectangle.right = Vec3(1.0f, 0.0f, 0.0f);
+    rectangle.up = Vec3(0.0f, 1.0f, 0.0f);
+    rectangle.range = 2.0f;
+    rectangle.halfWidth = 1.0f;
+    rectangle.halfHeight = 1.0f;
+    rectangle.type = GpuLightType::AreaRectangle;
+
+    LightScreenBounds bounds;
+    REQUIRE(LightListBuilder::projectLightScreenBounds(constants.viewProj, constants.view, rectangle, 0.1f, 100.0f,
+                                                       320, 180, bounds));
+    CHECK(bounds.min.z == doctest::Approx(5.0f));
+    CHECK(bounds.min.w == doctest::Approx(7.0f));
+    CHECK(bounds.min.x > 0.0f);
+    CHECK(bounds.max.x < 320.0f);
+
+    LightScreenBounds sphereBounds;
+    REQUIRE(LightListBuilder::projectLightScreenBounds(constants.viewProj, constants.view, rectangle.position,
+                                                       2.0f, 0.1f, 100.0f, 320, 180, sphereBounds));
+    CHECK(sphereBounds.min.z == doctest::Approx(3.0f));
+    CHECK(bounds.min.z > sphereBounds.min.z);
+
+    LightBounds tube = rectangle;
+    tube.type = GpuLightType::AreaTube;
+    tube.halfHeight = 0.0f;
+    REQUIRE(LightListBuilder::projectLightScreenBounds(constants.viewProj, constants.view, tube, 0.1f, 100.0f,
+                                                       320, 180, bounds));
+    CHECK(bounds.min.z == doctest::Approx(3.0f));
+    CHECK(bounds.min.w == doctest::Approx(7.0f));
+
+    GpuLightData lights = makePunctualData(1);
+    lights.punctualCount = 0;
+    lights.areaCount = 1;
+    lights.texels[0] = Vec4(0.0f, 0.0f, 0.0f, 2.0f);
+    lights.texels[2] = Vec4(0.0f, 0.0f, -1.0f, 0.0f);
+    lights.texels[3] = Vec4(-1.0f, 0.0f, 0.0f, static_cast<float>(GpuLightType::AreaRectangle));
+    lights.texels[6] = Vec4(65535.0f, static_cast<float>(LightCategory::Area), kLightFeatureArea, 0.0f);
+    lights.texels[8] = Vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    lights.texels[9] = Vec4(0.0f, 1.0f, 0.0f, 1.0f);
+
+    LightListBuilder builder;
+    builder.build(lights, constants.viewProj, constants.view, 0.1f, 100.0f, 320, 180);
+    const uint32_t areaCategory = static_cast<uint32_t>(LightCategory::Area);
+    const int oldSphereSlice = LightListBuilder::clusterSliceForDepth(3.0f, 0.1f, 100.0f);
+    const int rectangleSlice = LightListBuilder::clusterSliceForDepth(5.0f, 0.1f, 100.0f);
+    CHECK(builder.clusterLightCount(2, 1, oldSphereSlice, areaCategory) == 0);
+    CHECK(builder.clusterLightCount(2, 1, rectangleSlice, areaCategory) >= 1);
+}
+
 TEST_CASE("light list uses HDRP 16x16 tiles and 64x64 big tiles") {
     CHECK(LightListBuilder::tileCount(320, kLightTileSize) == 20);
     CHECK(LightListBuilder::tileCount(180, kLightTileSize) == 12);
     CHECK(LightListBuilder::tileCount(320, kLightBigTileSize) == 5);
     CHECK(LightListBuilder::tileCount(180, kLightBigTileSize) == 3);
     CHECK(LightListBuilder::textureWidthFor(320) == 20 * lightListStrideFor(kLightListDefaultCapacity));
-    CHECK(LightListBuilder::textureHeightFor(180) == 12);
+    CHECK(LightListBuilder::textureHeightFor(180) == 12 * kLightCategoryCount);
     CHECK(LightListBuilder::bigTileTextureWidthFor(320) == 5 * lightListStrideFor(kLightListDefaultCapacity));
-    CHECK(LightListBuilder::bigTileTextureHeightFor(180) == 3);
+    CHECK(LightListBuilder::bigTileTextureHeightFor(180) == 3 * kLightCategoryCount);
     CHECK(LightListBuilder::bigTileTextureWidthFor(1920) == 30 * lightListStrideFor(kLightListDefaultCapacity));
-    CHECK(LightListBuilder::bigTileTextureHeightFor(1080) == 17);
+    CHECK(LightListBuilder::bigTileTextureHeightFor(1080) == 17 * kLightCategoryCount);
     CHECK(LightListBuilder::textureWidthFor(0) == 0);
     CHECK(LightListBuilder::bigTileTextureWidthFor(0) == 0);
 }
 
+TEST_CASE("light list texture capacity clamps to the backend texture limit") {
+    CHECK(LightListBuilder::textureFits(1920, 1080, 128, 16384));
+    CHECK(LightListBuilder::textureFits(2560, 1440, 128, 16384));
+    CHECK(LightListBuilder::textureFits(2560, 1440, 64, 16384));
+    CHECK(LightListBuilder::textureFits(3840, 2160, 128, 16384));
+    CHECK(LightListBuilder::textureFits(3840, 2160, 64, 16384));
+
+    CHECK(LightListBuilder::textureCapacityFor(1920, 1080, 128, 16384) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(2560, 1440, 128, 16384) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(2560, 1440, 128, 32768) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(3840, 2160, 128, 16384) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(3840, 2160, 128, 32768) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(3840, 2160, 64, 16384) == 64);
+    CHECK(LightListBuilder::textureCapacityFor(7680, 4320, 128, 32768) == 64);
+    CHECK(LightListBuilder::textureCapacityFor(1920, 1080, 64, 16384) == 64);
+    CHECK(LightListBuilder::textureCapacityFor(960, 540, 128, 16384) == 128);
+    CHECK(LightListBuilder::textureCapacityFor(2560, 1440, 64, 16384) == 64);
+    CHECK(LightListBuilder::textureCapacityFor(2560, 1440, 128, 8192) == 64);
+    CHECK(LightListBuilder::textureCapacityFor(2560, 1440, 128, 0) == 0);
+}
+
 TEST_CASE("light cluster uses 64x64 tiles and 32 logarithmic depth slices") {
-    CHECK(LightListBuilder::clusterTextureWidthFor(320) == 5 * kLightClusterStride);
-    CHECK(LightListBuilder::clusterTextureWidthFor(1920) == 30 * kLightClusterStride);
-    CHECK(LightListBuilder::clusterTextureHeightFor(180) == 3 * kClusterSliceCount);
-    CHECK(LightListBuilder::clusterTextureHeightFor(1080) == 17 * kClusterSliceCount);
-    CHECK(LightListBuilder::clusterTextureWidthFor(0) == 0);
+    CHECK(LightListBuilder::clusterOffsetTextureWidthFor(320) == 5);
+    CHECK(LightListBuilder::clusterOffsetTextureHeightFor(180) ==
+          3 * kClusterSliceCount * kLightCategoryCount);
+    CHECK(LightListBuilder::clusterOffsetTextureWidthFor(0) == 0);
+    CHECK(LightListBuilder::clusterIndexTextureWidthFor(0) == 0);
     CHECK(LightListBuilder::clusterSliceForDepth(0.1f, 0.1f, 100.0f) == 0);
     CHECK(LightListBuilder::clusterSliceForDepth(100.0f, 0.1f, 100.0f) ==
           static_cast<int>(kClusterSliceCount) - 1);
@@ -117,8 +194,9 @@ TEST_CASE("light cluster culls off-screen punctual lights and records their dept
     REQUIRE(cluster.enabled);
     CHECK(cluster.tileCountX == 5);
     CHECK(cluster.tileCountY == 3);
-    CHECK(cluster.width == 5 * kLightClusterStride);
-    CHECK(cluster.height == 3 * kClusterSliceCount);
+    CHECK(cluster.capacity == kLightListDefaultCapacity);
+    CHECK(cluster.offsets.size() == 5u * 3u * kClusterSliceCount * kLightCategoryCount);
+    CHECK(cluster.indexCapacity == 5u * 3u * kClusterSliceCount * kLightListDefaultCapacity * kLightCategoryCount);
     const int slice = LightListBuilder::clusterSliceForDepth(5.0f, 0.1f, 100.0f);
     CHECK(builder.clusterLightCount(2, 1, slice) >= 1);
     CHECK(builder.clusterLightCount(2, 1, 0) == 0);
@@ -155,10 +233,10 @@ TEST_CASE("light cluster excludes directional lights and caps cluster lists") {
         addPointLight(lights, index, Vec3(0.0f, 0.0f, 0.0f), 1.0f);
     }
     const ViewState state = makeViewState(320, 180);
-    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180);
+    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180, 32);
     const int slice = LightListBuilder::clusterSliceForDepth(5.0f, 0.1f, 100.0f);
     CHECK(builder.clusterData().maxLightsPerCluster == kLightClusterMaxLights);
-    CHECK(builder.clusterData().overflowClusters == 0);
+    CHECK(builder.clusterData().truncatedClusters == 0);
     CHECK(builder.clusterLightCount(2, 1, slice) == kLightClusterMaxLights);
 }
 
@@ -267,7 +345,7 @@ TEST_CASE("light list culls off-screen punctual lights and records the center ti
     CHECK(data.tileCountX == 20);
     CHECK(data.tileCountY == 12);
     CHECK(data.width == 20 * lightListStrideFor(kLightListDefaultCapacity));
-    CHECK(data.height == 12);
+    CHECK(data.height == 12 * kLightCategoryCount);
     CHECK(data.maxLightsPerTile >= 1);
     CHECK(builder.tileLightCount(10, 5) >= 1);
 
@@ -279,6 +357,29 @@ TEST_CASE("light list culls off-screen punctual lights and records the center ti
         CHECK(builder.tileLightIndex(10, 5, index) != 1);
     }
     CHECK(found);
+}
+
+TEST_CASE("light list routes area lights into the area category") {
+    const ViewState state = makeViewState(320, 180);
+    GpuLightData lights = makePunctualData(1);
+    addPointLight(lights, 0, Vec3(0.0f, 0.0f, 0.0f), 0.5f);
+    lights.areaCount = 1;
+    lights.punctualCount = 0;
+    lights.texels[3] = Vec4(-1.0f, 0.0f, 0.0f, static_cast<float>(GpuLightType::AreaRectangle));
+    lights.texels[6] = Vec4(65535.0f, static_cast<float>(LightCategory::Area), kLightFeatureArea, 0.0f);
+
+    LightListBuilder builder;
+    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180);
+    REQUIRE(builder.data().enabled);
+    CHECK(builder.tileLightCount(10, 5, static_cast<uint32_t>(LightCategory::Area)) >= 1);
+    CHECK(builder.tileLightCount(10, 5, static_cast<uint32_t>(LightCategory::Punctual)) == 0);
+    const int slice = LightListBuilder::clusterSliceForDepth(5.0f, 0.1f, 100.0f);
+    CHECK(builder.clusterLightCount(2, 1, slice, static_cast<uint32_t>(LightCategory::Area)) >= 1);
+    CHECK(builder.clusterLightCount(2, 1, slice, static_cast<uint32_t>(LightCategory::Punctual)) == 0);
+    const GpuLightClusterData& cluster = builder.clusterData();
+    REQUIRE(cluster.enabled);
+    REQUIRE(cluster.tileFeatureFlags.size() == static_cast<std::size_t>(cluster.tileCountX) * cluster.tileCountY);
+    CHECK((cluster.tileFeatureFlags[static_cast<std::size_t>(1) * cluster.tileCountX + 2] & kLightFeatureArea) != 0u);
 }
 
 TEST_CASE("light list rejects lights entirely behind the camera") {
@@ -377,13 +478,14 @@ TEST_CASE("light list expands to 64 and 128 capacity at runtime") {
         REQUIRE(data.enabled);
         REQUIRE(cluster.enabled);
         CHECK(data.capacity == capacity);
-        CHECK(data.listStride == capacity + 1u);
-        CHECK(data.width == 20u * (capacity + 1u));
+        CHECK(data.listStride == lightListStrideFor(capacity));
+        CHECK(data.width == 20u * lightListStrideFor(capacity));
         CHECK(data.maxLightsPerTile == capacity);
         CHECK(builder.tileLightCount(10, 5) == capacity);
-        CHECK(cluster.width == 5u * kLightClusterStride);
-        CHECK(cluster.maxLightsPerCluster == kLightClusterMaxLights);
-        CHECK(cluster.overflowClusters > 0);
+        CHECK(cluster.offsets.size() == 5u * 3u * kClusterSliceCount * kLightCategoryCount);
+        CHECK(cluster.capacity == capacity);
+        CHECK(cluster.maxLightsPerCluster == capacity);
+        CHECK(cluster.truncatedClusters == 0);
         for (uint32_t offset = 0; offset < builder.tileLightCount(10, 5); ++offset) {
             const uint32_t index = builder.tileLightIndex(10, 5, offset);
             CHECK(index < capacity);
@@ -393,11 +495,54 @@ TEST_CASE("light list expands to 64 and 128 capacity at runtime") {
         }
     }
 
-    CHECK(LightListBuilder::textureWidthFor(320, 64) == 20u * 65u);
-    CHECK(LightListBuilder::textureWidthFor(320, 128) == 20u * 129u);
-    CHECK(LightListBuilder::bigTileTextureWidthFor(1920, 128) == 30u * 129u);
+    CHECK(LightListBuilder::textureWidthFor(320, 64) == 20u * 33u);
+    CHECK(LightListBuilder::textureWidthFor(320, 128) == 20u * 65u);
+    CHECK(LightListBuilder::bigTileTextureWidthFor(1920, 128) == 30u * 65u);
 }
 
+TEST_CASE("light cluster is layered and no longer overflows at 32 lights per cell") {
+    const ViewState state = makeViewState(320, 180);
+    GpuLightData lights = makePunctualData(33);
+    for (uint32_t index = 0; index < 33; ++index) {
+        addPointLight(lights, index, Vec3(0.0f, 0.0f, 0.0f), 1.0f);
+    }
+
+    LightListBuilder builder;
+    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180, 64);
+    const int slice = LightListBuilder::clusterSliceForDepth(5.0f, 0.1f, 100.0f);
+    CHECK(builder.clusterLightCount(2, 1, slice) == 33u);
+    CHECK(builder.clusterTruncated(2, 1, slice) == 0u);
+    CHECK(builder.clusterData().truncatedClusters == 0u);
+    CHECK(builder.clusterData().maxLightsPerCluster == 33u);
+    for (uint32_t offset = 0; offset < 33u; ++offset) {
+        CHECK(builder.clusterLightIndex(2, 1, slice, offset) == offset);
+    }
+
+    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180, 32);
+    CHECK(builder.clusterLightCount(2, 1, slice) == 32u);
+    CHECK(builder.clusterTruncated(2, 1, slice) == 0u);
+    CHECK(builder.clusterData().truncatedClusters == 0u);
+    CHECK(LightListBuilder::clusterCapacityFor(7680, 4320, 128) == 64u);
+}
+
+TEST_CASE("light list keeps empty area env decal categories and records tile feature flags") {
+    const ViewState state = makeViewState(320, 180);
+    GpuLightData lights = makePunctualData(1);
+    addPointLight(lights, 0, Vec3(0.0f, 0.0f, 0.0f), 1.0f);
+
+    LightListBuilder builder;
+    builder.build(lights, state.constants().viewProj, state.constants().view, 0.1f, 100.0f, 320, 180, 64);
+    CHECK(builder.tileLightCount(10, 5, 0) == 1u);
+    CHECK(builder.tileLightCount(10, 5, 1) == 0u);
+    CHECK(builder.tileLightCount(10, 5, 2) == 0u);
+    CHECK(builder.tileLightCount(10, 5, 3) == 0u);
+    CHECK((builder.tileFeatureFlags(10, 5) & kLightFeaturePunctual) != 0u);
+    CHECK(builder.data().height == 12u * kLightCategoryCount);
+    const GpuLightListData& data = builder.data();
+    const std::size_t stride = data.listStride;
+    const std::size_t flagWord = static_cast<std::size_t>(5) * data.width + 10u * stride + stride - 1u;
+    CHECK(((data.texels[flagWord] >> 16u) & 0xffffu) == builder.tileFeatureFlags(10, 5));
+}
 TEST_CASE("light builder truncates to the requested capacity") {
     RenderScene scene;
     for (int index = 0; index < 33; ++index) {

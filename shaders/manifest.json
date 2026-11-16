@@ -1,6 +1,7 @@
 {
   "version": 1,
   "generated_by": "tools/shader_build.py",
+  "optimization": 3,
   "passes": {
     "dxbc": {
       "forward": {
@@ -281,7 +282,23 @@
           "build/dxbc/gbuffer.fs.12.bin",
           "build/dxbc/gbuffer.fs.13.bin",
           "build/dxbc/gbuffer.fs.14.bin",
-          "build/dxbc/gbuffer.fs.15.bin"
+          "build/dxbc/gbuffer.fs.15.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.17.bin",
+          "build/dxbc/gbuffer.fs.18.bin",
+          "build/dxbc/gbuffer.fs.19.bin",
+          "build/dxbc/gbuffer.fs.20.bin",
+          "build/dxbc/gbuffer.fs.21.bin",
+          "build/dxbc/gbuffer.fs.22.bin",
+          "build/dxbc/gbuffer.fs.23.bin",
+          "build/dxbc/gbuffer.fs.24.bin",
+          "build/dxbc/gbuffer.fs.25.bin",
+          "build/dxbc/gbuffer.fs.26.bin",
+          "build/dxbc/gbuffer.fs.27.bin",
+          "build/dxbc/gbuffer.fs.28.bin",
+          "build/dxbc/gbuffer.fs.29.bin",
+          "build/dxbc/gbuffer.fs.30.bin",
+          "build/dxbc/gbuffer.fs.31.bin"
         ]
       },
       "gbufferClear": {
@@ -306,7 +323,23 @@
           "build/dxbc/gbuffer_decals.fs.12.bin",
           "build/dxbc/gbuffer_decals.fs.13.bin",
           "build/dxbc/gbuffer_decals.fs.14.bin",
-          "build/dxbc/gbuffer_decals.fs.15.bin"
+          "build/dxbc/gbuffer_decals.fs.15.bin",
+          "build/dxbc/gbuffer_decals.fs.16.bin",
+          "build/dxbc/gbuffer_decals.fs.17.bin",
+          "build/dxbc/gbuffer_decals.fs.18.bin",
+          "build/dxbc/gbuffer_decals.fs.19.bin",
+          "build/dxbc/gbuffer_decals.fs.20.bin",
+          "build/dxbc/gbuffer_decals.fs.21.bin",
+          "build/dxbc/gbuffer_decals.fs.22.bin",
+          "build/dxbc/gbuffer_decals.fs.23.bin",
+          "build/dxbc/gbuffer_decals.fs.24.bin",
+          "build/dxbc/gbuffer_decals.fs.25.bin",
+          "build/dxbc/gbuffer_decals.fs.26.bin",
+          "build/dxbc/gbuffer_decals.fs.27.bin",
+          "build/dxbc/gbuffer_decals.fs.28.bin",
+          "build/dxbc/gbuffer_decals.fs.29.bin",
+          "build/dxbc/gbuffer_decals.fs.30.bin",
+          "build/dxbc/gbuffer_decals.fs.31.bin"
         ]
       },
       "decal": {
@@ -809,7 +842,23 @@
           "build/spirv/gbuffer.fs.12.bin",
           "build/spirv/gbuffer.fs.13.bin",
           "build/spirv/gbuffer.fs.14.bin",
-          "build/spirv/gbuffer.fs.15.bin"
+          "build/spirv/gbuffer.fs.15.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.17.bin",
+          "build/spirv/gbuffer.fs.18.bin",
+          "build/spirv/gbuffer.fs.19.bin",
+          "build/spirv/gbuffer.fs.20.bin",
+          "build/spirv/gbuffer.fs.21.bin",
+          "build/spirv/gbuffer.fs.22.bin",
+          "build/spirv/gbuffer.fs.23.bin",
+          "build/spirv/gbuffer.fs.24.bin",
+          "build/spirv/gbuffer.fs.25.bin",
+          "build/spirv/gbuffer.fs.26.bin",
+          "build/spirv/gbuffer.fs.27.bin",
+          "build/spirv/gbuffer.fs.28.bin",
+          "build/spirv/gbuffer.fs.29.bin",
+          "build/spirv/gbuffer.fs.30.bin",
+          "build/spirv/gbuffer.fs.31.bin"
         ]
       },
       "gbufferClear": {
@@ -834,7 +883,23 @@
           "build/spirv/gbuffer_decals.fs.12.bin",
           "build/spirv/gbuffer_decals.fs.13.bin",
           "build/spirv/gbuffer_decals.fs.14.bin",
-          "build/spirv/gbuffer_decals.fs.15.bin"
+          "build/spirv/gbuffer_decals.fs.15.bin",
+          "build/spirv/gbuffer_decals.fs.16.bin",
+          "build/spirv/gbuffer_decals.fs.17.bin",
+          "build/spirv/gbuffer_decals.fs.18.bin",
+          "build/spirv/gbuffer_decals.fs.19.bin",
+          "build/spirv/gbuffer_decals.fs.20.bin",
+          "build/spirv/gbuffer_decals.fs.21.bin",
+          "build/spirv/gbuffer_decals.fs.22.bin",
+          "build/spirv/gbuffer_decals.fs.23.bin",
+          "build/spirv/gbuffer_decals.fs.24.bin",
+          "build/spirv/gbuffer_decals.fs.25.bin",
+          "build/spirv/gbuffer_decals.fs.26.bin",
+          "build/spirv/gbuffer_decals.fs.27.bin",
+          "build/spirv/gbuffer_decals.fs.28.bin",
+          "build/spirv/gbuffer_decals.fs.29.bin",
+          "build/spirv/gbuffer_decals.fs.30.bin",
+          "build/spirv/gbuffer_decals.fs.31.bin"
         ]
       },
       "decal": {

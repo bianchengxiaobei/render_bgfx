@@ -1,5 +1,6 @@
 block Object {
     mat4 prevModel;          # previous-frame world matrix
+    vec4 lightLayerMask;     # x = 16-bit object mask, w = light-layers enabled
 }
 
 block Prepass {

@@ -264,6 +264,8 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportGpuLightListBuffers, error);
         } else if (key == "supportGpuLightListIndirect") {
             ok = readBool(document, key.c_str(), settings.supportGpuLightListIndirect, error);
+        } else if (key == "supportLightListFeatureFlags") {
+            ok = readBool(document, key.c_str(), settings.supportLightListFeatureFlags, error);
         } else if (key == "lightListCapacity") {
             ok = readLightListCapacity(document, key.c_str(), settings.lightListCapacity, error);
         } else if (key == "supportGpuShadowCulling") {
@@ -389,6 +391,7 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportGpuLightList"] = settings.supportGpuLightList;
     document["supportGpuLightListBuffers"] = settings.supportGpuLightListBuffers;
     document["supportGpuLightListIndirect"] = settings.supportGpuLightListIndirect;
+    document["supportLightListFeatureFlags"] = settings.supportLightListFeatureFlags;
     document["lightListCapacity"] = settings.lightListCapacity;
     document["supportGpuShadowCulling"] = settings.supportGpuShadowCulling;
     document["supportGpuShadowIndirect"] = settings.supportGpuShadowIndirect;

@@ -14,6 +14,7 @@ void main()
     float viewSign = gl_FrontFacing ? -1.0 : 1.0;
     SurfaceData surfaceData = hbgMakeSurfaceData(v_worldPos, normalWS, v_tangent, v_bitangent,
                                                  v_texcoord0, viewSign);
+    surfaceData.lightLayerMask = u_object_lightLayerMask.x;
 
     const vec2 contactShadowData = hbgSampleContactShadow(gl_FragCoord.xy * u_global_screenSize.zw);
     surfaceData.contactShadowMask = contactShadowData.x;

@@ -9,6 +9,7 @@
 #include "render/culling/draw_list.h"
 #include "render/debug/debug_display.h"
 #include "render/graph/render_graph.h"
+#include "render/lighting/cookie_atlas.h"
 #include "render/lighting/light_builder.h"
 #include "render/lighting/light_list_builder.h"
 #include "render/material/material_system.h"
@@ -70,6 +71,8 @@ class ForwardRenderer {
         uint32_t shadowCulledItems = 0;
         bool shadowCacheActive = false;
         uint32_t shadowCachedRequests = 0;
+        bool shadowAreaCacheActive = false;
+        uint32_t shadowCachedAreaRequests = 0;
         bool contactShadowsActive = false;
         uint16_t contactShadowWidth = 0;
         uint16_t contactShadowHeight = 0;
@@ -84,12 +87,38 @@ class ForwardRenderer {
         uint32_t lightListCapacityEffective = 0;
         uint32_t lightListStride = 0;
         uint32_t lightListTruncated = 0;
+        bool lightListCapacityClamped = false;
+        bool lightListFeatureFlagsActive = false;
         bool gpuShadowCulling = false;
         bool gpuShadowIndirect = false;
         uint32_t gpuShadowCullDispatches = 0;
         uint32_t gpuShadowIndirectDraws = 0;
         bool asyncGpuLightListRequested = false;
         bool asyncGpuLightListActive = false;
+        bool clusterStatsValid = false;
+        bool clusterStatsGpu = false;
+        bool clusterStatsReadbackPending = false;
+        uint32_t clusterStatsClusters = 0;
+        uint32_t clusterStatsActiveClusters = 0;
+        uint32_t clusterStatsOverflowClusters = 0;
+        uint32_t clusterStatsOverflowLights = 0;
+        uint32_t clusterStatsMaxOverflow = 0;
+        uint32_t clusterStatsMaxLights = 0;
+        uint32_t clusterStatsFeatureFlagsChecked = 0;
+        uint32_t clusterStatsFeatureFlagMismatch = 0;
+    };
+
+    struct ClusterStats {
+        bool valid = false;
+        bool gpu = false;
+        uint32_t clusters = 0;
+        uint32_t activeClusters = 0;
+        uint32_t overflowClusters = 0;
+        uint32_t overflowLights = 0;
+        uint32_t maxOverflow = 0;
+        uint32_t maxLights = 0;
+        uint32_t featureFlagsChecked = 0;
+        uint32_t featureFlagMismatch = 0;
     };
 
     ForwardRenderer() = default;
@@ -117,6 +146,9 @@ class ForwardRenderer {
     void setGpuLightListEnabled(bool enabled);
     void setGpuLightListBufferEnabled(bool enabled);
     bool gpuLightListActive() const { return m_gpuLightListActive; }
+    void requestClusterStatsReadback();
+    const ClusterStats& clusterStats() const { return m_clusterStats; }
+    bool clusterStatsReadbackPending() const { return m_clusterStatsReadbackPending; }
     bool gpuLightListBufferActive() const { return m_gpuLightListBufferActive; }
     void setShadowsEnabled(bool enabled) { m_shadowsEnabled = enabled; }
     void setWireframe(bool enabled) { m_wireframe = enabled; }
@@ -160,6 +192,7 @@ class ForwardRenderer {
         RenderGraphBufferHandle lightBigTileBuffer;
         RenderGraphBufferHandle lightFptlBuffer;
         RenderGraphBufferHandle lightClusterBuffer;
+        RenderGraphBufferHandle lightClusterIndexBuffer;
         RenderGraphBufferHandle lightIndirectArgs;
         RenderGraphBufferHandle shadowRequestBuffer;
         RenderGraphBufferHandle shadowCasterBuffer;
@@ -169,7 +202,8 @@ class ForwardRenderer {
         RenderGraphBufferHandle shadowStatsBuffer;
         RenderGraphTextureHandle directionalShadow;
         RenderGraphTextureHandle punctualShadow;
-        RenderGraphTextureHandle shadowContext;
+        RenderGraphTextureHandle areaShadow;
+        RenderGraphBufferHandle shadowContext;
         RenderGraphTextureHandle contactShadow;
         RenderGraphTextureHandle environment;
         RenderGraphTextureHandle skyEnvironment;
@@ -205,10 +239,11 @@ class ForwardRenderer {
     void syncTaaJitter();
     void updateGlobalUniforms();
     void updateLights(const RenderScene& scene);
+    bool ensureLightDataTexture();
     void uploadLightData();
     bool ensureLightListTexture(uint16_t renderWidth, uint16_t renderHeight);
     bool ensureLightBigTileTexture(uint16_t renderWidth, uint16_t renderHeight);
-    bool ensureClusterLightListTexture(uint16_t renderWidth, uint16_t renderHeight);
+    bool ensureClusterLightListTextures(uint16_t renderWidth, uint16_t renderHeight);
     bool ensureLightListBuffers(uint16_t renderWidth, uint16_t renderHeight);
     void releaseLightListBuffers();
     bool ensureShadowGpuBuffers(uint32_t requestCount, uint32_t casterCount, uint32_t batchCount);
@@ -217,11 +252,17 @@ class ForwardRenderer {
     void addGpuShadowCullPass(RenderGraph& graph, const FramePassResources& resources);
     void updateLightList();
     void updateCpuLightList();
+    void updateLightListFeatureFlags();
     bool uploadCpuLightList();
     void uploadClusterLightList();
+    void pollClusterStatsReadback();
+    void submitClusterStatsReadback();
+    bool ensureClusterStatsReadbackTexture(uint16_t width, uint16_t height);
+    void releaseClusterStatsReadbackTexture();
+    void updateClusterStatsFromCpu();
     void releaseLightListTexture();
     void releaseLightBigTileTexture();
-    void releaseClusterLightListTexture();
+    void releaseClusterLightListTextures();
     bool gpuLightListPathAvailable();
     gfx::ProgramHandle lightListProgram(shader::PassId pass, uint64_t materialKey = 0);
     void bindLightList(gfx::Encoder& encoder, bool cluster) const;
@@ -241,7 +282,8 @@ class ForwardRenderer {
     bool ensureVolumetricFogHistory(uint16_t fogWidth, uint16_t fogHeight);
     void releaseVolumetricFogHistory();
     void addShadowPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
-                       RenderGraphTextureHandle punctualShadow, const RenderScene& scene);
+                       RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
+                       const RenderScene& scene);
     void addGpuLightListPasses(RenderGraph& graph, const FramePassResources& resources);
     RenderGraphTextureHandle addContactShadowPass(RenderGraph& graph, const FramePassResources& resources,
                                                   bool deferred);
@@ -273,11 +315,11 @@ class ForwardRenderer {
                              DebugDisplayMode debugMode, bool materialDebug);
     void addForwardPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                         RenderGraphTextureHandle lightData, RenderGraphTextureHandle lightList,
-                        RenderGraphTextureHandle clusterLightList, RenderGraphBufferHandle lightFptlBuffer,
-                        RenderGraphBufferHandle lightClusterBuffer, RenderGraphTextureHandle directionalShadow,
-                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle shadowContext,
-                        RenderGraphTextureHandle contactShadow, const RenderScene& scene, bool transparent,
-                        bool forwardOnly = false);
+                        RenderGraphTextureHandle clusterLightList,
+                        RenderGraphBufferHandle lightFptlBuffer, RenderGraphBufferHandle clusterLightListBuffer, RenderGraphTextureHandle directionalShadow,
+                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
+                        RenderGraphBufferHandle shadowContext, RenderGraphTextureHandle contactShadow,
+                        const RenderScene& scene, bool transparent, bool forwardOnly = false);
     void addWireframePass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                           const RenderScene& scene);
     void addDebugMaterialPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
@@ -347,10 +389,10 @@ class ForwardRenderer {
                                  uint16_t width, uint16_t height);
     void renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                 gfx::TextureHandle depthPyramid, const std::array<gfx::TextureHandle, 4>& gbuffer,
-                                gfx::TextureHandle lightData, gfx::TextureHandle lightList,
-                                gfx::TextureHandle directionalShadow, gfx::TextureHandle punctualShadow,
-                                gfx::TextureHandle shadowContext, gfx::TextureHandle environment,
-                                gfx::TextureHandle ssao);
+                                gfx::TextureHandle lightData,
+                                gfx::TextureHandle lightList, gfx::TextureHandle directionalShadow,
+                                gfx::TextureHandle punctualShadow, gfx::BufferHandle shadowContext,
+                                gfx::TextureHandle environment, gfx::TextureHandle ssao);
     void renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                            const RenderScene& scene, bool transparent, bool forwardOnly,
                            gfx::TextureHandle contactShadow);
@@ -365,7 +407,7 @@ class ForwardRenderer {
                             gfx::TextureHandle depth, gfx::TextureHandle lightData, gfx::TextureHandle lightList,
                             gfx::TextureHandle normal, gfx::TextureHandle motionVector, gfx::TextureHandle depthPyramid,
                             gfx::TextureHandle directionalShadow, gfx::TextureHandle punctualShadow,
-                            gfx::TextureHandle shadowContext, gfx::TextureHandle contactShadow,
+                            gfx::BufferHandle shadowContext, gfx::TextureHandle contactShadow,
                             gfx::TextureHandle ssao, gfx::TextureHandle ssr,
                             gfx::TextureHandle ssgi, gfx::TextureHandle decal0, gfx::BufferHandle fullscreen,
                             DebugDisplayMode debugMode,
@@ -395,6 +437,7 @@ class ForwardRenderer {
     gfx::generated::ContactUniformBinder m_contactBinder;
 
     std::array<gfx::TextureHandle, 4> m_gbufferTextures{};
+    bool m_deferredLightLayersActive = false;
     std::array<gfx::UniformHandle, 4> m_gbufferSamplers{};
     uint16_t m_gbufferWidth = 0;
     uint16_t m_gbufferHeight = 0;
@@ -420,8 +463,9 @@ class ForwardRenderer {
     gfx::UniformHandle m_ssgiRawSampler;
     gfx::TextureHandle m_lightDataTexture;
     gfx::UniformHandle m_lightDataSampler;
+    std::vector<Vec4> m_lightDataUpload;
     gfx::TextureHandle m_lightListTexture;
-    gfx::TextureHandle m_clusterLightListTexture;
+    gfx::TextureHandle m_clusterTexture;
     gfx::TextureHandle m_lightScreenBoundsTexture;
     gfx::TextureHandle m_lightBigTileTexture;
     gfx::TextureHandle m_lightViewRowsTexture;
@@ -431,7 +475,6 @@ class ForwardRenderer {
     gfx::BufferHandle m_lightClusterBuffer;
     gfx::BufferHandle m_lightIndirectArgsBuffer;
     gfx::BufferHandle m_activeLightListBuffer;
-    gfx::BufferHandle m_activeClusterListBuffer;
     gfx::UniformHandle m_lightListSampler;
     gfx::UniformHandle m_lightViewRowsSampler;
     gfx::UniformHandle m_lightScreenBoundsSampler;
@@ -440,7 +483,6 @@ class ForwardRenderer {
     gfx::UniformHandle m_shadowPunctualSampler;
     gfx::UniformHandle m_shadowPointSampler;
     gfx::UniformHandle m_shadowPointPunctualSampler;
-    gfx::UniformHandle m_shadowContextSampler;
     gfx::UniformHandle m_contactShadowSampler;
     gfx::UniformHandle m_depthSourceSampler;
     gfx::UniformHandle m_normalSampler;
@@ -486,7 +528,10 @@ class ForwardRenderer {
     Vec3 m_cameraForward{0.0f, 0.0f, -1.0f};
     Vec3 m_ambientColor{0.08f, 0.09f, 0.11f};
     LightBuilder m_lightBuilder;
+    CookieAtlas m_cookieAtlas;
     LightListBuilder m_lightListBuilder;
+    LightListBuilder m_clusterStatsReferenceBuilder;
+    bool m_clusterStatsReferenceValid = false;
     ShadowManager m_shadowManager;
     ShadowSettings m_shadowSettings;
     SkyManager m_skyManager;
@@ -511,10 +556,27 @@ class ForwardRenderer {
     bool m_gpuLightListIndirectActive = false;
     bool m_gpuLightListWarningLogged = false;
     bool m_asyncGpuLightListWarningLogged = false;
-    uint32_t m_lightListCapacity = kLightListDefaultCapacity;
     bool m_lightListCapacityWarningLogged = false;
+    uint32_t m_lightListCapacity = kLightListDefaultCapacity;
+    uint32_t m_lightListTextureCapacity = kLightListDefaultCapacity;
+    uint32_t m_lightListEffectiveCapacity = kLightListDefaultCapacity;
+    uint32_t m_clusterCapacity = 0;
+    uint32_t m_clusterIndexCapacity = 0;
+    uint32_t m_clusterOffsetCount = 0;
+    uint16_t m_clusterTextureWidth = 0;
     uint32_t m_gpuLightListPasses = 0;
     double m_lightListCpuMs = 0.0;
+    ClusterStats m_clusterStats;
+    bool m_clusterStatsReadbackRequested = false;
+    bool m_clusterStatsReadbackPending = false;
+    bool m_clusterStatsReadbackTexturePath = false;
+    uint32_t m_clusterStatsReadbackFrame = 0;
+    uint32_t m_clusterStatsReadbackOffsetCount = 0;
+    uint32_t m_clusterStatsReadbackFlagOffset = 0;
+    uint32_t m_clusterStatsReadbackFlagCount = 0;
+    uint32_t m_clusterStatsReadbackTotalCount = 0;
+    gfx::TextureHandle m_clusterStatsReadbackTexture;
+    std::vector<uint32_t> m_clusterStatsReadbackData;
     bool m_wireframe = false;
     bool m_jitterEnabled = false;
     bool m_depthPrepassActive = false;

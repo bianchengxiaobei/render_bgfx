@@ -6,6 +6,8 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
 using namespace hbg;
 using namespace hbg::render;
 
@@ -39,6 +41,17 @@ Light makeSpot(const Vec3& position) {
     light.type = LightType::Spot;
     light.innerConeAngle = 0.25f;
     light.outerConeAngle = 0.5f;
+    return light;
+}
+
+Light makeArea(const Vec3& position) {
+    Light light = makePoint(position);
+    light.name = "area";
+    light.type = LightType::Area;
+    light.areaShape = LightAreaShape::Rectangle;
+    light.areaWidth = 2.0f;
+    light.areaHeight = 1.0f;
+    light.range = 10.0f;
     return light;
 }
 
@@ -312,4 +325,247 @@ TEST_CASE("shadow cache is opt-in and sidecar every-frame lights disable it") {
     disabledBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
     REQUIRE(manager.update(scene, viewState.constants(), camera, disabledBuilder));
     CHECK_FALSE(manager.cacheActive());
+}
+
+TEST_CASE("static area cache skips compatible rectangle shadows and invalidates on changes") {
+    RenderScene scene = makeScene();
+    RenderObject object;
+    object.name = "caster";
+    object.world = Mat4::identity();
+    scene.objects.push_back(object);
+
+    Light light = makeArea(Vec3(0.0f, 2.0f, 0.0f));
+    light.shadowConfigured = true;
+    light.shadow.updateMode = ShadowUpdateMode::OnEnable;
+    scene.lights.push_back(light);
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    ShadowSettings settings;
+    settings.cachedAreaShadows = true;
+    settings.areaAtlasSize = 1024;
+    settings.areaResolution = 256;
+    settings.maxRequests = 8;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+
+    LightBuilder firstBuilder;
+    firstBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, firstBuilder));
+    CHECK(manager.areaCacheActive());
+    CHECK(manager.areaRequestCount() == 1);
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    CHECK_FALSE(manager.requests()[0].isCached);
+
+    LightBuilder secondBuilder;
+    secondBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, secondBuilder));
+    CHECK(manager.cachedAreaRequestCount() == 1);
+    CHECK(manager.requests()[0].isCached);
+
+    scene.objects[0].world.values[12] = 1.0f;
+    LightBuilder movedObjectBuilder;
+    movedObjectBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false,
+                             false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, movedObjectBuilder));
+    CHECK(manager.cachedAreaRequestCount() == 0);
+
+    LightBuilder warmBuilder;
+    warmBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, warmBuilder));
+    CHECK(manager.cachedAreaRequestCount() == 1);
+
+    Camera movedCamera = camera;
+    movedCamera.world.values[12] += 1.0f;
+    ViewState movedViewState;
+    movedViewState.update(movedCamera, 1280, 720, 1.0f, false, false);
+    LightBuilder movedCameraBuilder;
+    movedCameraBuilder.build(scene, Vec3(1.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false,
+                             false);
+    REQUIRE(manager.update(scene, movedViewState.constants(), movedCamera, movedCameraBuilder));
+    CHECK(manager.cachedAreaRequestCount() == 1);
+
+    light.shadow.updateMode = ShadowUpdateMode::EveryFrame;
+    scene.lights[0] = light;
+    LightBuilder dynamicBuilder;
+    dynamicBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, dynamicBuilder));
+    CHECK_FALSE(manager.areaCacheActive());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+
+    manager.setCacheSuppressed(true);
+    light.shadow.updateMode = ShadowUpdateMode::OnEnable;
+    scene.lights[0] = light;
+    LightBuilder suppressedBuilder;
+    suppressedBuilder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false,
+                            false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, suppressedBuilder));
+    CHECK_FALSE(manager.areaCacheActive());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+}
+
+
+TEST_CASE("mixed cached and dynamic area shadows preserve the static cache") {
+    RenderScene scene = makeScene();
+    RenderObject object;
+    object.name = "caster";
+    object.world = Mat4::identity();
+    scene.objects.push_back(object);
+
+    Light staticLight = makeArea(Vec3(-2.0f, 2.0f, 0.0f));
+    staticLight.shadowConfigured = true;
+    staticLight.shadow.updateMode = ShadowUpdateMode::OnEnable;
+    staticLight.shadow.resolution = 256;
+    scene.lights.push_back(staticLight);
+
+    Light dynamicLight = makeArea(Vec3(2.0f, 2.0f, 0.0f));
+    dynamicLight.shadowConfigured = true;
+    dynamicLight.shadow.updateMode = ShadowUpdateMode::EveryFrame;
+    dynamicLight.shadow.resolution = 256;
+    scene.lights.push_back(dynamicLight);
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    ShadowSettings settings;
+    settings.cachedAreaShadows = true;
+    settings.areaAtlasSize = 1024;
+    settings.areaResolution = 256;
+    settings.maxRequests = 8;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+
+    const auto update = [&]() {
+        LightBuilder builder;
+        builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+        REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+        return std::vector<ShadowRequest>(manager.requests().begin(), manager.requests().end());
+    };
+
+    std::vector<ShadowRequest> requests = update();
+    REQUIRE(requests.size() == 2);
+    CHECK(manager.areaCacheActive());
+    CHECK(manager.areaCacheMixed());
+    CHECK(manager.areaCacheDirty());
+    CHECK(manager.areaCacheUsesDynamicAtlas());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    const auto findStatic = [](const std::vector<ShadowRequest>& list) {
+        return std::find_if(list.begin(), list.end(), [](const ShadowRequest& request) {
+            return request.isStaticArea;
+        });
+    };
+    const auto findDynamic = [](const std::vector<ShadowRequest>& list) {
+        return std::find_if(list.begin(), list.end(), [](const ShadowRequest& request) {
+            return !request.isStaticArea;
+        });
+    };
+    auto staticRequest = findStatic(requests);
+    auto dynamicRequest = findDynamic(requests);
+    REQUIRE(staticRequest != requests.end());
+    REQUIRE(dynamicRequest != requests.end());
+    CHECK_FALSE(staticRequest->isCached);
+    CHECK(staticRequest->viewportX == 0);
+    CHECK(dynamicRequest->viewportX == staticRequest->viewportWidth);
+    const uint16_t staticViewport = staticRequest->viewportX;
+
+    requests = update();
+    CHECK(manager.areaCacheMixed());
+    CHECK_FALSE(manager.areaCacheDirty());
+    CHECK(manager.cachedAreaRequestCount() == 1);
+    staticRequest = findStatic(requests);
+    dynamicRequest = findDynamic(requests);
+    REQUIRE(staticRequest != requests.end());
+    REQUIRE(dynamicRequest != requests.end());
+    CHECK(staticRequest->isCached);
+    CHECK(staticRequest->viewportX == staticViewport);
+    CHECK_FALSE(dynamicRequest->isCached);
+
+    scene.lights[1].world.values[12] += 1.0f;
+    requests = update();
+    CHECK(manager.areaCacheMixed());
+    CHECK_FALSE(manager.areaCacheDirty());
+    CHECK(manager.cachedAreaRequestCount() == 1);
+    staticRequest = findStatic(requests);
+    REQUIRE(staticRequest != requests.end());
+    CHECK(staticRequest->isCached);
+    CHECK(staticRequest->viewportX == staticViewport);
+
+    scene.lights[0].world.values[13] += 0.5f;
+    requests = update();
+    CHECK(manager.areaCacheMixed());
+    CHECK(manager.areaCacheDirty());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    staticRequest = findStatic(requests);
+    REQUIRE(staticRequest != requests.end());
+    CHECK_FALSE(staticRequest->isCached);
+
+    scene.lights[0].shadow.updateMode = ShadowUpdateMode::EveryFrame;
+    requests = update();
+    CHECK_FALSE(manager.areaCacheActive());
+    CHECK_FALSE(manager.areaCacheMixed());
+    CHECK_FALSE(manager.areaCacheDirty());
+    CHECK(manager.areaCacheUsesDynamicAtlas());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    CHECK(findStatic(requests) == requests.end());
+}
+
+
+TEST_CASE("mixed area cache transition invalidates static cache mode") {
+    RenderScene scene = makeScene();
+    RenderObject object;
+    object.name = "caster";
+    object.world = Mat4::identity();
+    scene.objects.push_back(object);
+
+    Light staticLight = makeArea(Vec3(-2.0f, 2.0f, 0.0f));
+    staticLight.shadowConfigured = true;
+    staticLight.shadow.updateMode = ShadowUpdateMode::OnEnable;
+    staticLight.shadow.resolution = 256;
+    scene.lights.push_back(staticLight);
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    ShadowSettings settings;
+    settings.cachedAreaShadows = true;
+    settings.areaAtlasSize = 1024;
+    settings.areaResolution = 256;
+    settings.maxRequests = 8;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+
+    const auto update = [&]() {
+        LightBuilder builder;
+        builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip, false, false);
+        REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    };
+
+    update();
+    update();
+    CHECK(manager.cachedAreaRequestCount() == 1);
+
+    Light dynamicLight = makeArea(Vec3(2.0f, 2.0f, 0.0f));
+    dynamicLight.shadowConfigured = true;
+    dynamicLight.shadow.updateMode = ShadowUpdateMode::EveryFrame;
+    dynamicLight.shadow.resolution = 256;
+    scene.lights.push_back(dynamicLight);
+    update();
+    CHECK(manager.areaCacheMixed());
+    CHECK(manager.areaCacheDirty());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    update();
+    CHECK(manager.cachedAreaRequestCount() == 1);
+
+    scene.lights.pop_back();
+    update();
+    CHECK(manager.areaCacheActive());
+    CHECK_FALSE(manager.areaCacheMixed());
+    CHECK(manager.areaCacheDirty());
+    CHECK(manager.cachedAreaRequestCount() == 0);
+    update();
+    CHECK(manager.cachedAreaRequestCount() == 1);
 }

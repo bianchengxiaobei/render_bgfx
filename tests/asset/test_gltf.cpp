@@ -224,6 +224,152 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(scene.lights[0].shadow.filterSamples == 20);
 }
 
+TEST_CASE("scene sidecar converts a punctual light to an area light") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_area.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_area.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_area.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeGltf(kPngDataUri, true);
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lights":[{
+            "name":"LightNode",
+            "type":"area",
+            "shape":"rectangle",
+            "width":2.0,
+            "height":1.0,
+            "range":8.0,
+            "areaShadowCone":0.6,
+            "cookieScale":[2.0,3.0],
+            "cookieOffset":[0.25,0.5]
+        }]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.lights.size() == 1);
+    const render::Light& light = scene.lights[0];
+    CHECK(light.type == render::LightType::Area);
+    CHECK(light.areaShape == render::LightAreaShape::Rectangle);
+    CHECK(light.areaWidth == doctest::Approx(2.0f));
+    CHECK(light.areaHeight == doctest::Approx(1.0f));
+    CHECK(light.areaShadowCone == doctest::Approx(0.6f));
+    CHECK_FALSE(light.castShadows);
+    CHECK(light.cookieScale == Vec2(2.0f, 3.0f));
+    CHECK(light.cookieOffset == Vec2(0.25f, 0.5f));
+}
+
+TEST_CASE("scene sidecar enables rectangle area shadows only when shadow is authored") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_area_shadow.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_area_shadow.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_area_shadow.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeGltf(kPngDataUri, true);
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lights":[{
+            "name":"LightNode",
+            "type":"area",
+            "shape":"rectangle",
+            "width":2.0,
+            "height":1.0,
+            "range":8.0,
+            "shadow":{"resolution":256,"softness":0.4}
+        }]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.lights.size() == 1);
+    const render::Light& light = scene.lights[0];
+    CHECK(light.type == render::LightType::Area);
+    CHECK(light.areaShape == render::LightAreaShape::Rectangle);
+    CHECK(light.castShadows);
+    CHECK(light.shadowConfigured);
+    CHECK(light.shadow.resolution == 256);
+    CHECK(light.areaShadowCone == doctest::Approx(120.0f));
+}
+
+TEST_CASE("scene sidecar loads a tube area light as a line") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_tube.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_tube.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_tube.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeGltf(kPngDataUri, true);
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lights":[{
+            "name":"LightNode",
+            "type":"area",
+            "shape":"tube",
+            "width":3.0,
+            "height":2.0,
+            "intensity":7.0,
+            "range":9.0
+        }]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    REQUIRE(result.scene->lights.size() == 1);
+    const render::Light& light = result.scene->lights[0];
+    CHECK(light.type == render::LightType::Area);
+    CHECK(light.areaShape == render::LightAreaShape::Tube);
+    CHECK(light.areaWidth == doctest::Approx(3.0f));
+    CHECK(light.areaHeight == doctest::Approx(0.0f));
+    CHECK(light.intensity == doctest::Approx(7.0f));
+}
+
+TEST_CASE("scene sidecar disables an unsupported disc area light") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_disc.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_disc.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_disc.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeGltf(kPngDataUri, true);
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lights":[{
+            "name":"LightNode",
+            "type":"area",
+            "shape":"disc",
+            "width":4.0,
+            "height":4.0,
+            "intensity":7.0,
+            "range":9.0
+        }]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    REQUIRE(result.scene->lights.size() == 1);
+    const render::Light& light = result.scene->lights[0];
+    CHECK(light.type == render::LightType::Area);
+    CHECK(light.areaShape == render::LightAreaShape::Disc);
+    CHECK(light.intensity == doctest::Approx(0.0f));
+}
+
 TEST_CASE("scene sidecar loads static decal data and textures") {
     const std::filesystem::path directory = makeFixtureDirectory();
     const std::filesystem::path bufferPath = directory / "triangle_decals.bin";

@@ -8,7 +8,9 @@
   "directionalResolution": 1024,
   "pointResolution": 256,
   "spotResolution": 512,
+  "areaResolution": 512,
   "atlasSize": 2048,
+  "areaAtlasSize": 1024,
   "maxRequests": 64,
   "normalBias": 0.2,
   "slopeBias": 0.5,
@@ -39,5 +41,6 @@
   "shadowDimmer": 1.0,
   "shadowFadeDistance": 10000.0,
   "shadowTint": [0.0, 0.0, 0.0],
-  "cachedPunctualShadows": false
+  "cachedPunctualShadows": false,
+  "cachedAreaShadows": false
 }

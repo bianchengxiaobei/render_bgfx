@@ -24,7 +24,8 @@ std::string backendKey(bgfx::RendererType::Enum type) {
 }
 
 uint64_t cacheKey(PassId pass, uint32_t variant, uint64_t pipelineKey) {
-    return (pipelineKey & kLightListBufferProgramKey) | (static_cast<uint64_t>(pass) << 32) | variant;
+    return (pipelineKey & (kLightListBufferProgramKey | kLightLayersProgramKey)) |
+           (static_cast<uint64_t>(pass) << 32) | variant;
 }
 
 } // namespace
@@ -454,11 +455,15 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     return m_valid;
 }
 
-gfx::ProgramHandle ShaderLibrary::createProgram(const PassFiles& files, uint32_t variant, bool bufferPath) {
+gfx::ProgramHandle ShaderLibrary::createProgram(const PassFiles& files, uint32_t variant, bool bufferPath,
+                                                             bool lightLayers) {
     if (m_resources == nullptr) {
         return {};
     }
     const std::vector<std::string>& fragments = bufferPath ? files.bufferFragments : files.fragments;
+    if (lightLayers) {
+        variant += kMaterialVariantCount;
+    }
     if (variant >= fragments.size()) {
         if (bufferPath) {
             HBG_LOGW("buffer light-list shader variant {} is not compiled", variant);
@@ -502,6 +507,7 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
     }
 
     const bool bufferPath = (pipelineKey & kLightListBufferProgramKey) != 0;
+    const bool lightLayersPath = (pipelineKey & kLightLayersProgramKey) != 0;
     uint32_t variant = static_cast<uint32_t>(materialKey) & kMaterialVariantMask;
     const PassFiles* files = &m_files.forward;
     switch (pass) {
@@ -829,7 +835,9 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     }
 
-    const uint64_t key = cacheKey(pass, variant, bufferPath ? kLightListBufferProgramKey : 0);
+    const uint64_t key = cacheKey(pass, variant,
+                                    (bufferPath ? kLightListBufferProgramKey : 0) |
+                                        (lightLayersPath ? kLightLayersProgramKey : 0));
     const auto cached = m_programs.find(key);
     if (cached != m_programs.end()) {
         return cached->second;
@@ -839,10 +847,10 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
     if (!files->compute.empty() || !files->bufferCompute.empty()) {
         program = createComputeProgram(*files, bufferPath);
     } else {
-        program = createProgram(*files, variant, bufferPath);
+        program = createProgram(*files, variant, bufferPath, lightLayersPath);
         if (!program.valid() && variant != 0 && !bufferPath) {
             HBG_LOGW("falling back to shader variant 0 for pass {}", static_cast<int>(pass));
-            program = createProgram(*files, 0, false);
+            program = createProgram(*files, 0, false, lightLayersPath);
         }
     }
     if (program.valid()) {

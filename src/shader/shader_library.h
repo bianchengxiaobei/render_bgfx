@@ -126,7 +126,7 @@ class ShaderLibrary {
     };
 
     bool loadManifest(const std::filesystem::path& manifestPath);
-    gfx::ProgramHandle createProgram(const PassFiles& files, uint32_t variant, bool bufferPath);
+    gfx::ProgramHandle createProgram(const PassFiles& files, uint32_t variant, bool bufferPath, bool lightLayers);
     gfx::ProgramHandle createComputeProgram(const PassFiles& files, bool bufferPath);
 
     gfx::ResourceManager* m_resources = nullptr;

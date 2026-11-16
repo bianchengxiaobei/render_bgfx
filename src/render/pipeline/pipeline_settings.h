@@ -42,7 +42,8 @@ struct PipelineSettings {
     bool supportGpuLightList = true;
     bool supportGpuLightListBuffers = true;
     bool supportGpuLightListIndirect = false;
-    uint32_t lightListCapacity = 32;
+    bool supportLightListFeatureFlags = true;
+    uint32_t lightListCapacity = 64;
     bool supportGpuShadowCulling = false;
     bool supportGpuShadowIndirect = false;
     bool supportAsyncGpuLightList = false;

@@ -32,7 +32,7 @@ class DebugUI {
     void setGpuLightListStatus(bool requested, bool active, bool bufferPath, bool indirect, uint32_t passes,
                                float cpuMs, bool shadowGpu, bool shadowIndirect, bool asyncRequested,
                                bool asyncActive, uint32_t capacityRequested, uint32_t capacityEffective,
-                               uint32_t listStride, uint32_t truncated) {
+                               uint32_t listStride, uint32_t truncated, bool capacityClamped) {
         m_gpuLightListRequested = requested;
         m_gpuLightListActive = active;
         m_gpuLightListBufferPath = bufferPath;
@@ -47,6 +47,26 @@ class DebugUI {
         m_lightListCapacityEffective = capacityEffective;
         m_lightListStride = listStride;
         m_lightListTruncated = truncated;
+        m_lightListCapacityClamped = capacityClamped;
+    }
+
+    void setClusterStatsStatus(bool pending, bool valid, bool gpu, uint32_t clusters, uint32_t activeClusters,
+                               uint32_t overflowClusters, uint32_t overflowLights, uint32_t maxOverflow,
+                               uint32_t maxLights) {
+        m_clusterStatsPending = pending;
+        m_clusterStatsValid = valid;
+        m_clusterStatsGpu = gpu;
+        m_clusterStatsClusters = clusters;
+        m_clusterStatsActiveClusters = activeClusters;
+        m_clusterStatsOverflowClusters = overflowClusters;
+        m_clusterStatsOverflowLights = overflowLights;
+        m_clusterStatsMaxOverflow = maxOverflow;
+        m_clusterStatsMaxLights = maxLights;
+    }
+    bool consumeClusterStatsReadbackRequest() {
+        const bool requested = m_clusterStatsReadbackRequested;
+        m_clusterStatsReadbackRequested = false;
+        return requested;
     }
 
     void beginFrame(const WindowInput& input, uint16_t width, uint16_t height, double deltaSeconds);
@@ -83,6 +103,17 @@ class DebugUI {
     uint32_t m_lightListCapacityEffective = 0;
     uint32_t m_lightListStride = 0;
     uint32_t m_lightListTruncated = 0;
+    bool m_lightListCapacityClamped = false;
+    bool m_clusterStatsReadbackRequested = false;
+    bool m_clusterStatsPending = false;
+    bool m_clusterStatsValid = false;
+    bool m_clusterStatsGpu = false;
+    uint32_t m_clusterStatsClusters = 0;
+    uint32_t m_clusterStatsActiveClusters = 0;
+    uint32_t m_clusterStatsOverflowClusters = 0;
+    uint32_t m_clusterStatsOverflowLights = 0;
+    uint32_t m_clusterStatsMaxOverflow = 0;
+    uint32_t m_clusterStatsMaxLights = 0;
     uint32_t m_screenshotCount = 0;
 };
 

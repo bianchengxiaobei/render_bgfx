@@ -79,6 +79,7 @@ class Buffer {
 
     bool valid() const;
     BufferType type() const { return m_type; }
+    bgfx::BufferHandle native() const;
     uint16_t nativeIndex() const { return m_nativeIndex; }
     uint32_t size() const { return m_size; }
     uint32_t count() const { return m_count; }

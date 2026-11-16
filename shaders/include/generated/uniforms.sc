@@ -42,6 +42,7 @@ uniform vec4 u_cluster_depthParams;
 uniform vec4 u_cluster_lightCounts;
 uniform vec4 u_cluster_screenSize;
 uniform vec4 u_cluster_lightListParams2;
+uniform vec4 u_cluster_params2;
 
 // Ssao
 uniform vec4 u_ssao_params;
@@ -118,6 +119,7 @@ uniform vec4 u_fog_localMaskScroll[8];
 
 // Object
 uniform mat4 u_object_prevModel;
+uniform vec4 u_object_lightLayerMask;
 
 // PostProcess
 uniform vec4 u_postprocess_exposureParams;

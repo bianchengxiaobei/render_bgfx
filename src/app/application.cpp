@@ -50,7 +50,8 @@ int Application::run(const AppOptions& options) {
             m_device.resources(), options.renderTestPath, static_cast<uint16_t>(m_window.width()),
             static_cast<uint16_t>(m_window.height()), static_cast<uint32_t>(options.frames), options.screenshotPath,
             options.debugDisplayMode, options.debugLightClusterSlice, !options.disableLightCluster, options.cameraOrbit,
-            !options.disableShadows, m_pipelineSettings, m_frameSettings, m_shadowSettings, m_postProcessProfile,
+            !options.disableShadows, options.clusterStatsReadback, m_pipelineSettings, m_frameSettings,
+            m_shadowSettings, m_postProcessProfile,
             m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation);
         shutdown();
         return ok ? 0 : 1;
@@ -100,6 +101,12 @@ int Application::run(const AppOptions& options) {
 
     m_lastFrameTime = nowSeconds();
     uint32_t frameIndex = 0;
+    bool clusterStatsRequested = false;
+    bool clusterStatsReported = false;
+    if (options.clusterStatsReadback && m_forwardRenderer.valid()) {
+        m_forwardRenderer.requestClusterStatsReadback();
+        clusterStatsRequested = true;
+    }
     WindowInput input;
     while (m_window.pollEvents()) {
         if (m_window.takeResize()) {
@@ -126,6 +133,21 @@ int Application::run(const AppOptions& options) {
         const bool finalFrame = options.framesSpecified && frameIndex + 1 >= static_cast<uint32_t>(options.frames);
         frame(input, deltaSeconds, finalFrame, options.screenshotPath);
         ++frameIndex;
+
+        if (clusterStatsRequested && !clusterStatsReported) {
+            const render::ForwardRenderer::FrameDiagnostics diagnostics = m_forwardRenderer.frameDiagnostics();
+            if (diagnostics.clusterStatsValid) {
+                HBG_LOGI("cluster stats readback: path={} clusters={} active={} overflow_clusters={} "
+                         "overflow_lights={} max_overflow={} max_lights={} feature_flags_checked={} "
+                         "feature_flag_mismatch={}",
+                         diagnostics.clusterStatsGpu ? "gpu" : "cpu", diagnostics.clusterStatsClusters,
+                         diagnostics.clusterStatsActiveClusters, diagnostics.clusterStatsOverflowClusters,
+                         diagnostics.clusterStatsOverflowLights, diagnostics.clusterStatsMaxOverflow,
+                         diagnostics.clusterStatsMaxLights, diagnostics.clusterStatsFeatureFlagsChecked,
+                         diagnostics.clusterStatsFeatureFlagMismatch);
+                clusterStatsReported = true;
+            }
+        }
 
         if (finalFrame) {
             break;
@@ -188,10 +210,11 @@ bool Application::loadSettings(const AppOptions& options) {
              m_shadowSettings.filterSamples, m_shadowSettings.minFilterSize, m_shadowSettings.cascadeFade,
              m_shadowSettings.microShadows, m_shadowSettings.microShadowOpacity);
     HBG_LOGI("per-light shadow defaults: dimmer={:.2f} fade_distance={:.1f} tint=({:.2f}, {:.2f}, {:.2f}) "
-             "cache={}",
+             "punctual_cache={} area_cache={}",
              m_shadowSettings.shadowDimmer, m_shadowSettings.shadowFadeDistance,
              m_shadowSettings.shadowTint.x, m_shadowSettings.shadowTint.y, m_shadowSettings.shadowTint.z,
-             m_shadowSettings.cachedPunctualShadows ? "true" : "false");
+             m_shadowSettings.cachedPunctualShadows ? "true" : "false",
+             m_shadowSettings.cachedAreaShadows ? "true" : "false");
     HBG_LOGI("contact shadows: enabled={} length={:.3f} opacity={:.2f} samples={} half_res={} directional_only={} "
              "distance=[{:.2f}, {:.2f}] fade={:.2f}/{:.2f} bias={:.2f} thickness={:.3f}",
              m_shadowSettings.contactShadows.enabled ? "true" : "false", m_shadowSettings.contactShadows.length,
@@ -280,8 +303,14 @@ bool Application::loadSettings(const AppOptions& options) {
     if (options.gpuLightListIndirect) {
         m_pipelineSettings.supportGpuLightListIndirect = *options.gpuLightListIndirect;
     }
+    if (options.lightListFeatureFlags) {
+        m_pipelineSettings.supportLightListFeatureFlags = *options.lightListFeatureFlags;
+    }
     if (options.lightListCapacity) {
         m_pipelineSettings.lightListCapacity = *options.lightListCapacity;
+    }
+    if (options.lightLayers) {
+        m_pipelineSettings.supportLightLayers = *options.lightLayers;
     }
     if (options.gpuShadowCulling) {
         m_pipelineSettings.supportGpuShadowCulling = *options.gpuShadowCulling;
@@ -294,11 +323,12 @@ bool Application::loadSettings(const AppOptions& options) {
     }
 
     m_frameSettings.sanitize(m_pipelineSettings);
-    HBG_LOGI("settings: lit={} shadows={} gpuLightList={} lightCapacity={} opaque={} transparent={} postprocess={} "
+    HBG_LOGI("settings: lit={} shadows={} gpuLightList={} lightCapacity={} featureFlags={} opaque={} transparent={} postprocess={} "
              "motionVectors={} ssao={} ssr={} ssgi={} decals={} reflectionProbes={}",
              m_frameSettings.litShaderMode() == render::LitShaderMode::Deferred ? "deferred" : "forward",
              m_frameSettings.isEnabled(render::FrameSettingsField::ShadowMaps),
              m_pipelineSettings.supportGpuLightList ? "true" : "false", m_pipelineSettings.lightListCapacity,
+             m_pipelineSettings.supportLightListFeatureFlags ? "true" : "false",
              m_frameSettings.isEnabled(render::FrameSettingsField::OpaqueObjects),
              m_frameSettings.isEnabled(render::FrameSettingsField::TransparentObjects),
              m_frameSettings.isEnabled(render::FrameSettingsField::Postprocess),
@@ -356,8 +386,16 @@ void Application::frame(const WindowInput& input, double deltaSeconds, bool fina
             diagnostics.lightListCpuMs, diagnostics.gpuShadowCulling, diagnostics.gpuShadowIndirect,
             diagnostics.asyncGpuLightListRequested, diagnostics.asyncGpuLightListActive,
             diagnostics.lightListCapacityRequested, diagnostics.lightListCapacityEffective,
-            diagnostics.lightListStride, diagnostics.lightListTruncated);
+            diagnostics.lightListStride, diagnostics.lightListTruncated, diagnostics.lightListCapacityClamped);
+        m_debugUi.setClusterStatsStatus(
+            diagnostics.clusterStatsReadbackPending, diagnostics.clusterStatsValid, diagnostics.clusterStatsGpu,
+            diagnostics.clusterStatsClusters, diagnostics.clusterStatsActiveClusters,
+            diagnostics.clusterStatsOverflowClusters, diagnostics.clusterStatsOverflowLights,
+            diagnostics.clusterStatsMaxOverflow, diagnostics.clusterStatsMaxLights);
         m_debugUi.beginFrame(input, width, height, deltaSeconds);
+        if (m_debugUi.consumeClusterStatsReadbackRequest() && m_forwardRenderer.valid()) {
+            m_forwardRenderer.requestClusterStatsReadback();
+        }
         const render::DebugDisplaySettings& settings = m_debugUi.settings();
         if (settings.gpuLightList != m_pipelineSettings.supportGpuLightList && m_forwardRenderer.valid()) {
             m_pipelineSettings.supportGpuLightList = settings.gpuLightList;

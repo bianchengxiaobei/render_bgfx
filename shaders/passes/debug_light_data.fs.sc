@@ -8,7 +8,7 @@ void main()
     const ivec2 cell = clamp(ivec2(floor((gl_FragCoord.xy / screen) * vec2(4.0, 32.0))),
                              ivec2(0, 0), ivec2(3, 31));
     const int lightIndex = cell.y;
-    const bool active = float(lightIndex) < u_pass_lightCounts.x;
+    const bool active = lightIndex < hbgLightListCapacity() && float(lightIndex) < u_pass_lightCounts.x;
     const vec4 value = texelFetch(s_lightData, cell, 0);
 
     vec3 color = vec3(0.025, 0.025, 0.025);

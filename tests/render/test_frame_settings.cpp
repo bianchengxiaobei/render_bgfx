@@ -57,6 +57,7 @@ TEST_CASE("pipeline defaults enable the validated GPU light-list buffer path") {
     const PipelineSettings pipeline = PipelineSettings::defaults();
     CHECK(pipeline.supportGpuLightList);
     CHECK(pipeline.supportGpuLightListBuffers);
+    CHECK(pipeline.supportLightListFeatureFlags);
     CHECK(pipeline.lightListCapacity == kLightListDefaultCapacity);
     CHECK_FALSE(pipeline.supportGpuLightListIndirect);
     CHECK_FALSE(pipeline.supportGpuShadowCulling);
@@ -201,10 +202,13 @@ TEST_CASE("Pipeline light-list capacity uses supported tiers") {
     CHECK(isValidLightListCapacity(64));
     CHECK(isValidLightListCapacity(128));
     CHECK_FALSE(isValidLightListCapacity(33));
-    CHECK(lightListStrideFor(32) == 33);
-    CHECK(lightListStrideFor(64) == 65);
-    CHECK(lightListStrideFor(128) == 129);
-    CHECK(kLightListStrideMax == 129);
+    CHECK(lightListDwordStrideFor(32) == 17);
+    CHECK(lightListDwordStrideFor(64) == 33);
+    CHECK(lightListDwordStrideFor(128) == 65);
+    CHECK(lightListStrideFor(32) == 17);
+    CHECK(lightListStrideFor(64) == 33);
+    CHECK(lightListStrideFor(128) == 65);
+    CHECK(kLightListStrideMax == 65);
 
     PipelineSettings settings;
     std::string error;
@@ -218,6 +222,12 @@ TEST_CASE("Pipeline light-list capacity uses supported tiers") {
     REQUIRE(parsePipelineSettings(R"({"lightListCapacity":33})", settings, error));
     CHECK(settings.lightListCapacity == 32);
     CHECK_FALSE(parsePipelineSettings(R"({"lightListCapacity":"64"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportLightListFeatureFlags":false})", settings, error));
+    CHECK_FALSE(settings.supportLightListFeatureFlags);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK_FALSE(roundTrip.supportLightListFeatureFlags);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportLightListFeatureFlags":"false"})", settings, error));
 }
 
 TEST_CASE("PipelineSettings JSON parses and round-trips") {

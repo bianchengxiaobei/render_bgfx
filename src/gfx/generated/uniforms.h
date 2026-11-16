@@ -149,18 +149,20 @@ struct ClusterUniforms {
     Vec4 lightCounts;
     Vec4 screenSize;
     Vec4 lightListParams2;
+    Vec4 params2;
 };
 
 class ClusterUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_cluster_";
 
-    inline static const std::array<UniformDesc, 5> kDescriptors = {
+    inline static const std::array<UniformDesc, 6> kDescriptors = {
         UniformDesc{"u_cluster_params", UniformType::Vec4, 1},
         UniformDesc{"u_cluster_depthParams", UniformType::Vec4, 1},
         UniformDesc{"u_cluster_lightCounts", UniformType::Vec4, 1},
         UniformDesc{"u_cluster_screenSize", UniformType::Vec4, 1},
         UniformDesc{"u_cluster_lightListParams2", UniformType::Vec4, 1},
+        UniformDesc{"u_cluster_params2", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -174,6 +176,7 @@ class ClusterUniformBinder {
         m_block.set(2, uniforms.lightCounts);
         m_block.set(3, uniforms.screenSize);
         m_block.set(4, uniforms.lightListParams2);
+        m_block.set(5, uniforms.params2);
     }
 
   private:
@@ -561,14 +564,16 @@ class FogUniformBinder {
 
 struct ObjectUniforms {
     Mat4 prevModel;
+    Vec4 lightLayerMask;
 };
 
 class ObjectUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_object_";
 
-    inline static const std::array<UniformDesc, 1> kDescriptors = {
+    inline static const std::array<UniformDesc, 2> kDescriptors = {
         UniformDesc{"u_object_prevModel", UniformType::Mat4, 1},
+        UniformDesc{"u_object_lightLayerMask", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -578,6 +583,7 @@ class ObjectUniformBinder {
 
     void upload(const ObjectUniforms& uniforms) const {
         m_block.set(0, uniforms.prevModel);
+        m_block.set(1, uniforms.lightLayerMask);
     }
 
   private:

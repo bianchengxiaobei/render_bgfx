@@ -132,15 +132,15 @@ TEST_CASE("light builder assigns contact shadow mask bits") {
     builder.build(scene, Vec3(0.0f, 1.0f, 5.0f), Vec3(0.0f, 0.0f, -1.0f), 100.0f, true, false);
     const GpuLightData& data = builder.data();
     CHECK(data.texels[3].z == doctest::Approx(1.0f));
-    CHECK(data.texels[9].z == doctest::Approx(2.0f));
-    CHECK(data.texels[15].z == doctest::Approx(4.0f));
+    CHECK(data.texels[kGpuLightTexels + 3].z == doctest::Approx(2.0f));
+    CHECK(data.texels[2 * kGpuLightTexels + 3].z == doctest::Approx(4.0f));
 
     LightBuilder directionalOnlyBuilder;
     directionalOnlyBuilder.build(scene, Vec3(0.0f, 1.0f, 5.0f), Vec3(0.0f, 0.0f, -1.0f), 100.0f, true,
                                  true);
     const GpuLightData& directionalOnly = directionalOnlyBuilder.data();
     CHECK(directionalOnly.texels[3].z == doctest::Approx(1.0f));
-    CHECK(directionalOnly.texels[9].z == doctest::Approx(0.0f));
+    CHECK(directionalOnly.texels[kGpuLightTexels + 3].z == doctest::Approx(0.0f));
 
     LightBuilder disabledBuilder;
     disabledBuilder.build(scene, Vec3(0.0f, 1.0f, 5.0f), Vec3(0.0f, 0.0f, -1.0f), 100.0f, false, false);

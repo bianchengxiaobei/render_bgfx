@@ -16,6 +16,7 @@ SurfaceData hbgMakeSurfaceData(vec3 worldPos, vec3 geometricNormalWS, vec3 tange
                                vec2 uv, float viewSign)
 {
     SurfaceData surfaceData;
+    surfaceData.lightLayerMask = 65535.0;
 
     vec4 baseColor = texture2D(s_baseColorMap, uv) * u_material_baseColorFactor;
     surfaceData.baseColor = baseColor.rgb;

@@ -7,6 +7,7 @@ add_executable(hbg_tests
     gfx/test_gfx_types.cpp
     gfx/test_uniform_layout.cpp
     render/test_contact_shadow.cpp
+    render/test_cookie_atlas.cpp
     render/test_debug_display.cpp
     render/test_decal.cpp
     render/test_frame_settings.cpp

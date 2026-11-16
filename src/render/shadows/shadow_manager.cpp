@@ -15,8 +15,12 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kDirectionalDepthBias = 0.01f;
 constexpr float kPointDepthBias = 0.01f;
 constexpr float kSpotDepthBias = 0.003f;
+constexpr float kAreaDepthBias = 0.003f;
 constexpr float kReferenceSlopeBias = 5.0f;
 constexpr float kWorldTexelScale = 1.41421356237f;
+constexpr float kDefaultAreaShadowCone = 120.0f;
+constexpr float kMinAreaShadowCone = 10.0f;
+constexpr float kMaxAreaShadowCone = 179.0f;
 
 float computePunctualShadowFade(float distanceToCamera, float fadeDistance) {
     if (fadeDistance <= 0.0f) {
@@ -232,12 +236,50 @@ bool makePerspectiveRequest(const Vec3& position, const Vec3& direction, const V
     return true;
 }
 
+bool makeAreaPerspectiveRequest(const Vec3& position, const Vec3& direction, const Vec3& up, float fov,
+                                float aspect, float nearPlane, float farPlane, bool homogeneousDepth,
+                                bool originBottomLeft, ShadowRequest& request) {
+    if (!(farPlane > nearPlane) || !(fov > 0.0f) || !(aspect > 0.0f)) {
+        return false;
+    }
+    const Mat4 view = lookAtRH(position, position + direction, up);
+    const float scale = 1.0f / std::tan(fov * 0.5f);
+    Mat4 projection{};
+    // HDRP ExtractSpotLightProjectionMatrix: the cone angle applies to the
+    // smaller area dimension, so wide rectangles still fit inside the spot.
+    if (aspect < 1.0f) {
+        projection.values[0] = scale;
+        projection.values[5] = scale * aspect;
+    } else {
+        projection.values[0] = scale / aspect;
+        projection.values[5] = scale;
+    }
+    const float depthRange = nearPlane - farPlane;
+    projection.values[10] = farPlane / depthRange;
+    projection.values[11] = -1.0f;
+    projection.values[14] = (nearPlane * farPlane) / depthRange;
+    if (homogeneousDepth) {
+        projection.values[10] = (farPlane + nearPlane) / depthRange;
+        projection.values[14] = (2.0f * nearPlane * farPlane) / depthRange;
+    }
+    request.view = view;
+    request.projection = projection;
+    request.viewProj = projection * view;
+    request.worldToShadow = biasCrop(originBottomLeft, homogeneousDepth) * request.viewProj;
+    request.lightPosition = position;
+    request.lightDirection = direction;
+    request.enabled = true;
+    updateFrustumPlanes(request, homogeneousDepth);
+    return true;
+}
+
 } // namespace
 
 bool ShadowManager::init(gfx::ResourceManager& resources, const ShadowSettings& settings) {
     m_resources = &resources;
     m_settings = settings;
     sanitizeShadowSettings(m_settings);
+    m_sortedPackingWarningLogged = false;
     if (!createTextures()) {
         m_resources = nullptr;
         return false;
@@ -249,6 +291,10 @@ bool ShadowManager::init(gfx::ResourceManager& resources, const ShadowSettings& 
 bool ShadowManager::setSettings(const ShadowSettings& settings) {
     m_settings = settings;
     sanitizeShadowSettings(m_settings);
+    m_directionalAtlasSize = static_cast<uint16_t>(m_settings.atlasSize);
+    m_punctualAtlasSize = static_cast<uint16_t>(m_settings.atlasSize);
+    m_areaAtlasSize = static_cast<uint16_t>(m_settings.areaAtlasSize);
+    m_sortedPackingWarningLogged = false;
     if (m_resources == nullptr) {
         return true;
     }
@@ -264,6 +310,7 @@ bool ShadowManager::createTextures() {
 
     m_directionalAtlasSize = static_cast<uint16_t>(m_settings.atlasSize);
     m_punctualAtlasSize = static_cast<uint16_t>(m_settings.atlasSize);
+    m_areaAtlasSize = static_cast<uint16_t>(m_settings.areaAtlasSize);
 
     gfx::TextureDesc directionalDesc;
     directionalDesc.width = m_directionalAtlasSize;
@@ -299,15 +346,61 @@ bool ShadowManager::createTextures() {
         return false;
     }
 
-    gfx::TextureDesc contextDesc;
-    contextDesc.width = static_cast<uint16_t>(kShadowContextTexels);
-    contextDesc.height = static_cast<uint16_t>(kMaxShadowRequests);
-    contextDesc.format = gfx::TextureFormat::RGBA32F;
-    contextDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    gfx::TextureDesc areaDesc = directionalDesc;
+    areaDesc.width = m_areaAtlasSize;
+    areaDesc.height = m_areaAtlasSize;
+    areaDesc.flags |= BGFX_TEXTURE_BLIT_DST;
+    areaDesc.name = "shadow.areaAtlas";
+    m_areaTexture = m_resources->createTexture(areaDesc);
+    if (!m_areaTexture.valid()) {
+        HBG_LOGE("shadow manager: failed to create area atlas {}x{}", m_areaAtlasSize, m_areaAtlasSize);
+        destroyTextures();
+        return false;
+    }
+
+    if (m_settings.cachedAreaShadows) {
+        gfx::TextureDesc cachedAreaDesc = areaDesc;
+        cachedAreaDesc.name = "shadow.cachedAreaAtlas";
+        m_cachedAreaTexture = m_resources->createTexture(cachedAreaDesc);
+        if (!m_cachedAreaTexture.valid()) {
+            HBG_LOGE("shadow manager: failed to create cached area atlas {}x{}", m_areaAtlasSize,
+                     m_areaAtlasSize);
+            destroyTextures();
+            return false;
+        }
+    }
+    HBG_LOGI("shadow area atlas: {}x{} D24S8 (~{:.1f} MB), cached={} (~{:.1f} MB), resolution={}, filter={}",
+             m_areaAtlasSize, m_areaAtlasSize,
+             static_cast<double>(m_areaAtlasSize) * m_areaAtlasSize * 4.0 / (1024.0 * 1024.0),
+             m_settings.cachedAreaShadows ? "true" : "false",
+             m_settings.cachedAreaShadows
+                 ? static_cast<double>(m_areaAtlasSize) * m_areaAtlasSize * 4.0 / (1024.0 * 1024.0)
+                 : 0.0,
+             m_settings.areaResolution, shadowFilterName(m_settings.areaFilter));
+
+    gfx::BufferDesc contextDesc;
+    contextDesc.type = gfx::BufferType::Storage;
+    contextDesc.count = kMaxShadowRequests * kShadowContextTexels * 4u;
+    contextDesc.flags = BGFX_BUFFER_COMPUTE_READ;
     contextDesc.name = "shadow.context";
-    m_contextTexture = m_resources->createTexture(contextDesc);
-    if (!m_contextTexture.valid()) {
-        HBG_LOGE("shadow manager: failed to create shadow context texture");
+    m_contextBuffer = m_resources->createBuffer(contextDesc);
+    if (!m_contextBuffer.valid()) {
+        HBG_LOGE("shadow manager: failed to create shadow context buffer");
+        destroyTextures();
+        return false;
+    }
+
+    gfx::VertexLayout contextAreaLayout;
+    contextAreaLayout.add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
+    gfx::BufferDesc contextAreaDesc;
+    contextAreaDesc.type = gfx::BufferType::StorageVertex;
+    contextAreaDesc.count = kMaxShadowRequests * kShadowContextTexels;
+    contextAreaDesc.layout = &contextAreaLayout;
+    contextAreaDesc.flags = BGFX_BUFFER_COMPUTE_READ;
+    contextAreaDesc.name = "shadow.contextArea";
+    m_contextAreaBuffer = m_resources->createBuffer(contextAreaDesc);
+    if (!m_contextAreaBuffer.valid()) {
+        HBG_LOGE("shadow manager: failed to create area shadow context buffer");
         destroyTextures();
         return false;
     }
@@ -332,9 +425,21 @@ void ShadowManager::destroyTextures() {
         m_resources->destroyTexture(m_cachedPunctualTexture);
         m_cachedPunctualTexture = {};
     }
-    if (m_contextTexture.valid()) {
-        m_resources->destroyTexture(m_contextTexture);
-        m_contextTexture = {};
+    if (m_areaTexture.valid()) {
+        m_resources->destroyTexture(m_areaTexture);
+        m_areaTexture = {};
+    }
+    if (m_cachedAreaTexture.valid()) {
+        m_resources->destroyTexture(m_cachedAreaTexture);
+        m_cachedAreaTexture = {};
+    }
+    if (m_contextBuffer.valid()) {
+        m_resources->destroyBuffer(m_contextBuffer);
+        m_contextBuffer = {};
+    }
+    if (m_contextAreaBuffer.valid()) {
+        m_resources->destroyBuffer(m_contextAreaBuffer);
+        m_contextAreaBuffer = {};
     }
 }
 
@@ -348,9 +453,17 @@ void ShadowManager::shutdown(gfx::ResourceManager& resources) {
 void ShadowManager::invalidate() {
     resetFrameRequests();
     m_cacheHash = 0;
+    m_areaCacheHash = 0;
     m_cachedRequestCount = 0;
+    m_cachedAreaRequestCount = 0;
     m_cacheEligible = false;
     m_cacheValid = false;
+    m_areaCacheEligible = false;
+    m_areaCacheValid = false;
+    m_areaCacheMixed = false;
+    m_areaCacheMixedPrev = false;
+    m_areaCacheDirty = false;
+    m_areaUsesDynamicAtlas = false;
 }
 
 void ShadowManager::resetFrameRequests() {
@@ -359,8 +472,10 @@ void ShadowManager::resetFrameRequests() {
     m_cascadeSplits = {};
     m_directionalRequestCount = 0;
     m_punctualRequestCount = 0;
+    m_areaRequestCount = 0;
     m_shadowedLightCount = 0;
     m_cachedRequestCount = 0;
+    m_cachedAreaRequestCount = 0;
     resetPacking();
 }
 
@@ -368,6 +483,9 @@ void ShadowManager::resetPacking() {
     m_punctualCursorX = 0;
     m_punctualCursorY = 0;
     m_punctualRowHeight = 0;
+    m_areaCursorX = 0;
+    m_areaCursorY = 0;
+    m_areaRowHeight = 0;
 }
 
 bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, const Camera& camera,
@@ -377,7 +495,8 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
     const bool originBottomLeft = bgfx::getCaps() != nullptr && bgfx::getCaps()->originBottomLeft;
     const Vec3 cameraPosition = view.worldSpaceCameraPos;
 
-    bool cacheEligible = m_settings.cachedPunctualShadows && !m_cacheSuppressed;
+    bool punctualCacheEligible = m_settings.cachedPunctualShadows && !m_cacheSuppressed;
+    const bool areaCacheRequested = m_settings.cachedAreaShadows && !m_cacheSuppressed;
     bool hasPunctualCaster = false;
     const auto& selectedLights = lightBuilder.selectedLights();
     for (uint32_t index = 0; index < selectedLights.size(); ++index) {
@@ -386,13 +505,23 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
             continue;
         }
         const LightShadowSettings shadow = resolveLightShadow(light, m_settings);
+        if (light.type == LightType::Area) {
+            if (light.areaShape != LightAreaShape::Rectangle) {
+                continue;
+            }
+            const Vec3 position = worldTranslation(light.world);
+            const float distanceToCamera = length(position - cameraPosition);
+            buildAreaRequest(light, shadow, index, lightBuilder, homogeneousDepth, originBottomLeft,
+                             distanceToCamera);
+            continue;
+        }
         if (light.type == LightType::Directional) {
             buildDirectionalRequests(scene, view, camera, light, shadow, index, lightBuilder, homogeneousDepth,
                                      originBottomLeft);
         } else {
             hasPunctualCaster = true;
             if (light.shadowConfigured && shadow.updateMode == ShadowUpdateMode::EveryFrame) {
-                cacheEligible = false;
+                punctualCacheEligible = false;
             }
             const Vec3 position = worldTranslation(light.world);
             const float distanceToCamera = length(position - cameraPosition);
@@ -401,24 +530,66 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
         }
     }
 
-    cacheEligible = cacheEligible && hasPunctualCaster;
-    const uint64_t cacheHash = cacheEligible ? buildCacheHash(scene, lightBuilder) : 0;
-    m_cacheEligible = cacheEligible;
-    if (cacheEligible && m_cacheValid && m_cacheHash == cacheHash) {
+    packPunctualSorted();
+    repackAreaRequests();
+
+
+    punctualCacheEligible = punctualCacheEligible && hasPunctualCaster;
+    bool hasStaticArea = false;
+    bool hasDynamicArea = false;
+    for (const ShadowRequest& request : m_requests) {
+        if (request.atlas != ShadowAtlasType::Area) {
+            continue;
+        }
+        hasStaticArea = hasStaticArea || request.isStaticArea;
+        hasDynamicArea = hasDynamicArea || !request.isStaticArea;
+    }
+    const bool areaCacheEligible = areaCacheRequested && hasStaticArea;
+    m_cacheEligible = punctualCacheEligible;
+    m_areaCacheEligible = areaCacheEligible;
+    const bool areaCacheMixed = areaCacheEligible && hasDynamicArea;
+    if (areaCacheMixed != m_areaCacheMixedPrev) {
+        m_areaCacheValid = false;
+        m_areaCacheHash = 0;
+    }
+    m_areaCacheMixedPrev = areaCacheMixed;
+    m_areaCacheMixed = areaCacheMixed;
+    m_areaUsesDynamicAtlas = hasDynamicArea;
+
+    const uint64_t cacheHash =
+        punctualCacheEligible ? buildCacheHash(scene, lightBuilder, ShadowAtlasType::Punctual) : 0;
+    if (punctualCacheEligible && m_cacheValid && m_cacheHash == cacheHash) {
         for (ShadowRequest& request : m_requests) {
             if (request.atlas == ShadowAtlasType::Punctual) {
                 request.isCached = true;
                 ++m_cachedRequestCount;
             }
         }
+    } else if (punctualCacheEligible) {
+        m_cacheHash = cacheHash;
+        m_cacheValid = true;
     } else {
-        if (cacheEligible) {
-            m_cacheHash = cacheHash;
-            m_cacheValid = true;
-        } else {
-            m_cacheHash = 0;
-            m_cacheValid = false;
+        m_cacheHash = 0;
+        m_cacheValid = false;
+    }
+
+    const uint64_t areaCacheHash =
+        areaCacheEligible ? buildCacheHash(scene, lightBuilder, ShadowAtlasType::Area, true) : 0;
+    const bool areaCacheHit = areaCacheEligible && m_areaCacheValid && m_areaCacheHash == areaCacheHash;
+    m_areaCacheDirty = areaCacheEligible && !areaCacheHit;
+    if (areaCacheHit) {
+        for (ShadowRequest& request : m_requests) {
+            if (request.atlas == ShadowAtlasType::Area && request.isStaticArea) {
+                request.isCached = true;
+                ++m_cachedAreaRequestCount;
+            }
         }
+    } else if (areaCacheEligible) {
+        m_areaCacheHash = areaCacheHash;
+        m_areaCacheValid = true;
+    } else {
+        m_areaCacheHash = 0;
+        m_areaCacheValid = false;
     }
 
     buildContextData();
@@ -652,7 +823,80 @@ bool ShadowManager::buildPunctualRequest(const Light& light, const LightShadowSe
     return false;
 }
 
-bool ShadowManager::packPunctual(uint16_t width, uint16_t height, ShadowRequest& request) {
+bool ShadowManager::buildAreaRequest(const Light& light, const LightShadowSettings& shadow, uint32_t lightIndex,
+                                     LightBuilder& lightBuilder, bool homogeneousDepth, bool originBottomLeft,
+                                     float distanceToCamera) {
+    if (light.areaShape != LightAreaShape::Rectangle || shadow.dimmer <= 0.0f) {
+        return false;
+    }
+    const float distanceFade = computePunctualShadowFade(distanceToCamera, shadow.fadeDistance);
+    if (distanceFade <= 0.0f) {
+        return false;
+    }
+    if (m_requests.size() + 1 > m_settings.maxRequests) {
+        return false;
+    }
+
+    const float width = std::max(light.areaWidth, 0.01f);
+    const float height = std::max(light.areaHeight, 0.01f);
+    const float coneDegrees =
+        std::clamp(light.areaShadowCone > 0.0f ? light.areaShadowCone : kDefaultAreaShadowCone,
+                   kMinAreaShadowCone, kMaxAreaShadowCone);
+    const float cone = coneDegrees * (kPi / 180.0f);
+    const float halfMinExtent = std::min(width, height) * 0.5f;
+    const float forwardOffset = -halfMinExtent / std::max(std::tan(cone * 0.5f), 1.0e-4f);
+
+    const Vec3 lightPosition = worldTranslation(light.world);
+    const Vec3 forward = normalize(transformDirection(light.world, Vec3(0.0f, 0.0f, -1.0f)));
+    Vec3 up = normalize(transformDirection(light.world, Vec3(0.0f, 1.0f, 0.0f)));
+    if (std::abs(dot(forward, up)) > 0.99f) {
+        up = lightUp(forward);
+    }
+
+    const float range = std::max(light.range, 0.01f);
+    const float nearPlane = std::max(0.01f, shadow.nearPlane - forwardOffset);
+    const float farPlane = std::max(nearPlane + 0.01f, range - forwardOffset);
+    const float aspect = width / height;
+    ShadowRequest request;
+    if (!makeAreaPerspectiveRequest(lightPosition + forward * forwardOffset, forward, up, cone, aspect,
+                                    nearPlane, farPlane, homogeneousDepth, originBottomLeft, request)) {
+        return false;
+    }
+    request.type = ShadowRequestType::Rectangle;
+    request.atlas = ShadowAtlasType::Area;
+    request.isStaticArea = shadow.updateMode != ShadowUpdateMode::EveryFrame;
+    request.lightIndex = lightIndex;
+    request.faceIndex = 0;
+    request.cascadeIndex = 0;
+    request.atlasSize = m_areaAtlasSize;
+    request.depthBias = kAreaDepthBias;
+    request.normalBias = m_settings.normalBias;
+    request.softness = shadow.softness;
+    request.nearPlane = nearPlane;
+    request.farPlane = farPlane;
+    request.slopeBias = m_settings.slopeBias * kReferenceSlopeBias;
+    request.blockerSamples = shadow.blockerSamples;
+    request.filterSamples = shadow.filterSamples;
+    request.minFilterSize = m_settings.minFilterSize;
+    request.filter = m_settings.areaFilter;
+    const uint32_t requestedResolution = shadow.resolution != 0 ? shadow.resolution : m_settings.areaResolution;
+    const uint16_t resolution =
+        static_cast<uint16_t>(std::min<uint32_t>(requestedResolution, m_areaAtlasSize));
+    if (!packArea(resolution, resolution, request)) {
+        return false;
+    }
+    request.worldTexelSize = computeWorldTexelSize(request.projection, request.viewportWidth);
+    request.requestIndex = static_cast<uint32_t>(m_requests.size());
+    const uint32_t base = request.requestIndex;
+    m_requests.push_back(request);
+    ++m_areaRequestCount;
+    ++m_shadowedLightCount;
+    lightBuilder.setShadowIndex(lightIndex, static_cast<int32_t>(base));
+    lightBuilder.setShadowDimmer(lightIndex, shadow.dimmer * distanceFade);
+    return true;
+}
+
+bool ShadowManager::packPunctual(uint16_t width, uint16_t height, ShadowRequest& request, bool allowResize) {
     if (width == 0 || height == 0) {
         return false;
     }
@@ -685,6 +929,9 @@ bool ShadowManager::packPunctual(uint16_t width, uint16_t height, ShadowRequest&
                 return true;
             }
         }
+        if (!allowResize) {
+            break;
+        }
         attemptWidth /= 2;
         attemptHeight /= 2;
     }
@@ -694,7 +941,157 @@ bool ShadowManager::packPunctual(uint16_t width, uint16_t height, ShadowRequest&
     return false;
 }
 
-uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuilder& lightBuilder) const {
+bool ShadowManager::packArea(uint16_t width, uint16_t height, ShadowRequest& request, bool allowResize) {
+    if (width == 0 || height == 0) {
+        return false;
+    }
+    const uint16_t savedX = m_areaCursorX;
+    const uint16_t savedY = m_areaCursorY;
+    const uint16_t savedRowHeight = m_areaRowHeight;
+    uint32_t attemptWidth = width;
+    uint32_t attemptHeight = height;
+    while (attemptWidth >= 64 && attemptHeight >= 64) {
+        m_areaCursorX = savedX;
+        m_areaCursorY = savedY;
+        m_areaRowHeight = savedRowHeight;
+        if (attemptWidth <= m_areaAtlasSize && attemptHeight <= m_areaAtlasSize) {
+            if (m_areaCursorX + attemptWidth > m_areaAtlasSize) {
+                m_areaCursorX = 0;
+                m_areaCursorY = static_cast<uint16_t>(m_areaCursorY + m_areaRowHeight);
+                m_areaRowHeight = 0;
+            }
+            if (m_areaCursorY + attemptHeight <= m_areaAtlasSize) {
+                if (attemptWidth != width || attemptHeight != height) {
+                    HBG_LOGW("shadow atlas: reduced area request from {}x{} to {}x{}", width, height,
+                             attemptWidth, attemptHeight);
+                }
+                request.viewportX = m_areaCursorX;
+                request.viewportY = m_areaCursorY;
+                request.viewportWidth = static_cast<uint16_t>(attemptWidth);
+                request.viewportHeight = static_cast<uint16_t>(attemptHeight);
+                m_areaCursorX = static_cast<uint16_t>(m_areaCursorX + attemptWidth);
+                m_areaRowHeight = std::max<uint16_t>(m_areaRowHeight, static_cast<uint16_t>(attemptHeight));
+                return true;
+            }
+        }
+        if (!allowResize) {
+            break;
+        }
+        attemptWidth /= 2;
+        attemptHeight /= 2;
+    }
+    m_areaCursorX = savedX;
+    m_areaCursorY = savedY;
+    m_areaRowHeight = savedRowHeight;
+    return false;
+}
+
+void ShadowManager::repackAreaRequests() {
+    m_areaCursorX = 0;
+    m_areaCursorY = 0;
+    m_areaRowHeight = 0;
+    if (m_areaRequestCount == 0) {
+        return;
+    }
+
+    const auto packPass = [this](bool staticArea) {
+        for (ShadowRequest& request : m_requests) {
+            if (request.atlas != ShadowAtlasType::Area || request.isStaticArea != staticArea) {
+                continue;
+            }
+            if (!packArea(request.viewportWidth, request.viewportHeight, request, true)) {
+                HBG_LOGW("shadow atlas: area request did not fit after static-first repack");
+            }
+        }
+    };
+    packPass(true);
+    packPass(false);
+
+    for (ShadowRequest& request : m_requests) {
+        if (request.atlas == ShadowAtlasType::Area) {
+            request.worldTexelSize = computeWorldTexelSize(request.projection, request.viewportWidth);
+        }
+    }
+}
+
+bool ShadowManager::packPunctualSorted() {
+    if (m_settings.atlasSize <= kDefaultShadowAtlasSize && m_settings.maxRequests <= kDefaultShadowRequests) {
+        return false;
+    }
+
+    struct Group {
+        uint32_t first = 0;
+        uint32_t count = 0;
+        uint16_t width = 0;
+        uint16_t height = 0;
+    };
+
+    std::vector<Group> groups;
+    groups.reserve(m_requests.size());
+    for (uint32_t index = 0; index < m_requests.size();) {
+        const ShadowRequest& request = m_requests[index];
+        if (request.atlas != ShadowAtlasType::Punctual) {
+            ++index;
+            continue;
+        }
+        uint32_t end = index + 1;
+        while (end < m_requests.size()) {
+            const ShadowRequest& next = m_requests[end];
+            if (next.atlas != ShadowAtlasType::Punctual || next.lightIndex != request.lightIndex ||
+                next.type != request.type) {
+                break;
+            }
+            ++end;
+        }
+        groups.push_back({index, end - index, request.viewportWidth, request.viewportHeight});
+        index = end;
+    }
+    if (groups.size() < 2) {
+        return false;
+    }
+
+    std::stable_sort(groups.begin(), groups.end(), [](const Group& lhs, const Group& rhs) {
+        const uint32_t lhsArea = static_cast<uint32_t>(lhs.width) * lhs.height;
+        const uint32_t rhsArea = static_cast<uint32_t>(rhs.width) * rhs.height;
+        if (lhsArea != rhsArea) {
+            return lhsArea > rhsArea;
+        }
+        if (lhs.width != rhs.width) {
+            return lhs.width > rhs.width;
+        }
+        if (lhs.height != rhs.height) {
+            return lhs.height > rhs.height;
+        }
+        return lhs.first < rhs.first;
+    });
+
+    const std::vector<ShadowRequest> backup = m_requests;
+    const uint16_t savedX = m_punctualCursorX;
+    const uint16_t savedY = m_punctualCursorY;
+    const uint16_t savedRowHeight = m_punctualRowHeight;
+    resetPacking();
+    for (const Group& group : groups) {
+        for (uint32_t offset = 0; offset < group.count; ++offset) {
+            ShadowRequest& request = m_requests[group.first + offset];
+            if (!packPunctual(group.width, group.height, request, false)) {
+                m_requests = backup;
+                m_punctualCursorX = savedX;
+                m_punctualCursorY = savedY;
+                m_punctualRowHeight = savedRowHeight;
+                if (!m_sortedPackingWarningLogged) {
+                    HBG_LOGW("shadow atlas: sorted punctual packing did not fit; keeping original layout");
+                    m_sortedPackingWarningLogged = true;
+                }
+                return false;
+            }
+            request.worldTexelSize = computeWorldTexelSize(request.projection, request.viewportWidth);
+        }
+    }
+    return true;
+}
+
+uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuilder& lightBuilder,
+                                       ShadowAtlasType atlas, bool staticAreaOnly) const {
     uint64_t hash = 1469598103934665603ull;
     hashUint(hash, static_cast<uint32_t>(scene.objects.size()));
     for (const RenderObject& object : scene.objects) {
@@ -727,9 +1124,28 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
     }
 
     const auto& selectedLights = lightBuilder.selectedLights();
-    hashUint(hash, static_cast<uint32_t>(selectedLights.size()));
+    const auto lightMatchesAtlas = [this, atlas, staticAreaOnly](const Light& light) {
+        if (atlas == ShadowAtlasType::Area) {
+            if (light.type != LightType::Area || light.areaShape != LightAreaShape::Rectangle) {
+                return false;
+            }
+            if (staticAreaOnly) {
+                const LightShadowSettings shadow = resolveLightShadow(light, m_settings);
+                return shadow.updateMode != ShadowUpdateMode::EveryFrame;
+            }
+            return true;
+        }
+        return light.type == LightType::Point || light.type == LightType::Spot;
+    };
+    uint32_t matchingLightCount = 0;
     for (const Light* light : selectedLights) {
-        if (light == nullptr) {
+        if (light != nullptr && lightMatchesAtlas(*light)) {
+            ++matchingLightCount;
+        }
+    }
+    hashUint(hash, matchingLightCount);
+    for (const Light* light : selectedLights) {
+        if (light == nullptr || !lightMatchesAtlas(*light)) {
             continue;
         }
         hashUint(hash, static_cast<uint32_t>(light->type));
@@ -739,6 +1155,9 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
         hashFloat(hash, light->range);
         hashFloat(hash, light->innerConeAngle);
         hashFloat(hash, light->outerConeAngle);
+        hashFloat(hash, light->areaWidth);
+        hashFloat(hash, light->areaHeight);
+        hashFloat(hash, light->areaShadowCone);
         hashUint(hash, light->castShadows ? 1u : 0u);
         hashUint(hash, light->shadowConfigured ? 1u : 0u);
         const LightShadowSettings shadow = resolveLightShadow(*light, m_settings);
@@ -755,27 +1174,35 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
         hashUint(hash, shadow.filterSamples);
     }
 
-    hashUint(hash, m_settings.pointResolution);
-    hashUint(hash, m_settings.spotResolution);
-    hashUint(hash, m_settings.atlasSize);
     hashUint(hash, m_settings.maxRequests);
-    hashUint(hash, static_cast<uint32_t>(m_settings.punctualFilter));
-    hashUint(hash, static_cast<uint32_t>(m_settings.directionalFilter));
     hashFloat(hash, m_settings.normalBias);
     hashFloat(hash, m_settings.slopeBias);
     hashFloat(hash, m_settings.softness);
     hashUint(hash, m_settings.blockerSamples);
     hashUint(hash, m_settings.filterSamples);
+    if (atlas == ShadowAtlasType::Area) {
+        hashUint(hash, m_settings.areaResolution);
+        hashUint(hash, m_settings.areaAtlasSize);
+        hashUint(hash, static_cast<uint32_t>(m_settings.areaFilter));
+    } else {
+        hashUint(hash, m_settings.pointResolution);
+        hashUint(hash, m_settings.spotResolution);
+        hashUint(hash, m_settings.atlasSize);
+        hashUint(hash, static_cast<uint32_t>(m_settings.punctualFilter));
+    }
 
-    uint32_t punctualRequestCount = 0;
+    const auto requestMatchesAtlas = [atlas, staticAreaOnly](const ShadowRequest& request) {
+        return request.atlas == atlas && (!staticAreaOnly || request.isStaticArea);
+    };
+    uint32_t requestCount = 0;
     for (const ShadowRequest& request : m_requests) {
-        if (request.atlas == ShadowAtlasType::Punctual) {
-            ++punctualRequestCount;
+        if (requestMatchesAtlas(request)) {
+            ++requestCount;
         }
     }
-    hashUint(hash, punctualRequestCount);
+    hashUint(hash, requestCount);
     for (const ShadowRequest& request : m_requests) {
-        if (request.atlas != ShadowAtlasType::Punctual) {
+        if (!requestMatchesAtlas(request)) {
             continue;
         }
         hashUint(hash, static_cast<uint32_t>(request.type));
@@ -829,21 +1256,23 @@ void ShadowManager::buildContextData() {
 }
 
 void ShadowManager::uploadContext() {
-    if (m_resources == nullptr || !m_contextTexture.valid()) {
+    if (m_resources == nullptr || !m_contextBuffer.valid()) {
         return;
     }
-    m_resources->updateTexture(m_contextTexture, m_contextData.texels.data(),
-                               static_cast<uint32_t>(sizeof(m_contextData.texels)), kShadowContextTexels,
-                               static_cast<uint16_t>(kMaxShadowRequests),
-                               static_cast<uint16_t>(kShadowContextTexels * sizeof(Vec4)));
+    m_resources->updateBuffer(m_contextBuffer, m_contextData.texels.data(),
+                              static_cast<uint32_t>(sizeof(m_contextData.texels)));
+    if (m_areaRequestCount != 0 && m_contextAreaBuffer.valid()) {
+        m_resources->updateBuffer(m_contextAreaBuffer, m_contextData.texels.data(),
+                                  static_cast<uint32_t>(sizeof(m_contextData.texels)));
+    }
 }
 
 void ShadowManager::beginCachedPass(gfx::Encoder& encoder, bgfx::ViewId view,
-                                    gfx::FrameBufferHandle frameBuffer) const {
+                                    gfx::FrameBufferHandle frameBuffer, uint16_t atlasSize) const {
     if (!frameBuffer.valid()) {
         return;
     }
-    encoder.setViewRect(view, 0, 0, m_punctualAtlasSize, m_punctualAtlasSize);
+    encoder.setViewRect(view, 0, 0, atlasSize, atlasSize);
     encoder.setViewFrameBuffer(view, frameBuffer);
     encoder.setViewClear(view, BGFX_CLEAR_NONE, 0x000000ff, 1.0f, 0);
     encoder.touch(view);

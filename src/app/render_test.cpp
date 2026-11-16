@@ -40,7 +40,7 @@ void updateOrbitCamera(render::RenderScene& scene, uint32_t frame, uint16_t widt
 bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uint16_t width, uint16_t height,
                    uint32_t frames, const std::string& screenshotPath, render::DebugDisplayMode debugMode,
                    int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit, bool shadowsEnabled,
-                   const render::PipelineSettings& pipelineSettings,
+                   bool clusterStatsReadback, const render::PipelineSettings& pipelineSettings,
                    const render::FrameSettings& frameSettings, const render::ShadowSettings& shadowSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
@@ -80,7 +80,11 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
         return false;
     }
 
-    const uint32_t count = frames > 0 ? frames : 1;
+    if (clusterStatsReadback) {
+        renderer.requestClusterStatsReadback();
+    }
+    const uint32_t requestedFrames = frames > 0 ? frames : 1;
+    const uint32_t count = clusterStatsReadback ? std::max(requestedFrames, 8u) : requestedFrames;
     const auto renderStart = std::chrono::steady_clock::now();
     for (uint32_t frame = 0; frame < count; ++frame) {
         if (cameraOrbit) {
@@ -114,10 +118,16 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  "post_history={} post_exposure={} post_uber={} post_bloom={} post_taa={} post_dof={} "
                  "post_motion_blur={} post_fxaa={} fog={} fog_steps={} fog_scale={:.3f} fog_lowres={}x{} "
                  "fog_temporal={} fog_history={} fog_lights={} fog_local={} fog_local_masks={} "
-                 "shadow_drawn={} shadow_culled={} shadow_cache={} shadow_cached={} contact={} contact_res={}x{} "
+                 "shadow_drawn={} shadow_culled={} shadow_cache={} shadow_cached={} shadow_area_cache={} "
+                 "shadow_cached_area={} contact={} contact_res={}x{} "
                  "gpu_light_list={} gpu_light_list_requested={} gpu_light_list_fallback={} light_list_passes={} "
                  "light_list_cpu_ms={:.3f} shadow_cull_path={} shadow_indirect={} shadow_cull_dispatches={} "
                  "shadow_indirect_draws={} async_light_list_requested={} async_light_list_active={} "
+                 "light_list_capacity_requested={} light_list_capacity_effective={} light_list_stride={} "
+                 "light_list_truncated={} light_list_capacity_clamped={} light_list_feature_flags={} cluster_stats_valid={} "
+                 "cluster_stats_gpu={} cluster_stats_pending={} cluster_stats_clusters={} "
+                 "cluster_stats_active={} cluster_stats_overflow_clusters={} cluster_stats_overflow_lights={} "
+                 "cluster_stats_max_overflow={} cluster_stats_max_lights={} "
                  "taa_history={} taa_frames={} gpuFrame={}",
                  count, averageFrameMs, averageFrameMs > 0.0 ? 1000.0 / averageFrameMs : 0.0, cpuSubmitMs,
                  gpuFrameMs, stats->numDraw, stats->numCompute, stats->numTextures,
@@ -141,6 +151,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.volumetricFogLocalVolumes, diagnostics.volumetricFogLocalMasks,
                  diagnostics.shadowDrawnItems, diagnostics.shadowCulledItems,
                  diagnostics.shadowCacheActive ? "true" : "false", diagnostics.shadowCachedRequests,
+                 diagnostics.shadowAreaCacheActive ? "true" : "false", diagnostics.shadowCachedAreaRequests,
                  diagnostics.contactShadowsActive ? "true" : "false", diagnostics.contactShadowWidth,
                  diagnostics.contactShadowHeight, diagnostics.gpuLightListActive ? "true" : "false",
                  diagnostics.gpuLightListRequested ? "true" : "false",
@@ -149,11 +160,50 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.gpuShadowIndirect ? "true" : "false", diagnostics.gpuShadowCullDispatches,
                  diagnostics.gpuShadowIndirectDraws, diagnostics.asyncGpuLightListRequested ? "true" : "false",
                  diagnostics.asyncGpuLightListActive ? "true" : "false",
-                 diagnostics.postProcessTaaHistoryValid ? "true" : "false",
+                 diagnostics.lightListCapacityRequested, diagnostics.lightListCapacityEffective,
+                 diagnostics.lightListStride, diagnostics.lightListTruncated,
+                 diagnostics.lightListCapacityClamped ? "true" : "false",
+                 diagnostics.lightListFeatureFlagsActive ? "true" : "false",
+                 diagnostics.clusterStatsValid ? "true" : "false", diagnostics.clusterStatsGpu ? "true" : "false",
+                 diagnostics.clusterStatsReadbackPending ? "true" : "false", diagnostics.clusterStatsClusters,
+                 diagnostics.clusterStatsActiveClusters, diagnostics.clusterStatsOverflowClusters,
+                 diagnostics.clusterStatsOverflowLights, diagnostics.clusterStatsMaxOverflow,
+                 diagnostics.clusterStatsMaxLights, diagnostics.postProcessTaaHistoryValid ? "true" : "false",
                  diagnostics.postProcessTaaHistoryFrames, stats->gpuFrameNum);
     }
 
+    bool clusterStatsOk = true;
+    if (clusterStatsReadback) {
+        const render::ForwardRenderer::FrameDiagnostics diagnostics = renderer.frameDiagnostics();
+        if (diagnostics.clusterStatsValid) {
+            HBG_LOGI("cluster stats readback: path={} clusters={} active={} overflow_clusters={} "
+                     "overflow_lights={} max_overflow={} max_lights={} feature_flags_checked={} "
+                     "feature_flag_mismatch={}",
+                     diagnostics.clusterStatsGpu ? "gpu" : "cpu", diagnostics.clusterStatsClusters,
+                     diagnostics.clusterStatsActiveClusters, diagnostics.clusterStatsOverflowClusters,
+                     diagnostics.clusterStatsOverflowLights, diagnostics.clusterStatsMaxOverflow,
+                     diagnostics.clusterStatsMaxLights, diagnostics.clusterStatsFeatureFlagsChecked,
+                     diagnostics.clusterStatsFeatureFlagMismatch);
+            if (diagnostics.clusterStatsGpu && diagnostics.clusterStatsFeatureFlagsChecked == 0) {
+                HBG_LOGE("cluster stats readback: GPU feature flags were not checked");
+                clusterStatsOk = false;
+            }
+            if (diagnostics.clusterStatsFeatureFlagMismatch != 0) {
+                HBG_LOGE("cluster stats readback: {} feature flag mismatches",
+                         diagnostics.clusterStatsFeatureFlagMismatch);
+                clusterStatsOk = false;
+            }
+        } else {
+            HBG_LOGE("cluster stats readback requested but no stats were produced (pending={})",
+                     diagnostics.clusterStatsReadbackPending ? "true" : "false");
+            clusterStatsOk = false;
+        }
+    }
+
     renderer.shutdown(resources);
+    if (!clusterStatsOk) {
+        return false;
+    }
     resources.flushPending(true);
     if (resources.liveResourceCount() != 0) {
         HBG_LOGE("render test leaked {} resources", resources.liveResourceCount());

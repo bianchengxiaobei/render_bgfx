@@ -43,6 +43,7 @@ class ResourceManager {
     void destroyBuffer(BufferHandle handle);
     Buffer* buffer(BufferHandle handle);
     const Buffer* buffer(BufferHandle handle) const;
+    bgfx::BufferHandle native(BufferHandle handle) const;
 
     UniformHandle createUniform(const UniformDesc& desc);
     void destroyUniform(UniformHandle handle);

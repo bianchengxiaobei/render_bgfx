@@ -186,7 +186,7 @@ void main()
 
     uint mask = 0u;
     float globalFade = 0.0;
-    const int lightCount = min(int(u_pass_lightCounts.x + 0.5), 32);
+    const int lightCount = min(int(u_pass_lightCounts.x + 0.5), hbgLightListCapacity());
     const int directionalCount = min(int(u_pass_lightCounts.y + 0.5), lightCount);
     const bool directionalOnly = u_contact_params3.z > 0.5;
 
@@ -206,10 +206,10 @@ void main()
             const int tileCountY = max(int(u_pass_lightListParams.z + 0.5), 1);
             const ivec2 tile = clamp(ivec2(floor(vec2(fullPixel) / float(tileSize))), ivec2(0, 0),
                                      ivec2(tileCountX - 1, tileCountY - 1));
-            const int tileLightCount = min(int(hbgLightListCount(tile)), 32);
+            const int tileLightCount = min(int(hbgLightListCount(tile, 0)), hbgLightListCapacity());
             for (int offset = 0; offset < tileLightCount; ++offset)
             {
-                const int index = int(hbgLightListIndex(tile, offset));
+                const int index = int(hbgLightListIndex(tile, offset, 0));
                 if (index < directionalCount || index >= lightCount)
                 {
                     continue;

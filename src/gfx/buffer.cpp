@@ -262,6 +262,27 @@ bool Buffer::valid() const {
     return m_nativeIndex != bgfx::kInvalidHandle;
 }
 
+bgfx::BufferHandle Buffer::native() const {
+    if (!valid()) {
+        return {};
+    }
+    switch (m_type) {
+    case BufferType::Vertex:
+        return bgfx::VertexBufferHandle{m_nativeIndex};
+    case BufferType::Index:
+        return bgfx::IndexBufferHandle{m_nativeIndex};
+    case BufferType::DynamicVertex:
+    case BufferType::StorageVertex:
+        return bgfx::DynamicVertexBufferHandle{m_nativeIndex};
+    case BufferType::DynamicIndex:
+    case BufferType::Storage:
+        return bgfx::DynamicIndexBufferHandle{m_nativeIndex};
+    case BufferType::Indirect:
+        return bgfx::IndirectBufferHandle{m_nativeIndex};
+    }
+    return {};
+}
+
 BufferNative Buffer::takeNative() {
     const BufferNative native{m_type, m_nativeIndex};
     m_nativeIndex = bgfx::kInvalidHandle;

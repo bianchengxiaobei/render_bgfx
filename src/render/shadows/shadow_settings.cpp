@@ -327,8 +327,13 @@ void sanitizeShadowSettings(ShadowSettings& settings) {
     settings.directionalResolution = sanitizeResolution(settings.directionalResolution, 1024);
     settings.pointResolution = sanitizeResolution(settings.pointResolution, 256);
     settings.spotResolution = sanitizeResolution(settings.spotResolution, 512);
+    settings.areaResolution = sanitizeResolution(settings.areaResolution, kDefaultAreaShadowResolution);
     if (settings.atlasSize != 1024 && settings.atlasSize != 2048 && settings.atlasSize != 4096) {
-        settings.atlasSize = 2048;
+        settings.atlasSize = kDefaultShadowAtlasSize;
+    }
+    if (settings.areaAtlasSize != 1024 && settings.areaAtlasSize != 2048 &&
+        settings.areaAtlasSize != 4096) {
+        settings.areaAtlasSize = kDefaultAreaShadowAtlasSize;
     }
     settings.maxRequests = std::clamp(settings.maxRequests, 1u, kMaxShadowRequests);
     settings.normalBias = std::clamp(finiteOr(settings.normalBias, 0.2f), 0.0f, 2.0f);
@@ -383,10 +388,13 @@ bool parseShadowSettings(std::string_view json, ShadowSettings& settings, std::s
         !readFloat(root, "cascadeFade", settings.cascadeFade, error) ||
         !readFilter(root, "directionalFilter", settings.directionalFilter, error) ||
         !readFilter(root, "punctualFilter", settings.punctualFilter, error) ||
+        !readFilter(root, "areaFilter", settings.areaFilter, error) ||
         !readUint(root, "directionalResolution", settings.directionalResolution, error) ||
         !readUint(root, "pointResolution", settings.pointResolution, error) ||
         !readUint(root, "spotResolution", settings.spotResolution, error) ||
+        !readUint(root, "areaResolution", settings.areaResolution, error) ||
         !readUint(root, "atlasSize", settings.atlasSize, error) ||
+        !readUint(root, "areaAtlasSize", settings.areaAtlasSize, error) ||
         !readUint(root, "maxRequests", settings.maxRequests, error) ||
         !readFloat(root, "normalBias", settings.normalBias, error) ||
         !readFloat(root, "slopeBias", settings.slopeBias, error) ||
@@ -400,7 +408,8 @@ bool parseShadowSettings(std::string_view json, ShadowSettings& settings, std::s
         !readFloat(root, "shadowDimmer", settings.shadowDimmer, error) ||
         !readFloat(root, "shadowFadeDistance", settings.shadowFadeDistance, error) ||
         !readVec3(root, "shadowTint", settings.shadowTint, error) ||
-        !readBool(root, "cachedPunctualShadows", settings.cachedPunctualShadows, error)) {
+        !readBool(root, "cachedPunctualShadows", settings.cachedPunctualShadows, error) ||
+        !readBool(root, "cachedAreaShadows", settings.cachedAreaShadows, error)) {
         return false;
     }
 
@@ -426,10 +435,13 @@ std::string shadowSettingsToJson(const ShadowSettings& settings) {
     root["cascadeFade"] = settings.cascadeFade;
     root["directionalFilter"] = shadowFilterName(settings.directionalFilter);
     root["punctualFilter"] = shadowFilterName(settings.punctualFilter);
+    root["areaFilter"] = shadowFilterName(settings.areaFilter);
     root["directionalResolution"] = settings.directionalResolution;
     root["pointResolution"] = settings.pointResolution;
     root["spotResolution"] = settings.spotResolution;
+    root["areaResolution"] = settings.areaResolution;
     root["atlasSize"] = settings.atlasSize;
+    root["areaAtlasSize"] = settings.areaAtlasSize;
     root["maxRequests"] = settings.maxRequests;
     root["normalBias"] = settings.normalBias;
     root["slopeBias"] = settings.slopeBias;
@@ -458,6 +470,7 @@ std::string shadowSettingsToJson(const ShadowSettings& settings) {
     root["shadowFadeDistance"] = settings.shadowFadeDistance;
     root["shadowTint"] = {settings.shadowTint.x, settings.shadowTint.y, settings.shadowTint.z};
     root["cachedPunctualShadows"] = settings.cachedPunctualShadows;
+    root["cachedAreaShadows"] = settings.cachedAreaShadows;
     return root.dump(2);
 }
 

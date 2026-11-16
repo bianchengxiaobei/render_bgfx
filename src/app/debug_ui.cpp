@@ -221,9 +221,24 @@ void DebugUI::drawPanel() {
         } else {
             ImGui::TextUnformatted("Light list: CPU");
         }
-        ImGui::Text("Light capacity: requested=%u effective=%u stride=%u truncated=%u",
+        ImGui::Text("Light capacity: requested=%u effective=%u stride=%u truncated=%u clamped=%s",
                     m_lightListCapacityRequested, m_lightListCapacityEffective, m_lightListStride,
-                    m_lightListTruncated);
+                    m_lightListTruncated, m_lightListCapacityClamped ? "true" : "false");
+        if (ImGui::Button("Read GPU cluster stats")) {
+            m_clusterStatsReadbackRequested = true;
+        }
+        ImGui::SameLine();
+        if (m_clusterStatsPending) {
+            ImGui::TextDisabled("readback pending");
+        } else if (m_clusterStatsValid) {
+            ImGui::Text("Cluster stats (%s): clusters=%u active=%u overflow_clusters=%u overflow_lights=%u "
+                        "max_overflow=%u max_lights=%u",
+                        m_clusterStatsGpu ? "GPU" : "CPU", m_clusterStatsClusters, m_clusterStatsActiveClusters,
+                        m_clusterStatsOverflowClusters, m_clusterStatsOverflowLights, m_clusterStatsMaxOverflow,
+                        m_clusterStatsMaxLights);
+        } else {
+            ImGui::TextDisabled("cluster stats: not read");
+        }
         ImGui::Text("Shadow cull: %s  indirect=%s", m_gpuShadowCulling ? "GPU" : "CPU",
                     m_gpuShadowIndirect ? "true" : "false");
         if (m_asyncRequested) {

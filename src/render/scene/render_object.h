@@ -17,6 +17,7 @@ struct RenderObject {
     int sortingLayer = 0;
     int sortingOrder = 0;
     int rendererPriority = 0;
+    uint16_t lightLayerMask = 0xffffu;
 };
 
 } // namespace hbg::render

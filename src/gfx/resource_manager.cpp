@@ -137,6 +137,11 @@ const Buffer* ResourceManager::buffer(BufferHandle handle) const {
     return m_buffers.get(handle);
 }
 
+bgfx::BufferHandle ResourceManager::native(BufferHandle handle) const {
+    const Buffer* buffer = m_buffers.get(handle);
+    return buffer != nullptr ? buffer->native() : bgfx::BufferHandle{};
+}
+
 UniformHandle ResourceManager::createUniform(const UniformDesc& desc) {
     if (!m_initialized) {
         HBG_LOGE("ResourceManager::createUniform called before init");

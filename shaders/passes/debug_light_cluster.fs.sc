@@ -38,7 +38,7 @@ void main()
     vec3 color = vec3(0.015, 0.015, 0.015);
     if (u_cluster_depthParams.w > 0.5)
     {
-        const uint count = hbgClusterLightListCount(tile, slice);
+        const uint count = hbgClusterLightListCount(tile, slice, 0);
         const float heat = hbgSaturate(float(count) / 4.0);
         color = mix(vec3(0.02, 0.02, 0.06), vec3(1.0, 0.45, 0.08), heat);
         if (count > 0u)
@@ -53,10 +53,10 @@ void main()
         const ivec2 fptlTileCount = ivec2(max(u_pass_lightListParams.yz, vec2(1.0, 1.0)));
         const ivec2 fptlTile = clamp(ivec2(floor((v_texcoord0 * screenSize) / max(u_pass_lightListParams.x, 1.0))),
                                      ivec2(0, 0), fptlTileCount - ivec2(1, 1));
-        const uint count = hbgLightListCount(fptlTile);
+        const uint count = hbgLightListCount(fptlTile, 0);
         if (count > 0u)
         {
-            const HbgLightData light = hbgLoadLightData(int(hbgLightListIndex(fptlTile, 0)));
+            const HbgLightData light = hbgLoadLightData(int(hbgLightListIndex(fptlTile, 0, 0)));
             color = hbgSaturate(light.colorIntensity.xyz * 0.35) + vec3(0.05, 0.35, 0.9);
         }
     }

@@ -172,8 +172,10 @@ add_library(hbg_app STATIC
     src/render/culling/sort_key.cpp
     src/render/debug/debug_display.cpp
     src/render/graph/render_graph.cpp
+    src/render/lighting/cookie_atlas.cpp
     src/render/lighting/light_builder.cpp
     src/render/lighting/light_list_builder.cpp
+    src/render/lighting/ltc_lut.cpp
     src/render/material/material_system.cpp
     src/render/material/render_queue.cpp
     src/render/material/shader_pass.cpp

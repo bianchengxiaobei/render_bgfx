@@ -4,6 +4,7 @@
 #include "core/log.h"
 #include "gfx/encoder.h"
 #include "gfx/state.h"
+#include "render/lighting/ltc_lut.h"
 #include "render/passes/prepass_utils.h"
 
 #include <algorithm>
@@ -32,6 +33,30 @@ constexpr FullscreenVertex kFullscreenVertices[] = {
 };
 
 constexpr uint16_t kInstanceStride = static_cast<uint16_t>(sizeof(float) * 16);
+constexpr uint32_t kFallbackMaxTextureSize = 16384u;
+constexpr uint32_t kMaxTextureUploadWidth = 65535u / sizeof(uint32_t);
+constexpr bgfx::ViewId kClusterStatsBlitView = 4093;
+
+ForwardRenderer::ClusterStats summarizeClusterOffsets(const std::vector<uint32_t>& offsets) {
+    ForwardRenderer::ClusterStats stats;
+    if (offsets.size() < kLightCategoryCount) {
+        return stats;
+    }
+    stats.valid = true;
+    stats.clusters = static_cast<uint32_t>(offsets.size() / kLightCategoryCount);
+    for (uint32_t cluster = 0; cluster < stats.clusters; ++cluster) {
+        const uint32_t count = unpackClusterCount(offsets[cluster]);
+        stats.activeClusters += count > 0 ? 1u : 0u;
+        stats.maxLights = std::max(stats.maxLights, count);
+    }
+    return stats;
+}
+
+uint32_t backendMaxTextureSize() {
+    const bgfx::Caps* caps = bgfx::getCaps();
+    return caps != nullptr && caps->limits.maxTextureSize != 0 ? caps->limits.maxTextureSize
+                                                               : kFallbackMaxTextureSize;
+}
 
 Vec4 lightListCapacityParams(uint32_t capacity) {
     const float listCapacity = static_cast<float>(capacity);
@@ -211,6 +236,7 @@ bool ForwardRenderer::ensureGBufferTextures(uint16_t renderWidth, uint16_t rende
     if (m_resources == nullptr || renderWidth == 0 || renderHeight == 0) {
         return false;
     }
+    m_deferredLightLayersActive = m_pipelineSettings.supportLightLayers;
     if (m_gbufferWidth == renderWidth && m_gbufferHeight == renderHeight &&
         std::all_of(m_gbufferTextures.begin(), m_gbufferTextures.end(),
                     [](gfx::TextureHandle texture) { return texture.valid(); })) {
@@ -246,6 +272,7 @@ bool ForwardRenderer::ensureGBufferTextures(uint16_t renderWidth, uint16_t rende
             return false;
         }
     }
+    m_deferredLightLayersActive = m_pipelineSettings.supportLightLayers;
     m_gbufferWidth = renderWidth;
     m_gbufferHeight = renderHeight;
     return true;
@@ -262,6 +289,7 @@ void ForwardRenderer::releaseGBufferTextures() {
     } else {
         m_gbufferTextures.fill({});
     }
+    m_deferredLightLayersActive = false;
     m_gbufferWidth = 0;
     m_gbufferHeight = 0;
 }
@@ -428,12 +456,11 @@ void ForwardRenderer::setGpuLightListBufferEnabled(bool enabled) {
 void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, const FrameSettings& frameSettings) {
     m_pipelineSettings = pipelineSettings;
     m_pipelineSettings.lightListCapacity = sanitizeLightListCapacity(m_pipelineSettings.lightListCapacity);
-    m_lightListCapacity = std::min(m_pipelineSettings.lightListCapacity, kLightListDefaultCapacity);
-    if (m_lightListCapacity != m_pipelineSettings.lightListCapacity && !m_lightListCapacityWarningLogged) {
-        HBG_LOGW("light list capacity {} is not enabled for the GPU path yet; using {}",
-                 m_pipelineSettings.lightListCapacity, m_lightListCapacity);
-        m_lightListCapacityWarningLogged = true;
-    }
+    m_lightListCapacity = m_pipelineSettings.lightListCapacity;
+    m_lightListTextureCapacity = m_lightListCapacity;
+    m_lightListEffectiveCapacity = m_lightListCapacity;
+    m_lightListCapacityWarningLogged = false;
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
     m_frameSettings = frameSettings;
     m_frameSettings.sanitize(m_pipelineSettings);
     setGpuLightListEnabled(m_pipelineSettings.supportGpuLightList);
@@ -443,13 +470,15 @@ void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, cons
     m_formatWarningLogged = false;
     m_deferredFallbackLogged = false;
     m_decalFallbackLogged = false;
-    HBG_LOGI("frame settings: lit={} shadows={} opaque={} transparent={} postprocess={} motionVectors={}",
+    HBG_LOGI("frame settings: lit={} shadows={} opaque={} transparent={} postprocess={} motionVectors={} "
+             "lightLayers={}",
              m_frameSettings.litShaderMode() == LitShaderMode::Deferred ? "deferred" : "forward",
              m_frameSettings.isEnabled(FrameSettingsField::ShadowMaps),
              m_frameSettings.isEnabled(FrameSettingsField::OpaqueObjects),
              m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects),
              m_frameSettings.isEnabled(FrameSettingsField::Postprocess),
-             m_frameSettings.isEnabled(FrameSettingsField::MotionVectors));
+             m_frameSettings.isEnabled(FrameSettingsField::MotionVectors),
+             m_pipelineSettings.supportLightLayers ? "true" : "false");
 }
 
 bool ForwardRenderer::setShadowSettings(const ShadowSettings& settings) {
@@ -567,8 +596,8 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     }
 
     gfx::TextureDesc lightDataDesc;
-    lightDataDesc.width = static_cast<uint16_t>(kGpuLightTexels);
-    lightDataDesc.height = static_cast<uint16_t>(m_lightListCapacity);
+    lightDataDesc.width = static_cast<uint16_t>(kLightDataTextureWidth);
+    lightDataDesc.height = static_cast<uint16_t>(kLightDataTextureRows);
     lightDataDesc.format = gfx::TextureFormat::RGBA32F;
     lightDataDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
     lightDataDesc.name = "lighting.lightData";
@@ -601,7 +630,6 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     m_shadowPointSampler = resources.createUniform({"s_shadowMapPoint", gfx::UniformType::Sampler, 1});
     m_shadowPointPunctualSampler =
         resources.createUniform({"s_shadowMapPointPunctual", gfx::UniformType::Sampler, 1});
-    m_shadowContextSampler = resources.createUniform({"s_shadowContext", gfx::UniformType::Sampler, 1});
     m_depthSourceSampler = resources.createUniform({"s_depthSource", gfx::UniformType::Sampler, 1});
     m_contactShadowSampler = resources.createUniform({"s_contactShadow", gfx::UniformType::Sampler, 1});
     m_normalSampler = resources.createUniform({"s_normalBuffer", gfx::UniformType::Sampler, 1});
@@ -685,7 +713,7 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
         !m_lightScreenBoundsSampler.valid() || !m_lightBigTileSampler.valid() ||
         !m_lightViewRowsSampler.valid() || !m_lightViewRowsTexture.valid() ||
         !m_shadowSampler.valid() || !m_shadowPunctualSampler.valid() || !m_shadowPointSampler.valid() ||
-        !m_shadowPointPunctualSampler.valid() || !m_shadowContextSampler.valid() ||
+        !m_shadowPointPunctualSampler.valid() ||
         !m_depthSourceSampler.valid() || !m_normalSampler.valid() || !m_motionVectorSampler.valid() ||
         !m_depthPyramidSampler.valid() || !m_depthDebugSampler.valid() || !m_shadowAtlasSampler.valid() ||
         !m_fogSourceSampler.valid() || !m_fogHistorySampler.valid() || !m_fogLowResSampler.valid() ||
@@ -739,7 +767,7 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     if (m_gpuLightListEnabled) {
         ensureLightBigTileTexture(m_viewState.renderWidth(), m_viewState.renderHeight());
     }
-    ensureClusterLightListTexture(m_viewState.renderWidth(), m_viewState.renderHeight());
+    ensureClusterLightListTextures(m_viewState.renderWidth(), m_viewState.renderHeight());
     if (m_gpuLightListEnabled && m_gpuLightListBufferEnabled) {
         ensureLightListBuffers(m_viewState.renderWidth(), m_viewState.renderHeight());
     }
@@ -830,8 +858,23 @@ void ForwardRenderer::updateGlobalUniforms() {
 
 void ForwardRenderer::updateLights(const RenderScene& scene) {
     m_lightBuilder.build(scene, m_cameraPosition, m_cameraForward, m_camera.farClip, contactShadowsActive(),
-                         m_shadowSettings.contactShadows.directionalOnly, &m_shadowSettings, m_lightListCapacity);
+                         m_shadowSettings.contactShadows.directionalOnly, &m_shadowSettings, m_lightListCapacity,
+                         m_pipelineSettings.supportLightLayers);
+
+    m_cookieAtlas.beginFrame();
+    const auto& selectedLights = m_lightBuilder.selectedLights();
+    for (uint32_t index = 0; index < selectedLights.size(); ++index) {
+        uint32_t tileIndex = 0;
+        if (m_cookieAtlas.allocate(*selectedLights[index], &tileIndex)) {
+            m_lightBuilder.setCookieAtlas(index, tileIndex);
+        }
+    }
+
     const GpuLightData& lightData = m_lightBuilder.data();
+    if (m_frameIndex == 0) {
+        HBG_LOGI("cookie atlas: tiles={}/{} lights={}", m_cookieAtlas.tileCount(),
+                 kCookieAtlasTileCapacity, selectedLights.size());
+    }
 
     m_passUniforms = {};
     m_passUniforms.lightDirection = Vec4(lightData.primaryDirection.x, lightData.primaryDirection.y,
@@ -867,17 +910,25 @@ void ForwardRenderer::updateLights(const RenderScene& scene) {
     m_passUniforms.shadowParams.y = m_shadowSettings.microShadows ? m_shadowSettings.microShadowOpacity : 0.0f;
     m_passUniforms.lightCounts.w = shadowValid ? static_cast<float>(m_shadowManager.shadowedLightCount()) : 0.0f;
     if (m_frameIndex == 0) {
-        HBG_LOGI("shadows: requests={} directional={} punctual={} splits=({}, {}, {}, {})",
+        HBG_LOGI("shadows: requests={} directional={} punctual={} area={} splits=({}, {}, {}, {})",
                  m_shadowManager.requests().size(), m_shadowManager.directionalRequestCount(),
-                 m_shadowManager.punctualRequestCount(), m_passUniforms.shadowCascadeSplits.x,
+                 m_shadowManager.punctualRequestCount(), m_shadowManager.areaRequestCount(),
+                 m_passUniforms.shadowCascadeSplits.x,
                  m_passUniforms.shadowCascadeSplits.y, m_passUniforms.shadowCascadeSplits.z,
                  m_passUniforms.shadowCascadeSplits.w);
-        HBG_LOGI("shadow cache: active={} cached_requests={}",
-                 m_shadowManager.cacheActive() ? "true" : "false", m_shadowManager.cachedRequestCount());
+        HBG_LOGI("shadow cache: punctual_active={} punctual_cached={} area_active={} area_cached={} "
+                 "area_dynamic_atlas={} area_mixed={} area_dirty={}",
+                 m_shadowManager.cacheActive() ? "true" : "false", m_shadowManager.cachedRequestCount(),
+                 m_shadowManager.areaCacheActive() ? "true" : "false",
+                 m_shadowManager.cachedAreaRequestCount(),
+                 m_shadowManager.areaCacheUsesDynamicAtlas() ? "true" : "false",
+                 m_shadowManager.areaCacheMixed() ? "true" : "false",
+                 m_shadowManager.areaCacheDirty() ? "true" : "false");
     }
 
     uploadLightData();
     updateLightList();
+    m_passUniforms.lightListParams2.w = m_shadowManager.areaRequestCount() > 0 ? 1.0f : 0.0f;
     updateEnvironmentUniforms();
 }
 
@@ -914,7 +965,7 @@ gfx::ProgramHandle ForwardRenderer::lightListProgram(shader::PassId pass, uint64
 
 void ForwardRenderer::bindLightListTexture(gfx::Encoder& encoder, bool cluster) const {
     const gfx::TextureHandle texture =
-        cluster && m_clusterLightListTexture.valid() ? m_clusterLightListTexture : m_lightListTexture;
+        cluster && m_clusterTexture.valid() ? m_clusterTexture : m_lightListTexture;
     if (texture.valid()) {
         encoder.setTexture(7, m_lightListSampler, texture, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
@@ -922,12 +973,12 @@ void ForwardRenderer::bindLightListTexture(gfx::Encoder& encoder, bool cluster) 
 
 void ForwardRenderer::bindLightList(gfx::Encoder& encoder, bool cluster) const {
     if (m_gpuLightListBufferActive) {
-        const gfx::BufferHandle buffer = cluster && m_activeClusterListBuffer.valid() ? m_activeClusterListBuffer
-                                                                                       : m_activeLightListBuffer;
+        const gfx::BufferHandle buffer =
+            cluster && m_lightClusterBuffer.valid() ? m_lightClusterBuffer : m_activeLightListBuffer;
         if (buffer.valid()) {
             encoder.setStorageBuffer(7, buffer, bgfx::Access::Read);
-            return;
         }
+        return;
     }
     bindLightListTexture(encoder, cluster);
 }
@@ -1212,16 +1263,61 @@ void ForwardRenderer::releaseVolumetricFogHistory() {
     m_fogHistoryValid = false;
 }
 
+bool ForwardRenderer::ensureLightDataTexture() {
+    if (m_resources == nullptr) {
+        return false;
+    }
+    const gfx::Texture* texture = m_resources->texture(m_lightDataTexture);
+    if (texture != nullptr && texture->desc().width == kLightDataTextureWidth &&
+        texture->desc().height == kLightDataTextureRows) {
+        return true;
+    }
+    if (m_lightDataTexture.valid()) {
+        m_resources->destroyTexture(m_lightDataTexture);
+        m_lightDataTexture = {};
+    }
+    gfx::TextureDesc desc;
+    desc.width = static_cast<uint16_t>(kLightDataTextureWidth);
+    desc.height = static_cast<uint16_t>(kLightDataTextureRows);
+    desc.format = gfx::TextureFormat::RGBA32F;
+    desc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    desc.name = "lighting.lightData";
+    m_lightDataTexture = m_resources->createTexture(desc);
+    if (!m_lightDataTexture.valid()) {
+        HBG_LOGE("forward renderer: failed to create light-data texture ({}x{})", kLightDataTextureWidth,
+                 kLightDataTextureRows);
+        return false;
+    }
+    return true;
+}
+
 void ForwardRenderer::uploadLightData() {
-    if (m_resources == nullptr || !m_lightDataTexture.valid()) {
+    if (!ensureLightDataTexture()) {
         return;
     }
     const GpuLightData& lightData = m_lightBuilder.data();
-    m_resources->updateTexture(m_lightDataTexture, lightData.texels.data(),
-                               static_cast<uint32_t>(m_lightListCapacity * kGpuLightTexels * sizeof(Vec4)),
-                               static_cast<uint16_t>(kGpuLightTexels),
-                               static_cast<uint16_t>(m_lightListCapacity),
-                               static_cast<uint16_t>(kGpuLightTexels * sizeof(Vec4)));
+    const std::size_t textureTexels = static_cast<std::size_t>(kLightDataTextureRows) * kLightDataTextureWidth;
+    if (m_lightDataUpload.size() != textureTexels) {
+        m_lightDataUpload.assign(textureTexels, Vec4());
+    }
+    for (uint32_t row = 0; row < kMaxGpuLights; ++row) {
+        const auto source = lightData.texels.begin() + static_cast<std::size_t>(row) * kGpuLightTexels;
+        auto target = m_lightDataUpload.begin() + static_cast<std::size_t>(row) * kLightDataTextureWidth;
+        std::copy_n(source, kGpuLightTexels, target);
+    }
+    m_cookieAtlas.copyTo(m_lightDataUpload, kLightDataTextureWidth, kCookieAtlasOriginX, 0);
+    const auto& ltc = ltcGgxTable();
+    for (uint32_t index = 0; index < kLtcLutTexelCount; ++index) {
+        const uint32_t row = index / kLtcLutSize;
+        const uint32_t column = index - row * kLtcLutSize;
+        m_lightDataUpload[static_cast<std::size_t>(kMaxGpuLights + row) * kLightDataTextureWidth + column] =
+            ltc[index];
+    }
+    m_resources->updateTexture(m_lightDataTexture, m_lightDataUpload.data(),
+                               static_cast<uint32_t>(m_lightDataUpload.size() * sizeof(Vec4)),
+                               static_cast<uint16_t>(kLightDataTextureWidth),
+                               static_cast<uint16_t>(kLightDataTextureRows),
+                               static_cast<uint16_t>(kLightDataTextureWidth * sizeof(Vec4)));
 }
 
 bool ForwardRenderer::ensureLightListTexture(uint16_t renderWidth, uint16_t renderHeight) {
@@ -1229,9 +1325,23 @@ bool ForwardRenderer::ensureLightListTexture(uint16_t renderWidth, uint16_t rend
         return false;
     }
 
-    const uint16_t width = LightListBuilder::textureWidthFor(renderWidth, m_lightListCapacity);
+    const uint32_t maxTextureSize = backendMaxTextureSize();
+    const uint32_t capacity =
+        LightListBuilder::textureCapacityFor(renderWidth, renderHeight, m_lightListCapacity, maxTextureSize);
+    if (capacity != 0 && m_lightListTextureCapacity != 0 && capacity != m_lightListTextureCapacity) {
+        HBG_LOGI("light list texture capacity: {} -> {} at {}x{} (maxTextureSize={})", m_lightListTextureCapacity,
+                 capacity, renderWidth, renderHeight, maxTextureSize);
+    }
+    m_lightListTextureCapacity = capacity;
+    if (capacity == 0) {
+        releaseLightListTexture();
+        return false;
+    }
+
+    const uint16_t width = LightListBuilder::textureWidthFor(renderWidth, capacity);
     const uint16_t height = LightListBuilder::textureHeightFor(renderHeight);
-    if (width == 0 || height == 0 || width > 16383u) {
+    if (width == 0 || height == 0 || width > maxTextureSize || width > kMaxTextureUploadWidth ||
+        height > maxTextureSize) {
         releaseLightListTexture();
         return false;
     }
@@ -1262,9 +1372,11 @@ bool ForwardRenderer::ensureLightBigTileTexture(uint16_t renderWidth, uint16_t r
         return false;
     }
 
-    const uint16_t width = LightListBuilder::bigTileTextureWidthFor(renderWidth, m_lightListCapacity);
+    const uint32_t maxTextureSize = backendMaxTextureSize();
+    const uint16_t width = LightListBuilder::bigTileTextureWidthFor(renderWidth, m_lightListTextureCapacity);
     const uint16_t height = LightListBuilder::bigTileTextureHeightFor(renderHeight);
-    if (width == 0 || height == 0 || width > 16383u || height > 16383u) {
+    if (m_lightListTextureCapacity == 0 || width == 0 || height == 0 || width > maxTextureSize ||
+        height > maxTextureSize) {
         releaseLightBigTileTexture();
         return false;
     }
@@ -1289,23 +1401,40 @@ bool ForwardRenderer::ensureLightBigTileTexture(uint16_t renderWidth, uint16_t r
     return true;
 }
 
-bool ForwardRenderer::ensureClusterLightListTexture(uint16_t renderWidth, uint16_t renderHeight) {
+bool ForwardRenderer::ensureClusterLightListTextures(uint16_t renderWidth, uint16_t renderHeight) {
     if (m_resources == nullptr) {
         return false;
     }
 
-    const uint16_t width = LightListBuilder::clusterTextureWidthFor(renderWidth);
-    const uint16_t height = LightListBuilder::clusterTextureHeightFor(renderHeight);
-    if (width == 0 || height == 0 || width > 16383u || height > 16383u) {
-        releaseClusterLightListTexture();
+    const uint32_t maxTextureSize = backendMaxTextureSize();
+    const uint32_t capacity =
+        LightListBuilder::clusterCapacityFor(renderWidth, renderHeight, m_lightListTextureCapacity);
+    const uint32_t indexCapacity =
+        LightListBuilder::clusterIndexCountFor(renderWidth, renderHeight, m_lightListTextureCapacity);
+    const uint32_t clusterTileCount = static_cast<uint32_t>(LightListBuilder::tileCount(renderWidth, kClusterTileSize)) *
+                                      LightListBuilder::tileCount(renderHeight, kClusterTileSize);
+    const uint32_t offsetCount = clusterTileCount * kClusterSliceCount * kLightCategoryCount;
+    const uint32_t combinedCount = offsetCount + indexCapacity + clusterTileCount;
+    const uint16_t width = LightListBuilder::clusterIndexTextureWidthFor(combinedCount);
+    const uint16_t height = LightListBuilder::clusterIndexTextureHeightFor(combinedCount);
+    if (capacity == 0 || width == 0 || height == 0 || width > maxTextureSize ||
+        width > kMaxTextureUploadWidth || height > maxTextureSize) {
+        m_clusterCapacity = 0;
+        m_clusterIndexCapacity = 0;
+        m_clusterTextureWidth = 0;
+        releaseClusterLightListTextures();
         return false;
     }
-    const gfx::Texture* currentTexture = m_resources->texture(m_clusterLightListTexture);
-    if (currentTexture != nullptr && currentTexture->desc().width == width && currentTexture->desc().height == height) {
+    m_clusterCapacity = capacity;
+    m_clusterIndexCapacity = indexCapacity;
+    m_clusterTextureWidth = width;
+
+    const gfx::Texture* current = m_resources->texture(m_clusterTexture);
+    if (current != nullptr && current->desc().width == width && current->desc().height == height) {
         return true;
     }
 
-    releaseClusterLightListTexture();
+    releaseClusterLightListTextures();
     gfx::TextureDesc desc;
     desc.width = width;
     desc.height = height;
@@ -1313,9 +1442,11 @@ bool ForwardRenderer::ensureClusterLightListTexture(uint16_t renderWidth, uint16
     desc.computeWrite = true;
     desc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
     desc.name = "lighting.clusterLightList";
-    m_clusterLightListTexture = m_resources->createTexture(desc);
-    if (!m_clusterLightListTexture.valid()) {
+    m_clusterTexture = m_resources->createTexture(desc);
+
+    if (!m_clusterTexture.valid()) {
         HBG_LOGE("forward renderer: failed to create cluster light-list texture ({}x{})", width, height);
+        releaseClusterLightListTextures();
         m_lightListBuilder.clear();
         return false;
     }
@@ -1340,10 +1471,21 @@ bool ForwardRenderer::ensureLightListBuffers(uint16_t renderWidth, uint16_t rend
 
     const uint32_t screenBoundsCount = kMaxGpuLights * 2u;
     const uint32_t listStride = lightListStrideFor(m_lightListCapacity);
-    const uint32_t bigTileCount = static_cast<uint32_t>(bigTileCountX) * bigTileCountY * listStride;
-    const uint32_t fptlCount = static_cast<uint32_t>(tileCountX) * tileCountY * listStride;
+    const uint32_t bigTileCount = static_cast<uint32_t>(bigTileCountX) * bigTileCountY * listStride * kLightCategoryCount;
+    const uint32_t fptlCount = static_cast<uint32_t>(tileCountX) * tileCountY * listStride * kLightCategoryCount;
     const uint32_t clusterCount =
-        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY * kClusterSliceCount * kLightClusterStride;
+        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY * kClusterSliceCount;
+    const uint32_t clusterCapacity =
+        LightListBuilder::clusterCapacityFor(renderWidth, renderHeight, m_lightListCapacity);
+    const uint32_t clusterIndexCapacity =
+        LightListBuilder::clusterIndexCountFor(renderWidth, renderHeight, m_lightListCapacity);
+    const uint32_t clusterOffsetCount = clusterCount * kLightCategoryCount;
+    const uint32_t clusterFlagCount = static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY;
+    const uint32_t clusterCombinedCount = clusterOffsetCount + clusterIndexCapacity + clusterFlagCount;
+    if (clusterCapacity == 0 || clusterIndexCapacity == 0) {
+        releaseLightListBuffers();
+        return false;
+    }
 
     const auto needsRecreate = [this](gfx::BufferHandle handle, uint32_t count) {
         const gfx::Buffer* buffer = m_resources->buffer(handle);
@@ -1353,7 +1495,10 @@ bool ForwardRenderer::ensureLightListBuffers(uint16_t renderWidth, uint16_t rend
         !m_pipelineSettings.supportGpuLightListIndirect || m_lightIndirectArgsBuffer.valid();
     if (!needsRecreate(m_lightScreenBoundsBuffer, screenBoundsCount) &&
         !needsRecreate(m_lightBigTileBuffer, bigTileCount) && !needsRecreate(m_lightFptlBuffer, fptlCount) &&
-        !needsRecreate(m_lightClusterBuffer, clusterCount) && indirectReady) {
+        !needsRecreate(m_lightClusterBuffer, clusterCombinedCount) &&
+        indirectReady) {
+        m_clusterCapacity = clusterCapacity;
+        m_clusterIndexCapacity = clusterIndexCapacity;
         return true;
     }
 
@@ -1384,12 +1529,14 @@ bool ForwardRenderer::ensureLightListBuffers(uint16_t renderWidth, uint16_t rend
     fptlDesc.name = "lighting.lightFptlBuffer";
     m_lightFptlBuffer = m_resources->createBuffer(fptlDesc);
 
-    gfx::BufferDesc clusterDesc;
-    clusterDesc.type = gfx::BufferType::Storage;
-    clusterDesc.count = clusterCount;
-    clusterDesc.flags = BGFX_BUFFER_COMPUTE_READ_WRITE;
-    clusterDesc.name = "lighting.lightClusterBuffer";
-    m_lightClusterBuffer = m_resources->createBuffer(clusterDesc);
+    gfx::BufferDesc clusterOffsetDesc;
+    clusterOffsetDesc.type = gfx::BufferType::Storage;
+    clusterOffsetDesc.count = clusterCombinedCount;
+    clusterOffsetDesc.flags = BGFX_BUFFER_COMPUTE_READ_WRITE;
+    clusterOffsetDesc.name = "lighting.lightClusterBuffer";
+    m_lightClusterBuffer = m_resources->createBuffer(clusterOffsetDesc);
+
+
 
     if (m_pipelineSettings.supportGpuLightListIndirect) {
         gfx::BufferDesc indirectDesc;
@@ -1405,10 +1552,20 @@ bool ForwardRenderer::ensureLightListBuffers(uint16_t renderWidth, uint16_t rend
         releaseLightListBuffers();
         return false;
     }
-    if (m_frameIndex == 0) {
-        HBG_LOGI("light list buffers: bounds={} vec4, big={} uints, fptl={} uints, cluster={} uints",
-                 screenBoundsCount, bigTileCount, fptlCount, clusterCount);
-    }
+    m_clusterCapacity = clusterCapacity;
+    m_clusterIndexCapacity = clusterIndexCapacity;
+    const uint64_t boundsBytes = static_cast<uint64_t>(screenBoundsCount) * sizeof(Vec4);
+    const uint64_t bigBytes = static_cast<uint64_t>(bigTileCount) * sizeof(uint32_t);
+    const uint64_t fptlBytes = static_cast<uint64_t>(fptlCount) * sizeof(uint32_t);
+    const uint64_t clusterOffsetBytes = static_cast<uint64_t>(clusterOffsetCount) * sizeof(uint32_t);
+    const uint64_t clusterIndexBytes = static_cast<uint64_t>(clusterIndexCapacity) * sizeof(uint32_t);
+    HBG_LOGI("light list buffers: capacity={} cluster_capacity={} stride={} bounds={} vec4 ({} B), "
+             "big={} uints ({} B), fptl={} uints ({} B), cluster_offsets={} uints ({} B), "
+             "cluster_indices={} uints ({} B), total={} B",
+             m_lightListCapacity, clusterCapacity, listStride, screenBoundsCount, boundsBytes, bigTileCount,
+             bigBytes, fptlCount, fptlBytes, clusterOffsetCount, clusterOffsetBytes, clusterIndexCapacity,
+             clusterIndexBytes,
+             boundsBytes + bigBytes + fptlBytes + clusterOffsetBytes + clusterIndexBytes);
     return true;
 }
 
@@ -1436,7 +1593,6 @@ void ForwardRenderer::releaseLightListBuffers() {
     m_lightClusterBuffer = {};
     m_lightIndirectArgsBuffer = {};
     m_activeLightListBuffer = {};
-    m_activeClusterListBuffer = {};
 }
 
 bool ForwardRenderer::ensureShadowGpuBuffers(uint32_t requestCount, uint32_t casterCount, uint32_t batchCount) {
@@ -1702,7 +1858,7 @@ bool ForwardRenderer::gpuLightListPathAvailable() {
     }
     const bool clusterProgramValid =
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::LightCluster, 0, 0}).valid();
-    if (m_lightClusterEnabled && (!m_clusterLightListTexture.valid() || !clusterProgramValid)) {
+    if (m_lightClusterEnabled && (!m_clusterTexture.valid() || !clusterProgramValid)) {
         return false;
     }
     return m_shaderLibrary.program(shader::ProgramKey{shader::PassId::LightScreenAABB, 0, 0}).valid() &&
@@ -1721,7 +1877,6 @@ void ForwardRenderer::updateLightList() {
         m_asyncGpuLightListWarningLogged = true;
     }
     m_activeLightListBuffer = {};
-    m_activeClusterListBuffer = {};
 
     const ViewConstants& constants = m_viewState.constants();
     if (m_resources != nullptr && m_lightViewRowsTexture.valid()) {
@@ -1767,6 +1922,14 @@ void ForwardRenderer::updateLightList() {
     const bool indirectReady =
         !indirectRequested || (m_lightIndirectArgsBuffer.valid() && indirectArgsProgram.valid());
     const uint32_t listStride = lightListStrideFor(m_lightListCapacity);
+    const uint32_t bufferClusterCapacity =
+        LightListBuilder::clusterCapacityFor(renderWidth, renderHeight, m_lightListCapacity);
+    const uint32_t bufferClusterIndexCapacity =
+        LightListBuilder::clusterIndexCountFor(renderWidth, renderHeight, m_lightListCapacity);
+    const uint32_t bufferClusterOffsetCount =
+        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY * kClusterSliceCount * kLightCategoryCount;
+    const uint32_t bufferClusterFlagCount =
+        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY;
     const bool bufferAvailable =
         m_gpuLightListEnabled && m_gpuLightListBufferEnabled && computeSupported && m_resources != nullptr &&
         m_lightDataTexture.valid() && m_lightViewRowsTexture.valid() && m_lightScreenBoundsBuffer.valid() &&
@@ -1774,35 +1937,66 @@ void ForwardRenderer::updateLightList() {
         (bufferCount(m_lightScreenBoundsBuffer) == kMaxGpuLights * 2u) &&
         (bufferCount(m_lightBigTileBuffer) ==
          static_cast<uint32_t>(LightListBuilder::tileCount(renderWidth, kLightBigTileSize)) *
-             LightListBuilder::tileCount(renderHeight, kLightBigTileSize) * listStride) &&
-        (bufferCount(m_lightFptlBuffer) == static_cast<uint32_t>(tileCountX) * tileCountY * listStride) &&
+             LightListBuilder::tileCount(renderHeight, kLightBigTileSize) * listStride * kLightCategoryCount) &&
+        (bufferCount(m_lightFptlBuffer) == static_cast<uint32_t>(tileCountX) * tileCountY * listStride * kLightCategoryCount) &&
         (!clusterRequested ||
-         (m_lightClusterBuffer.valid() &&
-          bufferCount(m_lightClusterBuffer) == static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY *
-                                            kClusterSliceCount * kLightClusterStride)) &&
+         (m_lightClusterBuffer.valid() && bufferClusterCapacity != 0 &&
+          bufferCount(m_lightClusterBuffer) ==
+              bufferClusterOffsetCount + bufferClusterIndexCapacity + bufferClusterFlagCount)) &&
         aabbBufferProgram.valid() && bigTileBufferProgram.valid() && fptlBufferProgram.valid() &&
         (!clusterRequested || clusterBufferProgram.valid()) && indirectReady && tileCountX > 0 && tileCountY > 0 &&
         clusterTileCountX > 0 && clusterTileCountY > 0;
 
+    const uint32_t textureCapacity = m_lightListTextureCapacity;
+    const uint32_t textureClusterCapacity =
+        LightListBuilder::clusterCapacityFor(renderWidth, renderHeight, textureCapacity);
+    const uint32_t textureClusterIndexCapacity =
+        LightListBuilder::clusterIndexCountFor(renderWidth, renderHeight, textureCapacity);
+    const uint32_t textureClusterOffsetCount =
+        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY * kClusterSliceCount * kLightCategoryCount;
+    const uint32_t textureClusterFlagCount =
+        static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY;
     const gfx::Texture* lightListTexture = m_resources != nullptr ? m_resources->texture(m_lightListTexture) : nullptr;
     const gfx::Texture* bigTileTexture =
         m_resources != nullptr ? m_resources->texture(m_lightBigTileTexture) : nullptr;
-    const gfx::Texture* clusterTexture =
-        m_resources != nullptr ? m_resources->texture(m_clusterLightListTexture) : nullptr;
+    const gfx::Texture* clusterLightList =
+        m_resources != nullptr ? m_resources->texture(m_clusterTexture) : nullptr;
     const bool textureAvailable =
-        gpuLightListPathAvailable() && lightListTexture != nullptr && bigTileTexture != nullptr &&
-        tileCountX > 0 && tileCountY > 0 && clusterTileCountX > 0 && clusterTileCountY > 0 &&
-        lightListTexture->desc().width == LightListBuilder::textureWidthFor(renderWidth, m_lightListCapacity) &&
+        gpuLightListPathAvailable() && textureCapacity > 0 && lightListTexture != nullptr &&
+        bigTileTexture != nullptr && tileCountX > 0 && tileCountY > 0 && clusterTileCountX > 0 &&
+        clusterTileCountY > 0 &&
+        lightListTexture->desc().width == LightListBuilder::textureWidthFor(renderWidth, textureCapacity) &&
         lightListTexture->desc().height == LightListBuilder::textureHeightFor(renderHeight) &&
-        bigTileTexture->desc().width ==
-            LightListBuilder::bigTileTextureWidthFor(renderWidth, m_lightListCapacity) &&
+        bigTileTexture->desc().width == LightListBuilder::bigTileTextureWidthFor(renderWidth, textureCapacity) &&
         bigTileTexture->desc().height == LightListBuilder::bigTileTextureHeightFor(renderHeight) &&
         (!clusterRequested ||
-         (clusterTexture != nullptr &&
-          clusterTexture->desc().width == LightListBuilder::clusterTextureWidthFor(renderWidth) &&
-          clusterTexture->desc().height == LightListBuilder::clusterTextureHeightFor(renderHeight)));
+         (clusterLightList != nullptr && textureClusterCapacity != 0 &&
+          clusterLightList->desc().width == LightListBuilder::clusterIndexTextureWidthFor(
+              textureClusterOffsetCount + textureClusterIndexCapacity + textureClusterFlagCount) &&
+          clusterLightList->desc().height == LightListBuilder::clusterIndexTextureHeightFor(
+              textureClusterOffsetCount + textureClusterIndexCapacity + textureClusterFlagCount)));
 
     const bool gpuAvailable = bufferAvailable || textureAvailable;
+    const uint32_t effectiveCapacity = bufferAvailable ? m_lightListCapacity : textureCapacity;
+    if (!bufferAvailable) {
+        if (textureCapacity == 0 && !m_lightListCapacityWarningLogged) {
+            HBG_LOGW("light list: no texture tier fits {}x{} with maxTextureSize={} and uploadWidthLimit={}; "
+                     "texture/CPU path unavailable",
+                     renderWidth, renderHeight, backendMaxTextureSize(), kMaxTextureUploadWidth);
+            m_lightListCapacityWarningLogged = true;
+        } else if (textureCapacity != m_lightListCapacity && !m_lightListCapacityWarningLogged) {
+            HBG_LOGW("light list: texture capacity clamped {} -> {} at {}x{} (maxTextureSize={}, "
+                     "uploadWidthLimit={})",
+                     m_lightListCapacity, textureCapacity, renderWidth, renderHeight, backendMaxTextureSize(),
+                     kMaxTextureUploadWidth);
+            m_lightListCapacityWarningLogged = true;
+        } else if (textureCapacity == m_lightListCapacity) {
+            m_lightListCapacityWarningLogged = false;
+        }
+    } else {
+        m_lightListCapacityWarningLogged = false;
+    }
+    m_lightListEffectiveCapacity = effectiveCapacity;
     m_gpuLightListActive = gpuAvailable;
     m_gpuLightListBufferActive = bufferAvailable;
     m_gpuLightListIndirectActive = bufferAvailable && indirectRequested;
@@ -1812,7 +2006,7 @@ void ForwardRenderer::updateLightList() {
         m_passUniforms.lightListParams =
             Vec4(static_cast<float>(kLightTileSize), static_cast<float>(tileCountX),
                  static_cast<float>(tileCountY), 1.0f);
-        m_passUniforms.lightListParams2 = lightListCapacityParams(m_lightListCapacity);
+        m_passUniforms.lightListParams2 = lightListCapacityParams(effectiveCapacity);
         const float width = static_cast<float>(renderWidth);
         const float height = static_cast<float>(renderHeight);
         m_passUniforms.lightScreenSize = Vec4(width, height, 1.0f / width, 1.0f / height);
@@ -1826,16 +2020,37 @@ void ForwardRenderer::updateLightList() {
                  clusterRequested ? 1.0f : 0.0f);
         m_clusterUniforms.lightCounts = m_passUniforms.lightCounts;
         m_clusterUniforms.screenSize = m_passUniforms.lightScreenSize;
-        m_clusterUniforms.lightListParams2 = lightListCapacityParams(m_lightListCapacity);
+        const uint32_t effectiveClusterCapacity =
+            bufferAvailable ? bufferClusterCapacity : textureClusterCapacity;
+        const uint32_t effectiveClusterIndexCapacity =
+            bufferAvailable ? bufferClusterIndexCapacity : textureClusterIndexCapacity;
+        const uint32_t effectiveClusterOffsetCount =
+            bufferAvailable ? bufferClusterOffsetCount : textureClusterOffsetCount;
+        const uint16_t effectiveClusterWidth = LightListBuilder::clusterIndexTextureWidthFor(
+            effectiveClusterOffsetCount + effectiveClusterIndexCapacity + bufferClusterFlagCount);
+        m_clusterCapacity = effectiveClusterCapacity;
+        m_clusterIndexCapacity = effectiveClusterIndexCapacity;
+        m_clusterOffsetCount = effectiveClusterOffsetCount;
+        m_clusterTextureWidth = effectiveClusterWidth;
+        m_clusterUniforms.lightListParams2 =
+            Vec4(static_cast<float>(lightListStrideFor(effectiveCapacity)),
+                 static_cast<float>(effectiveClusterCapacity), static_cast<float>(effectiveCapacity),
+                 static_cast<float>(effectiveCapacity));
+        m_clusterUniforms.params2 =
+            Vec4(static_cast<float>(effectiveClusterWidth),
+                 static_cast<float>(effectiveClusterOffsetCount),
+                 static_cast<float>(effectiveClusterIndexCapacity),
+                 static_cast<float>(kLightCategoryCount));
         if (bufferAvailable) {
             m_activeLightListBuffer = m_lightFptlBuffer;
-            m_activeClusterListBuffer = clusterRequested ? m_lightClusterBuffer : m_lightFptlBuffer;
         }
         if (m_frameIndex == 0) {
-            HBG_LOGI("light list: {}x{} tiles, {}x{} big tiles, source={}, path={}, gpu_cluster={}", tileCountX,
-                     tileCountY, LightListBuilder::tileCount(renderWidth, kLightBigTileSize),
+            HBG_LOGI("light list: {}x{} tiles, {}x{} big tiles, source={}, path={}, capacity={}/{}, "
+                     "cluster_capacity={}, cluster_indices={}, gpu_cluster={}",
+                     tileCountX, tileCountY, LightListBuilder::tileCount(renderWidth, kLightBigTileSize),
                      LightListBuilder::tileCount(renderHeight, kLightBigTileSize),
-                     bufferAvailable ? "gpu" : "gpu", bufferAvailable ? "buffer" : "texture",
+                     bufferAvailable ? "gpu" : "gpu", bufferAvailable ? "buffer" : "texture", effectiveCapacity,
+                     m_lightListCapacity, effectiveClusterCapacity, effectiveClusterIndexCapacity,
                      clusterRequested ? "true" : "false");
         }
     } else {
@@ -1851,18 +2066,41 @@ void ForwardRenderer::updateLightList() {
         HBG_LOGW("gpu light list: requested but compute/program/texture unavailable; using CPU fallback");
         m_gpuLightListWarningLogged = true;
     }
+    updateLightListFeatureFlags();
+}
+
+void ForwardRenderer::updateLightListFeatureFlags() {
+    const bool available = m_pipelineSettings.supportLightListFeatureFlags &&
+                           m_passUniforms.lightListParams.w > 0.5f &&
+                           (m_gpuLightListActive || m_lightListBuilder.data().enabled);
+    m_passUniforms.lightListParams2.z = available ? 1.0f : 0.0f;
 }
 
 void ForwardRenderer::updateCpuLightList() {
+    if (m_lightListTextureCapacity == 0) {
+        m_lightListBuilder.clear();
+        m_lightListEffectiveCapacity = 0;
+        m_passUniforms.lightListParams = Vec4(static_cast<float>(kLightTileSize), 0.0f, 0.0f, 0.0f);
+        m_passUniforms.lightListParams2 = lightListCapacityParams(0);
+        updateLightListFeatureFlags();
+        return;
+    }
+    m_lightListEffectiveCapacity = m_lightListTextureCapacity;
+    const float width = static_cast<float>(m_viewState.renderWidth());
+    const float height = static_cast<float>(m_viewState.renderHeight());
+    m_passUniforms.lightScreenSize =
+        Vec4(width, height, width > 0.0f ? 1.0f / width : 0.0f, height > 0.0f ? 1.0f / height : 0.0f);
     const ViewConstants& constants = m_viewState.constants();
     const auto buildStart = std::chrono::steady_clock::now();
     m_lightListBuilder.build(m_lightBuilder.data(), constants.viewProj, constants.view, m_camera.nearClip,
                              m_camera.farClip, m_viewState.renderWidth(), m_viewState.renderHeight(),
-                             m_lightListCapacity);
+                             m_lightListTextureCapacity);
     const auto buildEnd = std::chrono::steady_clock::now();
     m_lightListCpuMs += std::chrono::duration<double, std::milli>(buildEnd - buildStart).count();
     uploadCpuLightList();
     uploadClusterLightList();
+    updateClusterStatsFromCpu();
+    updateLightListFeatureFlags();
     const GpuLightListData& list = m_lightListBuilder.data();
     if (m_frameIndex == 0 && m_passUniforms.lightListParams.w > 0.5f && list.enabled) {
         HBG_LOGI("light list: {}x{} tiles, {}x{} big tiles, max lights tile={}, big tile={}, source={}",
@@ -1874,7 +2112,8 @@ void ForwardRenderer::updateCpuLightList() {
 bool ForwardRenderer::uploadCpuLightList() {
     const GpuLightListData& list = m_lightListBuilder.data();
     const gfx::Texture* lightListTexture = m_resources != nullptr ? m_resources->texture(m_lightListTexture) : nullptr;
-    m_passUniforms.lightListParams2 = lightListCapacityParams(m_lightListCapacity);
+    const uint32_t capacity = list.capacity != 0 ? list.capacity : m_lightListTextureCapacity;
+    m_passUniforms.lightListParams2 = lightListCapacityParams(capacity);
     if (!list.enabled || lightListTexture == nullptr || list.width != lightListTexture->desc().width ||
         list.height != lightListTexture->desc().height) {
         m_passUniforms.lightListParams = Vec4(static_cast<float>(kLightTileSize), 0.0f, 0.0f, 0.0f);
@@ -1898,42 +2137,221 @@ bool ForwardRenderer::uploadCpuLightList() {
 void ForwardRenderer::uploadClusterLightList() {
     const GpuLightClusterData& cluster = m_lightListBuilder.clusterData();
     const gfx::Texture* clusterTexture =
-        m_resources != nullptr ? m_resources->texture(m_clusterLightListTexture) : nullptr;
-    if (!cluster.enabled || clusterTexture == nullptr || cluster.width != clusterTexture->desc().width ||
-        cluster.height != clusterTexture->desc().height) {
+        m_resources != nullptr ? m_resources->texture(m_clusterTexture) : nullptr;
+    const uint32_t capacity = m_lightListTextureCapacity != 0 ? m_lightListTextureCapacity
+                                                              : m_lightListBuilder.data().capacity;
+    const auto disableCluster = [this, capacity]() {
         m_clusterUniforms = {};
         m_clusterUniforms.params = Vec4(static_cast<float>(kClusterTileSize), 0.0f, 0.0f,
                                         static_cast<float>(kClusterSliceCount));
         m_clusterUniforms.depthParams = Vec4(m_camera.nearClip, m_camera.farClip, LightListBuilder::clusterLogBase(),
                                              0.0f);
-        m_clusterUniforms.lightListParams2 = lightListCapacityParams(m_lightListCapacity);
+        m_clusterUniforms.lightListParams2 = lightListCapacityParams(capacity);
+    };
+    if (!cluster.enabled || clusterTexture == nullptr || cluster.offsets.empty()) {
+        disableCluster();
         return;
     }
 
-    const uint16_t pitch = static_cast<uint16_t>(cluster.width * sizeof(uint32_t));
-    if (!m_resources->updateTexture(m_clusterLightListTexture, cluster.texels.data(),
-                                    static_cast<uint32_t>(cluster.texels.size() * sizeof(uint32_t)), cluster.width,
-                                    cluster.height, pitch)) {
-        m_clusterUniforms = {};
-        m_clusterUniforms.params = Vec4(static_cast<float>(kClusterTileSize), 0.0f, 0.0f,
-                                        static_cast<float>(kClusterSliceCount));
-        m_clusterUniforms.depthParams = Vec4(m_camera.nearClip, m_camera.farClip, LightListBuilder::clusterLogBase(),
-                                             0.0f);
+    const uint16_t width = clusterTexture->desc().width;
+    const uint32_t offsetCount = static_cast<uint32_t>(cluster.offsets.size());
+    const uint32_t flagCount = static_cast<uint32_t>(cluster.tileCountX) * cluster.tileCountY;
+    const uint32_t combinedCount = offsetCount + cluster.indexCapacity + flagCount;
+    const uint16_t height = static_cast<uint16_t>((combinedCount + width - 1u) / width);
+    std::vector<uint32_t> words(static_cast<std::size_t>(width) * height, 0u);
+    std::copy(cluster.offsets.begin(), cluster.offsets.end(), words.begin());
+    std::copy(cluster.indices.begin(), cluster.indices.end(), words.begin() + offsetCount);
+    if (cluster.tileFeatureFlags.size() == flagCount) {
+        std::copy(cluster.tileFeatureFlags.begin(), cluster.tileFeatureFlags.end(),
+                  words.begin() + offsetCount + cluster.indexCapacity);
+    }
+    if (!m_resources->updateTexture(m_clusterTexture, words.data(),
+                                    static_cast<uint32_t>(words.size() * sizeof(uint32_t)), width, height,
+                                    static_cast<uint16_t>(width * sizeof(uint32_t)))) {
+        disableCluster();
         return;
     }
 
+    m_clusterCapacity = cluster.capacity;
+    m_clusterIndexCapacity = cluster.indexCapacity;
+    m_clusterOffsetCount = offsetCount;
+    m_clusterTextureWidth = width;
     m_clusterUniforms.params = Vec4(static_cast<float>(kClusterTileSize), static_cast<float>(cluster.tileCountX),
                                     static_cast<float>(cluster.tileCountY), static_cast<float>(kClusterSliceCount));
     m_clusterUniforms.depthParams =
         Vec4(m_camera.nearClip, m_camera.farClip, LightListBuilder::clusterLogBase(), 1.0f);
     m_clusterUniforms.lightCounts = m_passUniforms.lightCounts;
     m_clusterUniforms.screenSize = m_passUniforms.lightScreenSize;
-    m_clusterUniforms.lightListParams2 = lightListCapacityParams(m_lightListCapacity);
+    m_clusterUniforms.lightListParams2 =
+        Vec4(static_cast<float>(lightListStrideFor(capacity)), static_cast<float>(cluster.capacity),
+             static_cast<float>(capacity), static_cast<float>(capacity));
+    m_clusterUniforms.params2 =
+        Vec4(static_cast<float>(width), static_cast<float>(offsetCount),
+             static_cast<float>(cluster.indexCapacity), static_cast<float>(kLightCategoryCount));
     if (m_frameIndex == 0) {
-        HBG_LOGI("light cluster: {}x{} tiles x {} slices ({}x{} texels), max lights cluster={}, overflow clusters={}",
-                 cluster.tileCountX, cluster.tileCountY, kClusterSliceCount, cluster.width, cluster.height,
-                 cluster.maxLightsPerCluster, cluster.overflowClusters);
+        HBG_LOGI("light cluster: {}x{} tiles x {} slices, texture={}x{}, used={}/{}, max lights cluster={}, "
+                 "truncated clusters={}",
+                 cluster.tileCountX, cluster.tileCountY, kClusterSliceCount, width, height,
+                 cluster.usedIndexCount, cluster.indexCapacity, cluster.maxLightsPerCluster,
+                 cluster.truncatedClusters);
     }
+}
+
+void ForwardRenderer::requestClusterStatsReadback() {
+    if (m_clusterStatsReadbackPending) {
+        return;
+    }
+    m_clusterStatsReadbackRequested = true;
+    m_clusterStatsReferenceValid = false;
+}
+
+void ForwardRenderer::updateClusterStatsFromCpu() {
+    const GpuLightClusterData& cluster = m_lightListBuilder.clusterData();
+    if (!cluster.enabled) {
+        m_clusterStats = {};
+        return;
+    }
+    m_clusterStats = summarizeClusterOffsets(cluster.offsets);
+    m_clusterStats.gpu = false;
+}
+
+void ForwardRenderer::pollClusterStatsReadback() {
+    if (!m_clusterStatsReadbackPending || m_frameIndex < m_clusterStatsReadbackFrame) {
+        return;
+    }
+    if (m_clusterStatsReadbackData.size() > m_clusterStatsReadbackTotalCount) {
+        m_clusterStatsReadbackData.resize(m_clusterStatsReadbackTotalCount);
+    }
+    const std::size_t offsetCount =
+        std::min<std::size_t>(m_clusterStatsReadbackOffsetCount, m_clusterStatsReadbackData.size());
+    const std::vector<uint32_t> offsets(m_clusterStatsReadbackData.begin(),
+                                        m_clusterStatsReadbackData.begin() + offsetCount);
+    m_clusterStats = summarizeClusterOffsets(offsets);
+    m_clusterStats.gpu = true;
+    m_clusterStatsReadbackPending = false;
+    m_clusterStatsReadbackRequested = false;
+    m_clusterStatsReadbackFrame = 0;
+    m_clusterStatsReferenceValid = false;
+    if (m_clusterStats.valid) {
+        uint32_t offsetMismatch = 0;
+        for (uint32_t cluster = 0; cluster < m_clusterStats.clusters; ++cluster) {
+            const uint32_t packed = m_clusterStatsReadbackData[cluster];
+            const uint32_t count = unpackClusterCount(packed);
+            const uint32_t offset = unpackClusterOffset(packed);
+            if (count > 0 && offset != cluster * m_clusterCapacity) {
+                ++offsetMismatch;
+            }
+        }
+        const GpuLightClusterData& reference = m_clusterStatsReferenceBuilder.clusterData();
+        uint32_t flagMismatch = 0;
+        uint32_t flagsChecked = 0;
+        if (m_clusterStatsReadbackFlagCount > 0 &&
+            m_clusterStatsReadbackFlagOffset + m_clusterStatsReadbackFlagCount <=
+                m_clusterStatsReadbackData.size() &&
+            reference.tileFeatureFlags.size() >= m_clusterStatsReadbackFlagCount) {
+            flagsChecked = m_clusterStatsReadbackFlagCount;
+            for (uint32_t index = 0; index < flagsChecked; ++index) {
+                if (m_clusterStatsReadbackData[m_clusterStatsReadbackFlagOffset + index] !=
+                    reference.tileFeatureFlags[index]) {
+                    ++flagMismatch;
+                }
+            }
+        }
+        m_clusterStats.featureFlagsChecked = flagsChecked;
+        m_clusterStats.featureFlagMismatch = flagMismatch;
+        HBG_LOGI("cluster stats readback: path={} clusters={} active={} max_lights={} offset_mismatch={} "
+                 "feature_flags_checked={} feature_flag_mismatch={}",
+                 m_clusterStatsReadbackTexturePath ? "gpu_texture" : "gpu_buffer", m_clusterStats.clusters,
+                 m_clusterStats.activeClusters, m_clusterStats.maxLights, offsetMismatch, flagsChecked,
+                 flagMismatch);
+    }
+}
+
+bool ForwardRenderer::ensureClusterStatsReadbackTexture(uint16_t width, uint16_t height) {
+    if (m_resources == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    const gfx::Texture* current = m_resources->texture(m_clusterStatsReadbackTexture);
+    if (current != nullptr && current->desc().width == width && current->desc().height == height) {
+        return true;
+    }
+    releaseClusterStatsReadbackTexture();
+    gfx::TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = gfx::TextureFormat::R32U;
+    desc.flags = BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK | BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    desc.name = "lighting.clusterStatsReadback";
+    m_clusterStatsReadbackTexture = m_resources->createTexture(desc);
+    if (!m_clusterStatsReadbackTexture.valid()) {
+        HBG_LOGE("light list: failed to create cluster stats readback texture ({}x{})", width, height);
+        return false;
+    }
+    return true;
+}
+
+void ForwardRenderer::releaseClusterStatsReadbackTexture() {
+    if (m_resources != nullptr && m_clusterStatsReadbackTexture.valid()) {
+        m_resources->destroyTexture(m_clusterStatsReadbackTexture);
+    }
+    m_clusterStatsReadbackTexture = {};
+}
+
+void ForwardRenderer::submitClusterStatsReadback() {
+    if (!m_clusterStatsReadbackRequested || m_clusterStatsReadbackPending || !m_gpuLightListActive ||
+        !m_lightClusterEnabled || m_resources == nullptr) {
+        return;
+    }
+
+    if (!m_clusterStatsReferenceValid) {
+        m_clusterStatsReferenceBuilder.build(
+            m_lightBuilder.data(), m_viewState.constants().viewProj, m_viewState.constants().view,
+            m_camera.nearClip, m_camera.farClip, m_viewState.renderWidth(), m_viewState.renderHeight(),
+            m_lightListEffectiveCapacity);
+        m_clusterStatsReferenceValid = true;
+    }
+    const GpuLightClusterData& reference = m_clusterStatsReferenceBuilder.clusterData();
+    m_clusterStatsReadbackOffsetCount = m_clusterOffsetCount;
+    m_clusterStatsReadbackFlagCount =
+        reference.enabled ? static_cast<uint32_t>(reference.tileFeatureFlags.size()) : 0u;
+    m_clusterStatsReadbackFlagOffset = m_clusterOffsetCount + m_clusterIndexCapacity;
+    m_clusterStatsReadbackTotalCount = m_clusterStatsReadbackFlagOffset + m_clusterStatsReadbackFlagCount;
+
+    if (m_gpuLightListBufferActive) {
+        const gfx::Buffer* buffer = m_resources->buffer(m_lightClusterBuffer);
+        if (buffer == nullptr || !buffer->valid() ||
+            buffer->size() < m_clusterStatsReadbackTotalCount * sizeof(uint32_t)) {
+            return;
+        }
+        m_clusterStatsReadbackData.resize(m_clusterStatsReadbackTotalCount);
+        m_clusterStatsReadbackTexturePath = false;
+        m_clusterStatsReadbackFrame =
+            bgfx::read({.handle = m_resources->native(m_lightClusterBuffer), .offset = 0,
+                        .size = m_clusterStatsReadbackTotalCount * sizeof(uint32_t)},
+                       m_clusterStatsReadbackData.data());
+        m_clusterStatsReadbackPending = m_clusterStatsReadbackFrame != 0;
+        return;
+    }
+
+    const gfx::Texture* clusterTexture = m_resources->texture(m_clusterTexture);
+    if (clusterTexture == nullptr) {
+        return;
+    }
+    const uint16_t width = clusterTexture->desc().width;
+    const uint16_t height = clusterTexture->desc().height;
+    if (!ensureClusterStatsReadbackTexture(width, height)) {
+        return;
+    }
+    m_clusterStatsReadbackData.resize(static_cast<std::size_t>(width) * height);
+    m_clusterStatsReadbackTexturePath = true;
+    const bgfx::TextureHandle destination = m_resources->native(m_clusterStatsReadbackTexture);
+    const bgfx::TextureHandle source = clusterTexture->native();
+    bgfx::blit(kClusterStatsBlitView, {.handle = destination, .width = width, .height = height},
+               {.handle = source, .width = width, .height = height});
+    bgfx::touch(kClusterStatsBlitView);
+    m_clusterStatsReadbackFrame =
+        bgfx::read({.handle = destination, .width = width, .height = height}, m_clusterStatsReadbackData.data());
+    m_clusterStatsReadbackPending = m_clusterStatsReadbackFrame != 0;
 }
 
 void ForwardRenderer::releaseLightListTexture() {
@@ -1950,11 +2368,13 @@ void ForwardRenderer::releaseLightBigTileTexture() {
     m_lightBigTileTexture = {};
 }
 
-void ForwardRenderer::releaseClusterLightListTexture() {
-    if (m_resources != nullptr && m_clusterLightListTexture.valid()) {
-        m_resources->destroyTexture(m_clusterLightListTexture);
+void ForwardRenderer::releaseClusterLightListTextures() {
+    if (m_resources != nullptr) {
+        if (m_clusterTexture.valid()) {
+            m_resources->destroyTexture(m_clusterTexture);
+        }
     }
-    m_clusterLightListTexture = {};
+    m_clusterTexture = {};
 }
 
 const DrawList& ForwardRenderer::forwardDrawList(bool transparent) const {
@@ -1964,7 +2384,9 @@ const DrawList& ForwardRenderer::forwardDrawList(bool transparent) const {
 ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
     FrameDiagnostics diagnostics;
     diagnostics.passCount = m_renderGraph.diagnostics().livePasses;
-    diagnostics.gbufferTargets = m_deferredActive ? static_cast<uint32_t>(m_gbufferTextures.size()) : 0u;
+    diagnostics.gbufferTargets =
+        m_deferredActive ? static_cast<uint32_t>(m_gbufferTextures.size())
+                          : 0u;
     diagnostics.deferred = m_deferredActive;
     diagnostics.stencil = m_deferredActive && selectDepthFormat() == gfx::TextureFormat::D24S8;
     diagnostics.postProcessPasses = m_postProcessChain.postProcessPassCount();
@@ -2001,6 +2423,8 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
     diagnostics.shadowCulledItems = m_shadowCulledItems;
     diagnostics.shadowCacheActive = m_shadowManager.cacheActive();
     diagnostics.shadowCachedRequests = m_shadowManager.cachedRequestCount();
+    diagnostics.shadowAreaCacheActive = m_shadowManager.areaCacheActive();
+    diagnostics.shadowCachedAreaRequests = m_shadowManager.cachedAreaRequestCount();
     diagnostics.gpuShadowCulling = m_shadowGpuCullingActive;
     diagnostics.gpuShadowIndirect = m_shadowGpuIndirectActive;
     diagnostics.gpuShadowCullDispatches = m_shadowGpuCullDispatches;
@@ -2016,11 +2440,26 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
     diagnostics.gpuLightListPasses = m_gpuLightListPasses;
     diagnostics.lightListCpuMs = static_cast<float>(m_lightListCpuMs);
     diagnostics.lightListCapacityRequested = m_pipelineSettings.lightListCapacity;
-    diagnostics.lightListCapacityEffective = m_lightListCapacity;
-    diagnostics.lightListStride = lightListStrideFor(m_lightListCapacity);
+    diagnostics.lightListCapacityEffective = m_lightListEffectiveCapacity;
+    diagnostics.lightListStride =
+        m_lightListEffectiveCapacity != 0 ? lightListStrideFor(m_lightListEffectiveCapacity) : 0;
     diagnostics.lightListTruncated = m_lightBuilder.data().truncatedLightCount;
+    diagnostics.lightListCapacityClamped =
+        m_lightListEffectiveCapacity != 0 && m_lightListEffectiveCapacity < m_pipelineSettings.lightListCapacity;
+    diagnostics.lightListFeatureFlagsActive = m_passUniforms.lightListParams2.z > 0.5f;
     diagnostics.asyncGpuLightListRequested = m_pipelineSettings.supportAsyncGpuLightList;
     diagnostics.asyncGpuLightListActive = false;
+    diagnostics.clusterStatsValid = m_clusterStats.valid;
+    diagnostics.clusterStatsGpu = m_clusterStats.gpu;
+    diagnostics.clusterStatsReadbackPending = m_clusterStatsReadbackPending;
+    diagnostics.clusterStatsClusters = m_clusterStats.clusters;
+    diagnostics.clusterStatsActiveClusters = m_clusterStats.activeClusters;
+    diagnostics.clusterStatsOverflowClusters = m_clusterStats.overflowClusters;
+    diagnostics.clusterStatsOverflowLights = m_clusterStats.overflowLights;
+    diagnostics.clusterStatsMaxOverflow = m_clusterStats.maxOverflow;
+    diagnostics.clusterStatsMaxLights = m_clusterStats.maxLights;
+    diagnostics.clusterStatsFeatureFlagsChecked = m_clusterStats.featureFlagsChecked;
+    diagnostics.clusterStatsFeatureFlagMismatch = m_clusterStats.featureFlagMismatch;
     return diagnostics;
 }
 
@@ -2099,14 +2538,18 @@ void ForwardRenderer::buildDrawLists(const RenderScene& scene) {
 }
 
 void ForwardRenderer::addShadowPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
-                                    RenderGraphTextureHandle punctualShadow, const RenderScene& scene) {
+                                    RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
+                                    const RenderScene& scene) {
     if (!shadowsActive() || !m_shadowManager.valid()) {
         return;
     }
     const std::vector<ShadowRequest>& requests = m_shadowManager.requests();
     for (uint32_t index = 0; index < requests.size(); ++index) {
+        const ShadowRequest& request = requests[index];
         const RenderGraphTextureHandle atlas =
-            requests[index].atlas == ShadowAtlasType::Directional ? directionalShadow : punctualShadow;
+            request.atlas == ShadowAtlasType::Directional
+                ? directionalShadow
+                : (request.atlas == ShadowAtlasType::Punctual ? punctualShadow : areaShadow);
         if (!atlas.valid()) {
             continue;
         }
@@ -2153,7 +2596,8 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
         if (!aabbBufferProgram.valid() || !bigTileBufferProgram.valid() || !fptlBufferProgram.valid() ||
             !resources.lightData.valid() || !resources.lightScreenBoundsBuffer.valid() ||
             !resources.lightBigTileBuffer.valid() || !resources.lightFptlBuffer.valid() ||
-            (clusterBufferPass && (!clusterBufferProgram.valid() || !resources.lightClusterBuffer.valid()))) {
+            (clusterBufferPass &&
+             (!clusterBufferProgram.valid() || !resources.lightClusterBuffer.valid()))) {
             m_gpuLightListActive = false;
             m_gpuLightListBufferActive = false;
             m_gpuLightListPasses = 0;
@@ -2186,6 +2630,7 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
 
         graph.addComputePass("GPU Big Tile Light List Buffer")
             .readBuffer(resources.lightScreenBoundsBuffer)
+            .readTexture(resources.lightData)
             .writeBuffer(resources.lightBigTileBuffer)
             .allowCulling(false)
             .setRenderFunc([this, resources, bigTileBufferProgram, bigTileCountX,
@@ -2198,6 +2643,8 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
                 m_clusterBinder.upload(m_clusterUniforms);
                 encoder.setStorageBuffer(1, context.buffer(resources.lightScreenBoundsBuffer), bgfx::Access::Read);
                 encoder.setStorageBuffer(2, context.buffer(resources.lightBigTileBuffer), bgfx::Access::Write);
+                encoder.setTexture(5, m_lightDataSampler, context.texture(resources.lightData),
+                                   BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
                 encoder.dispatch(context.viewId(), bigTileBufferProgram, bigTileCountX, bigTileCountY, 1);
             });
 
@@ -2218,6 +2665,7 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
         graph.addComputePass("GPU FPTL Light List Buffer")
             .readBuffer(resources.lightScreenBoundsBuffer)
             .readBuffer(resources.lightBigTileBuffer)
+            .readTexture(resources.lightData)
             .writeBuffer(resources.lightFptlBuffer)
             .allowCulling(false)
             .setRenderFunc([this, resources, fptlBufferProgram, tileCountX, tileCountY,
@@ -2232,6 +2680,8 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
                 encoder.setStorageBuffer(1, context.buffer(resources.lightScreenBoundsBuffer), bgfx::Access::Read);
                 encoder.setStorageBuffer(2, context.buffer(resources.lightBigTileBuffer), bgfx::Access::Read);
                 encoder.setStorageBuffer(3, context.buffer(resources.lightFptlBuffer), bgfx::Access::Write);
+                encoder.setTexture(5, m_lightDataSampler, context.texture(resources.lightData),
+                                   BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
                 if (indirect) {
                     encoder.dispatchIndirect(context.viewId(), fptlBufferProgram,
                                              context.buffer(resources.lightIndirectArgs), 0, 1);
@@ -2255,15 +2705,16 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
                     m_globalBinder.upload(m_globalUniforms);
                     m_passBinder.upload(m_passUniforms);
                     m_clusterBinder.upload(m_clusterUniforms);
-                                        encoder.setStorageBuffer(1, context.buffer(resources.lightScreenBoundsBuffer),
+                    encoder.setStorageBuffer(1, context.buffer(resources.lightScreenBoundsBuffer),
                                              bgfx::Access::Read);
                     encoder.setStorageBuffer(2, context.buffer(resources.lightBigTileBuffer), bgfx::Access::Read);
                     encoder.setTexture(5, m_lightDataSampler, context.texture(resources.lightData),
                                        BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
                     encoder.setTexture(6, m_lightViewRowsSampler, m_lightViewRowsTexture,
                                        BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
-                    encoder.setStorageBuffer(3, context.buffer(resources.lightClusterBuffer), bgfx::Access::Write);
-                                        encoder.dispatch(context.viewId(), clusterBufferProgram, clusterTileCountX, clusterTileCountY,
+                    encoder.setStorageBuffer(3, context.buffer(resources.lightClusterBuffer),
+                                             bgfx::Access::Write);
+                    encoder.dispatch(context.viewId(), clusterBufferProgram, clusterTileCountX, clusterTileCountY,
                                      kClusterSliceCount);
                 });
         }
@@ -2274,8 +2725,9 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
     if (!gpuLightListPathAvailable() || !aabbProgram.valid() || !bigTileProgram.valid() || !fptlProgram.valid() ||
         !resources.lightData.valid() || !resources.lightScreenBounds.valid() || !resources.lightBigTile.valid() ||
         !resources.lightList.valid() || bigTileCountX == 0 || bigTileCountY == 0 || tileCountX == 0 ||
-        tileCountY == 0 || (clusterPass && (!clusterProgram.valid() || !resources.clusterLightList.valid() ||
-                                            clusterTileCountX == 0 || clusterTileCountY == 0))) {
+        tileCountY == 0 ||
+        (clusterPass && (!clusterProgram.valid() || !resources.clusterLightList.valid() ||
+                         clusterTileCountX == 0 || clusterTileCountY == 0))) {
         m_gpuLightListActive = false;
         m_gpuLightListPasses = 0;
         updateCpuLightList();
@@ -2309,6 +2761,7 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
 
     graph.addComputePass("GPU Big Tile Light List")
         .readTexture(resources.lightScreenBounds)
+        .readTexture(resources.lightData)
         .writeTexture(resources.lightBigTile)
         .allowCulling(false)
         .setRenderFunc([this, resources, bigTileProgram, bigTileCountX,
@@ -2322,6 +2775,8 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
             m_clusterBinder.upload(m_clusterUniforms);
             encoder.setTexture(1, m_lightScreenBoundsSampler, context.texture(resources.lightScreenBounds),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            encoder.setTexture(5, m_lightDataSampler, context.texture(resources.lightData),
+                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
             encoder.setImage(2, context.texture(resources.lightBigTile), 0, bgfx::Access::Write,
                              gfx::TextureFormat::R32U);
             encoder.dispatch(context.viewId(), bigTileProgram, bigTileCountX, bigTileCountY, 1);
@@ -2330,6 +2785,7 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
     graph.addComputePass("GPU FPTL Light List")
         .readTexture(resources.lightScreenBounds)
         .readTexture(resources.lightBigTile)
+        .readTexture(resources.lightData)
         .writeTexture(resources.lightList)
         .allowCulling(false)
         .setRenderFunc([this, resources, fptlProgram, tileCountX, tileCountY](RenderGraphContext& context) {
@@ -2343,6 +2799,8 @@ void ForwardRenderer::addGpuLightListPasses(RenderGraph& graph, const FramePassR
             encoder.setTexture(1, m_lightScreenBoundsSampler, context.texture(resources.lightScreenBounds),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
             encoder.setTexture(2, m_lightBigTileSampler, context.texture(resources.lightBigTile),
+                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            encoder.setTexture(5, m_lightDataSampler, context.texture(resources.lightData),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
             encoder.setImage(3, context.texture(resources.lightList), 0, bgfx::Access::Write,
                              gfx::TextureFormat::R32U);
@@ -2685,7 +3143,8 @@ RenderGraphTextureHandle ForwardRenderer::addVolumetricFogPass(RenderGraph& grap
     m_volumetricFogWidth = fogWidth;
     m_volumetricFogHeight = fogHeight;
     m_volumetricFogTemporalActive = temporalActive;
-    m_volumetricFogPunctualLights = punctualLights ? lightData.punctualCount : 0;
+    m_volumetricFogPunctualLights =
+        punctualLights ? std::min(lightData.punctualCount, m_volumetricFogSettings.maxPunctualLights) : 0;
     updateVolumetricFogUniforms(true, temporalActive, temporalActive, punctualLights, fogWidth, fogHeight);
     uint32_t localVolumeCount = 0;
     updateLocalFogUniforms(scene, localVolumeCount);
@@ -2730,7 +3189,7 @@ RenderGraphTextureHandle ForwardRenderer::addVolumetricFogPass(RenderGraph& grap
         raymarch.readTexture(resources.punctualShadow);
     }
     if (resources.shadowContext.valid()) {
-        raymarch.readTexture(resources.shadowContext);
+        raymarch.readBuffer(resources.shadowContext);
     }
     raymarch.readBuffer(resources.fullscreen);
     raymarch.setViewSize(fogWidth, fogHeight);
@@ -2774,9 +3233,8 @@ RenderGraphTextureHandle ForwardRenderer::addVolumetricFogPass(RenderGraph& grap
                 bindLightList(encoder, useCluster);
             }
         }
-        if (resources.shadowContext.valid() && m_shadowContextSampler.valid()) {
-            encoder.setTexture(8, m_shadowContextSampler, context.texture(resources.shadowContext),
-                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        if (resources.shadowContext.valid()) {
+            encoder.setStorageBuffer(8, context.buffer(resources.shadowContext), bgfx::Access::Read);
         }
         if (resources.punctualShadow.valid() && m_shadowPunctualSampler.valid()) {
             encoder.setTexture(9, m_shadowPunctualSampler, context.texture(resources.punctualShadow),
@@ -2842,7 +3300,8 @@ RenderGraphTextureHandle ForwardRenderer::addVolumetricFogPass(RenderGraph& grap
 }
 
 void ForwardRenderer::addGBufferClearPass(RenderGraph& graph, const std::array<RenderGraphTextureHandle, 4>& gbuffer,
-                                          RenderGraphTextureHandle depth, RenderGraphBufferHandle fullscreen) {
+                                          RenderGraphTextureHandle depth,
+                                          RenderGraphBufferHandle fullscreen) {
     if (!std::all_of(gbuffer.begin(), gbuffer.end(),
                      [](RenderGraphTextureHandle texture) { return texture.valid(); }) ||
         !depth.valid() || !fullscreen.valid()) {
@@ -3142,8 +3601,11 @@ void ForwardRenderer::addDeferredLightingPass(RenderGraph& graph, const FramePas
     if (resources.punctualShadow.valid()) {
         pass.readTexture(resources.punctualShadow);
     }
+    if (resources.areaShadow.valid() && m_shadowManager.areaRequestCount() > 0) {
+        pass.readTexture(resources.areaShadow);
+    }
     if (resources.shadowContext.valid()) {
-        pass.readTexture(resources.shadowContext);
+        pass.readBuffer(resources.shadowContext);
     }
     if (resources.environment.valid()) {
         pass.readTexture(resources.environment);
@@ -3160,9 +3622,10 @@ void ForwardRenderer::addDeferredLightingPass(RenderGraph& graph, const FramePas
             context.texture(resources.gbuffer[3]),
         };
         renderDeferredLighting(context.encoder(), context.viewId(), context.frameBuffer(),
-                               context.texture(resources.depthPyramid), gbuffer, context.texture(resources.lightData),
+                               context.texture(resources.depthPyramid), gbuffer,
+                               context.texture(resources.lightData),
                                context.texture(resources.lightList), context.texture(resources.directionalShadow),
-                               context.texture(resources.punctualShadow), context.texture(resources.shadowContext),
+                               context.texture(resources.punctualShadow), context.buffer(resources.shadowContext),
                                context.texture(resources.environment), context.texture(resources.ssao));
     });
 }
@@ -3177,12 +3640,12 @@ void ForwardRenderer::recordForwardFrame(RenderGraph& graph, FramePassResources&
     resources.contactShadow = addContactShadowPass(graph, resources, false);
     addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.shadowContext,
-                   resources.contactShadow, scene, false);
+                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
+                   resources.shadowContext, resources.contactShadow, scene, false);
     addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.shadowContext,
-                   resources.contactShadow, scene, true);
+                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
+                   resources.shadowContext, resources.contactShadow, scene, true);
     addWireframePass(graph, resources.color, resources.depth, scene);
 }
 
@@ -3211,23 +3674,24 @@ void ForwardRenderer::recordDeferredFrame(RenderGraph& graph, FramePassResources
     addSSRPasses(graph, resources);
     addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.shadowContext,
-                   resources.contactShadow, scene, false, true);
+                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
+                   resources.shadowContext, resources.contactShadow, scene, false, true);
     addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.shadowContext,
-                   resources.contactShadow, scene, true);
+                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
+                   resources.shadowContext, resources.contactShadow, scene, true);
     addWireframePass(graph, resources.color, resources.depth, scene);
 }
 
 void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                                      RenderGraphTextureHandle lightData, RenderGraphTextureHandle lightList,
-                                     RenderGraphTextureHandle clusterLightList, RenderGraphBufferHandle lightFptlBuffer,
-                                     RenderGraphBufferHandle lightClusterBuffer,
+                                     RenderGraphTextureHandle clusterLightList,
+                                     RenderGraphBufferHandle lightFptlBuffer,
+                                     RenderGraphBufferHandle clusterLightListBuffer,
                                      RenderGraphTextureHandle directionalShadow,
-                                     RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle shadowContext,
-                                     RenderGraphTextureHandle contactShadow, const RenderScene& scene, bool transparent,
-                                     bool forwardOnly) {
+                                     RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
+                                     RenderGraphBufferHandle shadowContext, RenderGraphTextureHandle contactShadow,
+                                     const RenderScene& scene, bool transparent, bool forwardOnly) {
     const FrameSettingsField visibility =
         transparent ? FrameSettingsField::TransparentObjects : FrameSettingsField::OpaqueObjects;
     const DrawList& list = forwardOnly ? m_forwardOpaqueDrawList : forwardDrawList(transparent);
@@ -3242,8 +3706,8 @@ void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandl
     pass.readTexture(lightData);
     if (m_gpuLightListBufferActive && lightFptlBuffer.valid()) {
         pass.readBuffer(lightFptlBuffer);
-        if (lightClusterBuffer.valid()) {
-            pass.readBuffer(lightClusterBuffer);
+        if (clusterLightListBuffer.valid()) {
+            pass.readBuffer(clusterLightListBuffer);
         }
     } else {
         if (lightList.valid()) {
@@ -3259,8 +3723,11 @@ void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandl
     if (punctualShadow.valid()) {
         pass.readTexture(punctualShadow);
     }
+    if (areaShadow.valid() && m_shadowManager.areaRequestCount() > 0) {
+        pass.readTexture(areaShadow);
+    }
     if (shadowContext.valid()) {
-        pass.readTexture(shadowContext);
+        pass.readBuffer(shadowContext);
     }
     if (contactShadow.valid()) {
         pass.readTexture(contactShadow);
@@ -3431,7 +3898,7 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
         pass.readTexture(normalSource);
         pass.readTexture(resources.depth);
         pass.readTexture(resources.directionalShadow);
-        pass.readTexture(resources.shadowContext);
+        pass.readBuffer(resources.shadowContext);
     } else if (ssaoDebug) {
         pass.readTexture(resources.ssao);
     } else if (ssrDebug) {
@@ -3482,7 +3949,7 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
                            context.texture(resources.lightList), context.texture(normalSource),
                            context.texture(resources.motionVector), context.texture(resources.depthPyramid),
                            context.texture(resources.directionalShadow), context.texture(resources.punctualShadow),
-                           context.texture(resources.shadowContext), context.texture(resources.contactShadow),
+                           context.buffer(resources.shadowContext), context.texture(resources.contactShadow),
                            context.texture(resources.ssao),
                            context.texture(resources.ssr),
                            context.texture(resources.ssgi), context.texture(resources.decal[0]),
@@ -3598,7 +4065,8 @@ bool ForwardRenderer::renderGpuShadowPass(gfx::Encoder& encoder, bgfx::ViewId vi
 bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
                                        const DrawBatch& batch, const RenderScene& scene,
                                        gfx::TextureHandle contactShadow, bool clusterList) {
-    if (batch.itemCount < 2 || batch.firstItem + batch.itemCount > list.items().size()) {
+    if (m_pipelineSettings.supportLightLayers || batch.itemCount < 2 ||
+        batch.firstItem + batch.itemCount > list.items().size()) {
         return false;
     }
     const DrawItem& first = list.items()[batch.firstItem];
@@ -3638,6 +4106,8 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
     m_clusterBinder.upload(clusterUniforms);
     m_environmentBinder.upload(m_environmentUniforms);
     m_probeBinder.upload(m_probeUniforms);
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    m_objectBinder.upload(m_objectUniforms);
     m_materialBinder.upload(material.uniforms);
     encoder.setTexture(0, m_materialSamplers.baseColorMap, material.baseColorTexture);
     encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, material.metallicRoughnessTexture);
@@ -3653,9 +4123,8 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
         encoder.setTexture(6, m_shadowSampler, m_shadowManager.directionalTexture(),
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
     }
-    if (m_shadowManager.contextTexture().valid()) {
-        encoder.setTexture(8, m_shadowContextSampler, m_shadowManager.contextTexture(),
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    if (m_shadowManager.contextBuffer().valid()) {
+        encoder.setStorageBuffer(8, m_shadowManager.contextBuffer(), bgfx::Access::Read);
     }
     if (m_shadowManager.activePunctualTexture().valid()) {
         encoder.setTexture(9, m_shadowPunctualSampler, m_shadowManager.activePunctualTexture(),
@@ -3665,8 +4134,11 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
         encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.directionalTexture(),
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
-    if (m_shadowManager.activePunctualTexture().valid()) {
-        encoder.setTexture(13, m_shadowPointPunctualSampler, m_shadowManager.activePunctualTexture(),
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaTexture()
+                                            : m_shadowManager.activePunctualTexture();
+    if (areaDepth.valid()) {
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
     bindLightList(encoder, clusterList);
@@ -3692,7 +4164,7 @@ void ForwardRenderer::renderShadowPass(gfx::Encoder& encoder, bgfx::ViewId view,
 
     const ShadowRequest& request = m_shadowManager.requests()[requestIndex];
     if (request.isCached) {
-        m_shadowManager.beginCachedPass(encoder, view, frameBuffer);
+        m_shadowManager.beginCachedPass(encoder, view, frameBuffer, request.atlasSize);
         return;
     }
     if (m_shadowGpuCullingActive && m_shadowGpuIndirectActive &&
@@ -3741,7 +4213,9 @@ void ForwardRenderer::renderGBufferClear(gfx::Encoder& encoder, bgfx::ViewId vie
                                          bool useShader) {
     encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
     encoder.setViewFrameBuffer(view, frameBuffer);
-    const uint16_t clearFlags = useShader ? BGFX_CLEAR_STENCIL : (BGFX_CLEAR_COLOR | BGFX_CLEAR_STENCIL);
+    const uint16_t clearFlags = useShader
+                                    ? static_cast<uint16_t>(BGFX_CLEAR_STENCIL | (m_deferredLightLayersActive ? BGFX_CLEAR_COLOR : 0))
+                                    : (BGFX_CLEAR_COLOR | BGFX_CLEAR_STENCIL);
     encoder.setViewClear(view, clearFlags, 0x000000ff, 1.0f, 0);
     encoder.touch(view);
     if (useShader) {
@@ -4080,7 +4554,7 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
                                              const std::array<gfx::TextureHandle, 4>& gbuffer,
                                              gfx::TextureHandle lightData, gfx::TextureHandle lightList,
                                              gfx::TextureHandle directionalShadow, gfx::TextureHandle punctualShadow,
-                                             gfx::TextureHandle shadowContext, gfx::TextureHandle environment,
+                                             gfx::BufferHandle shadowContext, gfx::TextureHandle environment,
                                              gfx::TextureHandle ssao) {
     const gfx::ProgramHandle program = lightListProgram(shader::PassId::DeferredLighting);
     if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !depthPyramid.valid() || !lightData.valid() ||
@@ -4105,6 +4579,9 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
     m_environmentBinder.upload(m_environmentUniforms);
     m_probeBinder.upload(m_probeUniforms);
     m_ssaoBinder.upload(m_ssaoUniforms);
+    m_objectUniforms.lightLayerMask =
+        Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, m_deferredLightLayersActive ? 1.0f : 0.0f);
+    m_objectBinder.upload(m_objectUniforms);
     for (std::size_t index = 0; index < gbuffer.size(); ++index) {
         encoder.setTexture(static_cast<uint8_t>(index), m_gbufferSamplers[index], gbuffer[index],
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
@@ -4117,7 +4594,7 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
     }
     bindLightList(encoder, false);
     if (shadowContext.valid()) {
-        encoder.setTexture(8, m_shadowContextSampler, shadowContext, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setStorageBuffer(8, shadowContext, bgfx::Access::Read);
     }
     if (punctualShadow.valid()) {
         encoder.setTexture(9, m_shadowPunctualSampler, punctualShadow,
@@ -4127,8 +4604,11 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
         encoder.setTexture(12, m_shadowPointSampler, directionalShadow,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
-    if (punctualShadow.valid()) {
-        encoder.setTexture(13, m_shadowPointPunctualSampler, punctualShadow,
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaTexture()
+                                            : punctualShadow;
+    if (areaDepth.valid()) {
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
     const gfx::TextureHandle environmentTexture = environment.valid() ? environment : m_environmentFallback;
@@ -4325,8 +4805,9 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
             continue;
         }
 
+        const uint64_t pipelineKey = m_deferredLightLayersActive ? shader::kLightLayersProgramKey : 0;
         const shader::ProgramKey programKey{decals ? shader::PassId::GBufferDecals : shader::PassId::GBuffer,
-                                            gpuMaterial.variantKey, 0};
+                                            gpuMaterial.variantKey, pipelineKey};
         const gfx::ProgramHandle program = m_shaderLibrary.program(programKey);
         if (!program.valid()) {
             if (m_frameIndex == 0) {
@@ -4338,6 +4819,13 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
         encoder.setState(gbufferState(sourceMaterial));
         encoder.setStencil(gfx::state::kGBufferStencil, gfx::state::kGBufferStencil);
         encoder.setTransform(item.world.data());
+        uint32_t objectLayerMask = kRenderingLayersMask;
+        if (m_deferredLightLayersActive && item.objectIndex < scene.objects.size()) {
+            objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+        }
+        m_objectUniforms.lightLayerMask =
+            Vec4(static_cast<float>(objectLayerMask), 0.0f, 0.0f, m_deferredLightLayersActive ? 1.0f : 0.0f);
+        m_objectBinder.upload(m_objectUniforms);
         m_materialBinder.upload(gpuMaterial.uniforms);
         encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
         encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, gpuMaterial.metallicRoughnessTexture);
@@ -4370,7 +4858,7 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
     m_contactBinder.upload(m_contactUniforms);
 
     const bool clusterListAvailable =
-        m_gpuLightListBufferActive ? m_activeClusterListBuffer.valid() : m_clusterLightListTexture.valid();
+        m_gpuLightListBufferActive ? m_lightClusterBuffer.valid() : m_clusterTexture.valid();
     const bool useCluster = m_lightClusterEnabled && (transparent || forwardOnly) && clusterListAvailable &&
                             m_clusterUniforms.depthParams.w > 0.5f;
 
@@ -4386,6 +4874,14 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
 
         encoder.setState(forwardState(material, item.transparent, m_depthPrepassActive));
         encoder.setTransform(item.world.data());
+        uint32_t objectLayerMask = kRenderingLayersMask;
+        if (m_pipelineSettings.supportLightLayers && item.objectIndex < scene.objects.size()) {
+            objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+        }
+        m_objectUniforms.lightLayerMask =
+            Vec4(static_cast<float>(objectLayerMask), 0.0f, 0.0f,
+                 m_pipelineSettings.supportLightLayers ? 1.0f : 0.0f);
+        m_objectBinder.upload(m_objectUniforms);
         m_globalBinder.upload(m_globalUniforms);
         gfx::generated::PassUniforms passUniforms = m_passUniforms;
         passUniforms.lightColor.w = contactShadowsActive() && !transparent ? 1.0f : 0.0f;
@@ -4410,9 +4906,8 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
             encoder.setTexture(6, m_shadowSampler, m_shadowManager.directionalTexture(),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
         }
-        if (m_shadowManager.contextTexture().valid()) {
-            encoder.setTexture(8, m_shadowContextSampler, m_shadowManager.contextTexture(),
-                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        if (m_shadowManager.contextBuffer().valid()) {
+            encoder.setStorageBuffer(8, m_shadowManager.contextBuffer(), bgfx::Access::Read);
         }
         if (m_shadowManager.activePunctualTexture().valid()) {
             encoder.setTexture(9, m_shadowPunctualSampler, m_shadowManager.activePunctualTexture(),
@@ -4422,8 +4917,11 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
             encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.directionalTexture(),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         }
-        if (m_shadowManager.activePunctualTexture().valid()) {
-            encoder.setTexture(13, m_shadowPointPunctualSampler, m_shadowManager.activePunctualTexture(),
+        const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                                ? m_shadowManager.activeAreaTexture()
+                                                : m_shadowManager.activePunctualTexture();
+        if (areaDepth.valid()) {
+            encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         }
         bindLightList(encoder, useCluster);
@@ -4565,6 +5063,8 @@ void ForwardRenderer::renderDebugGBufferPass(gfx::Encoder& encoder, bgfx::ViewId
 
     m_debugUniforms.clusterParams.y = gbufferDebugMode(debugMode);
     m_debugBinder.upload(m_debugUniforms);
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    m_objectBinder.upload(m_objectUniforms);
     for (std::size_t index = 0; index < gbuffer.size(); ++index) {
         encoder.setTexture(static_cast<uint8_t>(index), m_gbufferSamplers[index], gbuffer[index],
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
@@ -4579,7 +5079,7 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
                                          gfx::TextureHandle lightList, gfx::TextureHandle normal,
                                          gfx::TextureHandle motionVector, gfx::TextureHandle depthPyramid,
                                          gfx::TextureHandle directionalShadow, gfx::TextureHandle punctualShadow,
-                                         gfx::TextureHandle shadowContext, gfx::TextureHandle contactShadow,
+                                         gfx::BufferHandle shadowContext, gfx::TextureHandle contactShadow,
                                          gfx::TextureHandle ssao, gfx::TextureHandle ssr, gfx::TextureHandle ssgi,
                                          gfx::TextureHandle decal0, gfx::BufferHandle fullscreen,
                                          DebugDisplayMode debugMode,
@@ -4841,8 +5341,7 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         encoder.setTexture(1, m_depthSourceSampler, depth, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         encoder.setTexture(6, m_shadowSampler, directionalShadow,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
-        encoder.setTexture(8, m_shadowContextSampler, shadowContext,
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setStorageBuffer(8, shadowContext, bgfx::Access::Read);
         break;
     case DebugDisplayMode::Albedo:
     case DebugDisplayMode::Roughness:
@@ -4907,6 +5406,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     if (width != m_width || height != m_height) {
         resize(width, height);
     }
+    pollClusterStatsReadback();
 
     syncTaaJitter();
     m_shadowDrawnItems = 0;
@@ -4920,7 +5420,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     if (m_gpuLightListEnabled) {
         ensureLightBigTileTexture(m_viewState.renderWidth(), m_viewState.renderHeight());
     }
-    ensureClusterLightListTexture(m_viewState.renderWidth(), m_viewState.renderHeight());
+    ensureClusterLightListTextures(m_viewState.renderWidth(), m_viewState.renderHeight());
     if (m_gpuLightListEnabled && m_gpuLightListBufferEnabled) {
         ensureLightListBuffers(m_viewState.renderWidth(), m_viewState.renderHeight());
     }
@@ -5035,8 +5535,8 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         lightList = m_renderGraph.importTexture(m_lightListTexture, "Light List");
     }
     RenderGraphTextureHandle clusterLightList;
-    if (m_clusterLightListTexture.valid()) {
-        clusterLightList = m_renderGraph.importTexture(m_clusterLightListTexture, "Cluster Light List");
+    if (m_clusterTexture.valid()) {
+        clusterLightList = m_renderGraph.importTexture(m_clusterTexture, "Cluster Light List");
     }
     RenderGraphTextureHandle lightScreenBounds;
     if (m_lightScreenBoundsTexture.valid()) {
@@ -5061,7 +5561,8 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         lightFptlBuffer = m_renderGraph.importBuffer(m_lightFptlBuffer, "Light FPTL Buffer");
     }
     if (m_lightClusterBuffer.valid()) {
-        lightClusterBuffer = m_renderGraph.importBuffer(m_lightClusterBuffer, "Light Cluster Buffer");
+        lightClusterBuffer =
+            m_renderGraph.importBuffer(m_lightClusterBuffer, "Light Cluster Buffer");
     }
     if (m_lightIndirectArgsBuffer.valid()) {
         lightIndirectArgs = m_renderGraph.importBuffer(m_lightIndirectArgsBuffer, "Light Indirect Args");
@@ -5071,8 +5572,11 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     const gfx::TextureHandle activePunctualShadow = m_shadowManager.activePunctualTexture();
     const RenderGraphTextureHandle punctualShadow =
         m_renderGraph.importTexture(activePunctualShadow, "Punctual Shadow Atlas");
-    const RenderGraphTextureHandle shadowContext =
-        m_renderGraph.importTexture(m_shadowManager.contextTexture(), "Shadow Context");
+    const RenderGraphTextureHandle areaShadow =
+        m_renderGraph.importTexture(m_shadowManager.activeAreaTexture(), "Area Shadow Atlas");
+
+    const RenderGraphBufferHandle shadowContext =
+        m_renderGraph.importBuffer(m_shadowManager.contextBuffer(), "Shadow Context");
     RenderGraphTextureHandle environment;
     RenderGraphTextureHandle skyEnvironment;
     if (m_skyManager.valid()) {
@@ -5120,6 +5624,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     resources.shadowStatsBuffer = shadowStatsBuffer;
     resources.directionalShadow = directionalShadow;
     resources.punctualShadow = punctualShadow;
+    resources.areaShadow = areaShadow;
     resources.shadowContext = shadowContext;
     resources.environment = environment;
     resources.skyEnvironment = skyEnvironment;
@@ -5298,7 +5803,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         const bool listAvailable =
             m_gpuLightListBufferActive ? resources.lightFptlBuffer.valid() : lightList.valid();
         const bool clusterAvailable = m_gpuLightListBufferActive ? resources.lightClusterBuffer.valid()
-                                                                 : m_clusterLightListTexture.valid();
+                                                                 : m_clusterTexture.valid();
         if (!depth.valid() || !lightListProgram(shader::PassId::DebugLightCluster).valid() ||
             (m_debugLightClusterSlice == -2
                  ? !listAvailable
@@ -5422,7 +5927,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         addShadowAtlasClearPass(m_renderGraph, punctualShadow, m_shadowManager.punctualAtlasSize());
     }
     addGpuShadowCullPass(m_renderGraph, resources);
-    addShadowPass(m_renderGraph, directionalShadow, punctualShadow, scene);
+    addShadowPass(m_renderGraph, directionalShadow, punctualShadow, areaShadow, scene);
     addClearPass(m_renderGraph, color, depth, materialDebug || (deferred && isGbufferDebug(debugMode)));
     addPrepassPass(m_renderGraph, normal, depth, scene, deferred);
     addDepthPyramidPasses(m_renderGraph, depth, depthPyramid);
@@ -5549,9 +6054,11 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     }
 
     gfx::Encoder encoder(*m_resources);
+    bool graphExecuted = false;
     if (!m_renderGraph.execute(encoder, *m_resources)) {
         HBG_LOGE("forward renderer: render graph execution failed: {}", m_renderGraph.lastError());
     } else {
+        graphExecuted = true;
         if (m_frameIndex == 0 || (m_postProcessChain.taaActive() && m_frameIndex == 1)) {
             const RenderGraphDiagnostics& diagnostics = m_renderGraph.diagnostics();
             HBG_LOGI("render graph: {} recorded, {} live, {} culled; transient textures={}, pooled={}, framebuffers={}",
@@ -5562,9 +6069,9 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
                      m_gpuLightListEnabled ? "true" : "false", m_gpuLightListActive ? "true" : "false",
                      m_gpuLightListEnabled && !m_gpuLightListActive ? "true" : "false", m_gpuLightListPasses,
                      m_lightListCpuMs, kMaxGpuLights * 2u, 1,
-                     LightListBuilder::bigTileTextureWidthFor(renderWidth, m_lightListCapacity),
+                     LightListBuilder::bigTileTextureWidthFor(renderWidth, m_lightListTextureCapacity),
                      LightListBuilder::bigTileTextureHeightFor(renderHeight),
-                     LightListBuilder::textureWidthFor(renderWidth, m_lightListCapacity),
+                     LightListBuilder::textureWidthFor(renderWidth, m_lightListTextureCapacity),
                      LightListBuilder::textureHeightFor(renderHeight));
             HBG_LOGI("postprocess diagnostics: active={} compute={} history={} passes={} profile='{}' exposure={} "
                      "exposure_active={} exposure_applied={} exposure_history={} taa_active={} taa_history={} "
@@ -5606,6 +6113,9 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         }
     }
 
+    if (graphExecuted) {
+        submitClusterStatsReadback();
+    }
     m_postProcessChain.endFrame();
     ++m_frameIndex;
 }
@@ -5689,8 +6199,13 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     }
     releaseLightListTexture();
     releaseLightBigTileTexture();
-    releaseClusterLightListTexture();
+    releaseClusterLightListTextures();
+    releaseClusterStatsReadbackTexture();
     releaseLightListBuffers();
+    m_clusterStatsReadbackPending = false;
+    m_clusterStatsReadbackRequested = false;
+    m_clusterStatsReadbackFrame = 0;
+    m_clusterStatsReferenceValid = false;
     if (m_lightScreenBoundsTexture.valid()) {
         resources.destroyTexture(m_lightScreenBoundsTexture);
         m_lightScreenBoundsTexture = {};
@@ -5730,10 +6245,6 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     if (m_shadowPointPunctualSampler.valid()) {
         resources.destroyUniform(m_shadowPointPunctualSampler);
         m_shadowPointPunctualSampler = {};
-    }
-    if (m_shadowContextSampler.valid()) {
-        resources.destroyUniform(m_shadowContextSampler);
-        m_shadowContextSampler = {};
     }
     if (m_depthSourceSampler.valid()) {
         resources.destroyUniform(m_depthSourceSampler);

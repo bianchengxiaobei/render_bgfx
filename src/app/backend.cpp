@@ -586,6 +586,9 @@ void applyShadowOverrides(const ShadowOverrides& overrides, render::ShadowSettin
     if (overrides.cachedPunctualShadows) {
         settings.cachedPunctualShadows = *overrides.cachedPunctualShadows;
     }
+    if (overrides.cachedAreaShadows) {
+        settings.cachedAreaShadows = *overrides.cachedAreaShadows;
+    }
 }
 
 CommandLineResult parseCommandLine(int argc, const char* const* argv) {
@@ -617,6 +620,10 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (arg == "--gfx-test") {
             result.options.gfxTest = true;
+            continue;
+        }
+        if (arg == "--cluster-stats-readback") {
+            result.options.clusterStatsReadback = true;
             continue;
         }
         if (arg == "--debug-light-data") {
@@ -1226,6 +1233,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.shadowOverrides.cachedPunctualShadows = false;
             continue;
         }
+        if (arg == "--area-shadow-cache") {
+            result.options.shadowOverrides.cachedAreaShadows = true;
+            continue;
+        }
+        if (arg == "--no-area-shadow-cache") {
+            result.options.shadowOverrides.cachedAreaShadows = false;
+            continue;
+        }
         if (const auto value = optionValue(arg, "--shadow-dimmer")) {
             float dimmer = 0.0f;
             if (!parseFloat(*value, dimmer) || dimmer < 0.0f || dimmer > 1.0f) {
@@ -1563,6 +1578,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             }
             continue;
         }
+        if (arg == "--light-layers") {
+            result.options.lightLayers = true;
+            continue;
+        }
+        if (arg == "--no-light-layers") {
+            result.options.lightLayers = false;
+            continue;
+        }
         if (arg == "--gpu-light-list-buffers") {
             result.options.gpuLightListBuffers = true;
             continue;
@@ -1577,6 +1600,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (arg == "--no-gpu-light-list-indirect") {
             result.options.gpuLightListIndirect = false;
+            continue;
+        }
+        if (arg == "--light-list-feature-flags") {
+            result.options.lightListFeatureFlags = true;
+            continue;
+        }
+        if (arg == "--no-light-list-feature-flags") {
+            result.options.lightListFeatureFlags = false;
             continue;
         }
         if (arg == "--gpu-shadow-culling") {
@@ -1880,6 +1911,7 @@ const char* usage() {
            "vectors\n"
            "  --no-shadows                                      Start with shadow sampling disabled\n"
            "  --shadow-cache / --no-shadow-cache                Enable/disable cached static punctual shadows\n"
+           "  --area-shadow-cache / --no-area-shadow-cache      Enable/disable cached static rectangle area shadows\n"
            "  --shadow-dimmer=<0..1>                            Global default shadow dimmer (per-light wins)\n"
            "  --shadow-fade-distance=<meters>                   Global default light shadow fade distance\n"
            "  --shadow-tint=<r,g,b>                             Global default shadow tint (0..1)\n"
@@ -1892,7 +1924,7 @@ const char* usage() {
            "  --shadow-cascades=<1..4>                          Directional cascade count (default 4)\n"
            "  --shadow-cascade-fade=<0..1>                      Cascade distance fade border (default 0.1)\n"
            "  --shadow-atlas-size=<1024|2048|4096>              Shadow atlas size (default 2048)\n"
-           "  --shadow-max-requests=<1..64>                     Maximum shadow requests (default 64)\n"
+           "  --shadow-max-requests=<1..128>                    Maximum shadow requests (default 64)\n"
            "  --shadow-directional-resolution=<256..4096>       Directional cascade resolution (default 1024)\n"
            "  --shadow-point-resolution=<256..4096>             Point face resolution (default 256)\n"
            "  --shadow-spot-resolution=<256..4096>              Spot resolution (default 512)\n"
@@ -1914,8 +1946,11 @@ const char* usage() {
            "  --gpu-light-list / --no-gpu-light-list            Enable/disable the GPU light-list path\n"
             "  --gpu-light-list-path=<texture|buffer>            Select the GPU light-list storage path (default: buffer)\n"
             "  --gpu-light-list-buffers / --no-gpu-light-list-buffers  Enable/disable buffer storage (default: enabled)\n"
-           "  --gpu-light-list-indirect / --no-gpu-light-list-indirect  Enable/disable indirect light-list dispatch\n"
-           "  --light-capacity=<32|64|128>                      Maximum light slots including directional (default: 32)\n"
+            "  --gpu-light-list-indirect / --no-gpu-light-list-indirect  Enable/disable indirect light-list dispatch\n"
+           "  --light-list-feature-flags / --no-light-list-feature-flags  Enable/disable tile feature-flag category gating (default: enabled)\n"
+           "  --light-capacity=<32|64|128>                      Maximum light slots including directional (default: 64)\n"
+           "  --light-layers / --no-light-layers                Enable/disable per-light/per-object light layers\n"
+           "  --cluster-stats-readback                           Read back GPU cluster overflow and feature-flag stats after rendering\n"
            "  --gpu-shadow-culling / --no-gpu-shadow-culling    Enable/disable GPU shadow caster culling\n"
            "  --gpu-shadow-indirect / --no-gpu-shadow-indirect  Enable/disable GPU indirect shadow draw\n"
            "  --async-gpu-light-list / --no-async-gpu-light-list  Request async light-list execution (capability gated)\n"

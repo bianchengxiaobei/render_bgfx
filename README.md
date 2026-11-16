@@ -12,11 +12,11 @@
   - HDRP 风格 FrameSettings / PipelineSettings JSON
   - Forward depth prepass、GBuffer、stencil 标记、Deferred Lighting
 - **光照**
-  - 1 个主方向光；总 light slot 当前为 32（有方向光时 punctual 最多 31）
+  - 1 个主方向光；总 light slot 支持 32/64/128（有方向光时 punctual 最多 31/63/127）
   - CPU / texture / storage-buffer 三种 light-list 路径，buffer path 默认开启
-  - FPTL 16×16 tile、64×64 big-tile、64×64×32 cluster light list
+  - FPTL 16×16 tile、64×64 big-tile、64×64×32 cluster light list（M9：packed 16-bit + layered offset/global index）
   - GPU light-list producer/consumer；失败自动回退 CPU
-  - `lightListCapacity=32/64/128` 容量契约，默认 32；64/128 的 CPU reference 已完成，GPU shader 扩容在 M8.2
+  - `lightListCapacity=32/64/128` 容量契约，默认 64（32 为安全回退，128 为 opt-in/experimental）；buffer 路径支持 128，texture 路径受 `maxTextureSize` 限制
 - **阴影**
   - 方向光级联阴影、point/spot atlas、PCF / PCSS
   - Per-light shadow settings、shadow cache、cascade fade、normal/peter-panning bias
@@ -34,15 +34,21 @@
   - Uber color grading、bloom、TAA、DOF、motion blur、FXAA
 - **工具**
   - Debug UI、light cluster / shadow atlas / GBuffer / depth / motion vector 调试视图
-  - `--screenshot`、`--render-test`、`--gfx-test`、`--asset-test`
+  - `--screenshot`、`--render-test`、`--gfx-test`、`--asset-test`、`--cluster-stats-readback`
   - IDL 生成 uniform block，shader variant 构建脚本
 
 ## 当前状态
 
-- M0–M7 已完成并验证。
+- M0–M8 已完成并验证。
 - M8.0 / M8.1 已完成：容量设置、CLI/JSON、IDL、CPU 32/64/128 reference、动态 stride、cluster 32/cell。
-- M8.2 未开始：GPU shader 仍固定 33/32，`--light-capacity=64/128` 目前会警告并 clamp 到 32。
-- `ctest`：**207 cases / 20,170 assertions**，IDL check 通过。
+- M8.2 已完成：GPU producer 支持 32/64/128（128-slot AABB、4×32-bit mask、运行时 `lightListParams2` stride），GPU 路径的 32 容量 gate 已移除。
+- M8.3 已完成：GPU cluster 保持 32/cell，第 33 个起的候选按 cluster 记录 overflow 并打包到 count texel；`--debug-view=light-cluster` 以品红显示 overflow，绿色强度随数量增加。
+- M8.4 已完成：texture/CPU 路径按 backend `maxTextureSize` 和 16383 pitch 上限自动 128→64→32 clamp（buffer 路径保持 128），fog/contact/debug consumers 移除 32 硬编码。
+- M8.5 已完成：DebugUI 完整显示 requested/effective/stride/truncated/clamped 并提供 GPU cluster stats 按钮；`--cluster-stats-readback` 在 buffer/texture 路径读回 overflow clusters/lights、max overflow/max lights；1440p/4K 下与 CPU reference 一致。
+- M8.6 已完成：默认容量切到 **64**，32 保留安全回退，128 保持 opt-in/experimental；1080p 300 帧 full post 下 32-light 场景 capacity 32/64/128 无显著差异，64-light 场景 D3D11 **60.8–64.9 fps** / Vulkan **75.1–79.7 fps**，128-light 场景 D3D11 **40.0–43.8 fps** / Vulkan **48.2–51.3 fps**。默认 64 下 4K texture 路径保持 `capacity=64/64`、无 clamp（FPTL 宽度 15600）。
+- 64/128 在 D3D11/Vulkan 的 buffer/texture、cluster/no-cluster、forward/deferred/transparent/fog/contact 与 CPU reference 均为 **0 diff**；32-light M7 buffer/texture/CPU 基线仍为 **0 diff**；默认 64 的 64-light GPU vs CPU 在双后端 **0 diff**。
+- 1440p/4K texture 路径 clamp 后 GPU/CPU 为 **0 diff**；4K buffer 128 保持 `capacity=128/128`。
+- M8.7 已完成验收：M7 32-light 基线、64/128 的 forward/deferred/fog/contact/debug/transparent/no-cluster、buffer/texture/CPU、D3D11/Vulkan 共 **126 组 0 diff** 对比；33 同位置灯、129 候选截断、128 cluster overflow、resize 资源重建均有 CPU/GPU 读回证据。`ctest` **209 cases / 20,225 assertions** + IDL/gfx-test 双后端通过。64-light/64 forward D3D11 7 次 **58.9–66.5 fps**（median 64.1，GPU 11.67–16.14 ms），Vulkan **69.1–76.3 fps**；默认 deferred D3D11 余量较小（median 61.7），保留 32 安全回退。
 - D3D11 / Vulkan 的 32-light buffer、texture、CPU 三条路径对 M7 基线截图为 **0 diff**。
 
 详细里程碑和验证记录见 [`docs/implementation-plan.md`](docs/implementation-plan.md) 和各 `docs/mN-checklist.md`。
@@ -155,7 +161,8 @@ Deferred + 后处理示例：
 | `--render-scale=<0.1..1.0>` | 动态分辨率/RT scale |
 | `--gpu-light-list` / `--no-gpu-light-list` | GPU light list 开关 |
 | `--gpu-light-list-path=buffer\|texture` | light-list 存储路径 |
-| `--light-capacity=32\|64\|128` | 容量请求；64/128 的 GPU 路径在 M8.2 前会回退 32 |
+| `--light-capacity=32\|64\|128` | 容量请求；buffer 支持 32/64/128，texture 受 `maxTextureSize` 限制 |
+| `--light-list-feature-flags` / `--no-light-list-feature-flags` | 启用/禁用 tile category gating（默认启用；关闭仅用于 M11.3 评估） |
 | `--no-light-cluster` | 强制走 FPTL，不使用 cluster |
 | `--debug-view=<mode>` | depth / normal / motion / light-cluster / shadow atlas 等调试视图 |
 | `--contact-shadows` | 开启 contact shadows |
@@ -212,9 +219,12 @@ docs/            里程碑清单、实现计划、验证记录
 ## 已知限制
 
 - 当前只重点验证 Windows D3D11 / Vulkan；不做 D3D12 / DXR / ray tracing。
-- GPU 路径 effective light capacity 仍为 32；64/128 的 CPU reference 和容量契约已完成，GPU 扩容在 M8.2。
-- Cluster 每 cell 上限固定 32，不实现 HDRP layered offset / global atomic append。
-- 不实现 16-bit packed light index、light category、light layers、cookies/IES、area lights。
-- GPU shadow request/atlas packing、async compute 仍是后续工作。
+- GPU 路径支持 effective light capacity 32/64/128，默认 64；64 在 4K texture 路径宽度 15600，仍在 16383 pitch 上限内，因此默认容量在 4K texture/CPU 路径不 clamp；128 在 1080p texture 路径宽度 15480，1440p+ 受 bgfx `uint16_t` pitch（宽度上限 16383）和 backend `maxTextureSize` 共同限制，自动 clamp 到 64/32；buffer 路径不受纹理宽度限制。
+- Cluster 已改为 layered offset + global index 布局（M9.2），使用确定性 `clusterIndex * clusterCapacity` offset；normal capacity 128，8K/128 自动降为 64，不再有固定 32/cell overflow。`--debug-view=light-cluster` 与 `--cluster-stats-readback` 仍可用于诊断。
+- Contact shadow mask 固定 8 bit（最多 8 盏灯，含方向光），volumetric fog 的 punctual 上限仍由 fog settings 控制（默认 8），两者不随 light capacity 扩展。
+- M9 已实现 16-bit packed light index、light category/feature flags、light layers（forward uniform；deferred 复用 GBuffer alpha 通道）、spot/point cookie、spot IES（light data texel 打包，非独立 atlas）以及 128 shadow requests/4096 atlas opt-in（CPU 排序 shelf packing）。cap32/64/128 × 1080p/1440p/4K × D3D11/Vulkan × forward/deferred 的 buffer/texture/CPU 三路径已全部 0 diff，透明 light layers 已覆盖；1080p 300 帧 full post 实测 cap64 55.2 fps、cap128 29.2 fps，尚未达到 cap64 >60 fps 门禁；M9.7 仅剩性能项。
+- M10 已完成（M10.0–M10.8）：light-data 扩到 83 texel（11 base + 8×8 cookie + 8 IES），LTC GGX 表追加在 light-data texture 行；Rectangle area light 使用 LTC GGX + `PolygonIrradiance`，Tube 使用 HDRP line LTC（`I_diffuse_line` + `ComputeLineWidthFactor`），Disc 明确 unsupported；GPU category producer 已接通 Punctual/Area 双层；area/directional cookie、cookieScaleOffset/repeat、point IES 和 spot IES cutoff 已接通；tile feature flags 嵌入 FPTL/big-tile/cluster list，runtime 按 category gating，并新增 GPU flags readback（area16/64-light 均 `flags_checked=240/mismatch=0`）。M10.7 新增 rectangle-only 独立 area shadow atlas（默认 1024、512 分辨率、spot-like cone、PCSS）；area shadow 通过 stage 13 depth atlas 采样，active 时 point PCSS 回退 tent。M10.8 矩阵：area rect 在 1080/1440/4K × D3D11/Vulkan × forward/deferred × buffer/texture/CPU 共 36 组对比全部 0 diff；4K/cap128 `capacity=128/128`、FPTL 15600×288、无 clamp；area/directional cookie 与 point IES on/off 双后端可区分；M9 64-light 与 transparent64 当前 buffer/texture/CPU 均 0 diff；720p forward GPU 中位 area off 1.273 ms、1/4/16 area 1.448/1.624/2.717 ms。已知限制：跨后端 deferred area 有极少边缘像素精度差异，M9.7 full-post cap64 55.2 fps 未达 >60，官方 shader_build O3 全量极慢且尚未完成。 M10 收口后补 area Rectangle/Tube 屏空间 OBB（HDRP `HDGpuLightsBuilder.Jobs.cs`），CPU `LightListBuilder` 与 GPU `light_screen_aabb*` 同步，Point/Spot/Disc 保持 sphere fallback；area 1080 双后端 forward/deferred 0 diff，area16 cluster flags/offset 0 mismatch。
+- M11 进行中（M11.0 全量 clean O3/fixtures 与 M11.5 full O3 收口待做）：M11.0 shader build 工具 v1 已完成（超时/进度/失败报告/manifest 校验/stale 清理；510 variants 增量缓存验证 0 failed，manifest 与 binary 一致）。M11.2 cached area shadow v1 + mixed 已完成：all-static 使用独立 `shadow.cachedAreaAtlas`；mixed cached/dynamic 使用 dynamic atlas 的 static-first persistent slots，静态 request 只更新一次，动态 request 每帧绘制，all-static ↔ mixed 切换强制重建；D3D11/Vulkan × forward/deferred 1280×720 all-static 与 mixed 对 every-frame 均 **4/4 0 diff**，mixed warm 帧 `shadow_area_cache=true`、`shadow_cached_area=2`、`shadow_drawn=4`（4 area 中 2 静态）。新增 `--area-shadow-cache/--no-area-shadow-cache`、`cachedAreaShadows` 配置与 `shadow_area_cache/shadow_cached_area` diagnostics。**M11.1 sampler gate 已通过**：按 HDRP `StructuredBuffer<HDShadowData>` 思路把 stage 8 shadow context 改为 40-uint/request 的 storage buffer（`Buffer<uint>` at t8），不再创建 sampler；D3D11/Vulkan cached vs every-frame 4/4 0 diff。**M11.1b cookie atlas v1 已实现**：light data 压缩到 19 texels/light，64×128 cookie atlas 复用 light data 纹理（8×8 tile、128 capacity），texel7.z 存 tile index，texel7.w 打包 areaShape/hasIes；area/spot cookie 在 D3D11/Vulkan forward/deferred 的 buffer/texture/CPU 三路径均为 0 diff，Vulkan 对 M10 旧 area cookie 0 diff。限制为 8×8 源、无 mip/padding、无独立 `_CookieAtlas` 纹理。**M11.3 variant strategy 已完成评估并否决 4 类编译期 category variants / 29 Lit variants**：对照 HDRP `Lit.hlsl` 的 29 个 `kFeatureVariantFlags` 与 per-tile indirect dispatch，当前全屏 program + per-pixel tile flag 无法用 view-wide 变体替代；新增 `--no-light-list-feature-flags` 评估开关，area16/spot/point100 × D3D11/Vulkan × forward/deferred 12 组及 texture/CPU 8 组 gating on/off 全部 0 diff；1080p 300 帧 full post stress 中 D3D11 gating 约省 1.27 ms。**M11.4 1080p 60fps 已完成**：按 HDRP `HDShadowContext.hlsl` 的 `StructuredBuffer<HDShadowData>` 语义，把 shadow context 的 10 个 `float4` 改为一次 vector load（D3D11 `Buffer<float4>`、GLSL `vec4[]`、SPIR-V `StructuredBuffer<float4>`），不新增 sampler/SRV；`m8_lights64_perf` 1080p 300 帧 full post cap64 稳定中位数 D3D11 forward **63.7 fps**（15.70 ms，GPU 11.9 ms）、deferred **62.3 fps**，Vulkan forward **64.6 fps**、deferred **63.2 fps**；cap128 记录 37.5/40.1 fps，保持 opt-in。Vulkan forward 新旧 shader 0 diff；D3D11 no-TAA 为 146,139 px/max 7、PSNR 56.86 dB，差异集中在 shadow 边缘 1–2 ULP（vector load 的 HLSL 编译重排），M11.5 已接受该 D3D 精度例外，并发现 area shadow 需要 typed context：新增仅 D3D area 使用的 `shadow.contextArea`（StorageVertex/RGBA32F，仅 area request 时上传），area shadow 4/4 0。M11.5 核心矩阵：M10 area 36/36 0、area shadow 4/4 0、M9/transparent 路径 16/16 0、cookie 4/4 0、cached 4/4 0、mixed 4/4 0、variant 8/8 0；M9 64 D3D 对 M10 基线为 127,795 px/max11（1–2 ULP，接受）。M8.7 base32 已用同一历史命令复跑：Vulkan 0，D3D typed 19,074 px/max165；HDRP 风格 structured context 诊断构建为 0 但 GPU 成本约 2×，未作为默认。全量 clean O3、M10 fixtures/perf baseline 仍待做。
+- GPU shadow atlas packing、async compute 仍是后续工作；默认 shadow 仍为 64 requests/2048 atlas。
 - 方向光目前只支持 1 个主方向光。
 - 项目尚未添加 `LICENSE` 文件；使用或分发前请先确认授权。

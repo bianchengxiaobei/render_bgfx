@@ -3,6 +3,7 @@
 #include "asset/gltf_loader.h"
 #include "asset/texture_loader.h"
 #include "core/log.h"
+#include "render/lighting/gpu_light_data.h"
 #include "render/shadows/shadow_settings.h"
 
 #include <nlohmann/json.hpp>
@@ -12,6 +13,7 @@
 #include <cctype>
 #include <exception>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -138,6 +140,29 @@ bool readUint(const nlohmann::json& object, const char* key, uint32_t& value, st
         return false;
     }
     value = static_cast<uint32_t>(iterator->get<int>());
+    return true;
+}
+
+bool readVec2(const nlohmann::json& object, const char* key, Vec2& value, std::string* error) {
+    const auto iterator = object.find(key);
+    if (iterator == object.end()) {
+        return true;
+    }
+    if (!iterator->is_array() || iterator->size() != 2) {
+        if (error != nullptr) {
+            *error = std::string(key) + " must be an array of two numbers";
+        }
+        return false;
+    }
+    for (const auto& component : *iterator) {
+        if (!component.is_number()) {
+            if (error != nullptr) {
+                *error = std::string(key) + " must be an array of two numbers";
+            }
+            return false;
+        }
+    }
+    value = Vec2((*iterator)[0].get<float>(), (*iterator)[1].get<float>());
     return true;
 }
 
@@ -426,12 +451,52 @@ bool applyLocalFogVolume(render::RenderScene& scene, const nlohmann::json& objec
     return true;
 }
 
-bool applyLightShadow(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
-                      std::string* error) {
+bool applyLightLayer(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
+                     std::string* error) {
     if (!object.is_object()) {
         if (error != nullptr) {
             *error = "lights[" + std::to_string(index) + "] must be an object";
         }
+        return false;
+    }
+
+    render::Light* target = nullptr;
+    const auto name = object.find("name");
+    if (name != object.end()) {
+        if (!name->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) + "].name must be a string";
+            }
+            return false;
+        }
+        const std::string requested = name->get<std::string>();
+        for (render::Light& light : scene.lights) {
+            if (light.name == requested) {
+                target = &light;
+                break;
+            }
+        }
+    } else if (index < scene.lights.size()) {
+        target = &scene.lights[index];
+    }
+    if (target == nullptr) {
+        if (error != nullptr) {
+            *error = "lights[" + std::to_string(index) + "] does not reference a light";
+        }
+        return false;
+    }
+
+    uint32_t mask = target->lightLayerMask;
+    if (!readUint(object, "lightLayerMask", mask, error)) {
+        return false;
+    }
+    target->lightLayerMask = static_cast<uint16_t>(std::min<uint32_t>(mask, 0xffffu));
+    return true;
+}
+
+bool applyLightShadow(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
+                      std::string* error) {
+    if (!applyLightLayer(scene, object, index, error)) {
         return false;
     }
 
@@ -514,6 +579,481 @@ bool applyLightShadow(render::RenderScene& scene, const nlohmann::json& object, 
     return true;
 }
 
+bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
+                      std::string* error) {
+    if (!object.is_object()) {
+        if (error != nullptr) {
+            *error = "objects[" + std::to_string(index) + "] must be an object";
+        }
+        return false;
+    }
+
+    render::RenderObject* target = nullptr;
+    const auto name = object.find("name");
+    if (name != object.end()) {
+        if (!name->is_string()) {
+            if (error != nullptr) {
+                *error = "objects[" + std::to_string(index) + "].name must be a string";
+            }
+            return false;
+        }
+        const std::string requested = name->get<std::string>();
+        for (render::RenderObject& mesh : scene.objects) {
+            if (mesh.name == requested) {
+                target = &mesh;
+                break;
+            }
+        }
+    } else if (index < scene.objects.size()) {
+        target = &scene.objects[index];
+    }
+    if (target == nullptr) {
+        if (error != nullptr) {
+            *error = "objects[" + std::to_string(index) + "] does not reference a render object";
+        }
+        return false;
+    }
+
+    uint32_t mask = target->lightLayerMask;
+    if (!readUint(object, "lightLayerMask", mask, error)) {
+        return false;
+    }
+    target->lightLayerMask = static_cast<uint16_t>(std::min<uint32_t>(mask, 0xffffu));
+    return true;
+}
+render::Light* resolveLightTarget(render::RenderScene& scene, const nlohmann::json& object, std::size_t index) {
+    const auto name = object.find("name");
+    if (name != object.end()) {
+        if (!name->is_string()) {
+            return nullptr;
+        }
+        const std::string requested = name->get<std::string>();
+        for (render::Light& light : scene.lights) {
+            if (light.name == requested) {
+                return &light;
+            }
+        }
+        return nullptr;
+    }
+    return index < scene.lights.size() ? &scene.lights[index] : nullptr;
+}
+
+bool applyLightArea(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
+                    std::string* error) {
+    render::Light* target = resolveLightTarget(scene, object, index);
+    if (target == nullptr) {
+        return true;
+    }
+
+    const auto type = object.find("type");
+    if (type == object.end() || !type->is_string() || lower(type->get<std::string>()) != "area") {
+        return true;
+    }
+
+    target->type = render::LightType::Area;
+    target->castShadows = false;
+    target->areaShape = render::LightAreaShape::Rectangle;
+    const bool areaShadowRequested = object.find("shadow") != object.end();
+
+    const auto shape = object.find("shape");
+    if (shape != object.end()) {
+        if (!shape->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) + "].shape must be a string";
+            }
+            return false;
+        }
+        const std::string value = lower(shape->get<std::string>());
+        if (value == "rectangle") {
+            target->areaShape = render::LightAreaShape::Rectangle;
+        } else if (value == "tube") {
+            target->areaShape = render::LightAreaShape::Tube;
+        } else if (value == "disc") {
+            target->areaShape = render::LightAreaShape::Disc;
+        } else {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) + "].shape must be rectangle, tube or disc";
+            }
+            return false;
+        }
+    }
+
+    if (!readNumber(object, "intensity", target->intensity, error) ||
+        !readVec3(object, "color", target->color, error) ||
+        !readNumber(object, "width", target->areaWidth, error) ||
+        !readNumber(object, "height", target->areaHeight, error) ||
+        !readNumber(object, "areaShadowCone", target->areaShadowCone, error)) {
+        return false;
+    }
+    if (target->areaWidth <= 0.0f || target->areaHeight < 0.0f) {
+        HBG_LOGW("light '{}': area size must have positive width and non-negative height; using 1x1",
+                 target->name);
+        target->areaWidth = 1.0f;
+        target->areaHeight = 1.0f;
+    }
+    if (target->areaShape == render::LightAreaShape::Tube) {
+        if (target->areaHeight > 0.0f) {
+            HBG_LOGW("light '{}': tube area light ignores height and is evaluated as a line",
+                     target->name);
+        }
+        target->areaHeight = 0.0f;
+    } else if (target->areaShape == render::LightAreaShape::Disc) {
+        target->intensity = 0.0f;
+        HBG_LOGW("light '{}': disc area lights are unsupported in real-time; contribution disabled",
+                 target->name);
+    }
+    target->areaShadowCone = std::max(target->areaShadowCone, 0.0f);
+    target->castShadows = areaShadowRequested && target->areaShape == render::LightAreaShape::Rectangle;
+    if (areaShadowRequested && target->areaShape != render::LightAreaShape::Rectangle) {
+        HBG_LOGW("light '{}': area shadows are only supported for rectangle lights; shadow disabled",
+                 target->name);
+    }
+    return true;
+}
+
+float readImageLuminance(const ImageAsset& image, uint32_t x, uint32_t y) {
+    x = std::min(x, image.width - 1u);
+    y = std::min(y, image.height - 1u);
+    if (image.format == gfx::TextureFormat::RGBA32F) {
+        const float* pixels = reinterpret_cast<const float*>(image.pixels.data());
+        const std::size_t offset = (static_cast<std::size_t>(y) * image.width + x) * 4u;
+        return 0.2126f * pixels[offset] + 0.7152f * pixels[offset + 1] + 0.0722f * pixels[offset + 2];
+    }
+    const std::size_t offset = (static_cast<std::size_t>(y) * image.width + x) * 4u;
+    return (0.2126f * image.pixels[offset] + 0.7152f * image.pixels[offset + 1] +
+            0.0722f * image.pixels[offset + 2]) /
+           255.0f;
+}
+
+Vec3 octahedralDecodeDirection(Vec2 encoded) {
+    Vec2 f(encoded.x * 2.0f - 1.0f, encoded.y * 2.0f - 1.0f);
+    Vec3 n(f.x, f.y, 1.0f - std::abs(f.x) - std::abs(f.y));
+    if (n.z < 0.0f) {
+        n.x = (1.0f - std::abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f);
+        n.y = (1.0f - std::abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f);
+    }
+    return normalize(n);
+}
+
+Vec2 octahedralDecode(Vec2 encoded) {
+    Vec2 f(encoded.x * 2.0f - 1.0f, encoded.y * 2.0f - 1.0f);
+    Vec3 n(f.x, f.y, 1.0f - std::abs(f.x) - std::abs(f.y));
+    if (n.z < 0.0f) {
+        n.x = (1.0f - std::abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f);
+        n.y = (1.0f - std::abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f);
+    }
+    n = normalize(n);
+    return Vec2(atan2(n.x, n.z) * (0.5f / 3.14159265359f) + 0.5f,
+                acos(std::clamp(n.y, -1.0f, 1.0f)) / 3.14159265359f);
+}
+
+bool loadCookieSamples(render::Light& light, const std::filesystem::path& path, std::string* error) {
+    ImageAsset image;
+    if (!TextureLoader::loadFromFile(path, image, error)) {
+        return false;
+    }
+    const uint32_t size = render::kLightCookieSize;
+    for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) {
+            const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(size),
+                          (static_cast<float>(y) + 0.5f) / static_cast<float>(size));
+            Vec2 sourceUV = uv;
+            if (light.cookieType == render::LightCookieType::PointOctahedral) {
+                sourceUV = octahedralDecode(uv);
+            }
+            const uint32_t sourceX =
+                static_cast<uint32_t>(std::clamp(sourceUV.x, 0.0f, 1.0f) * static_cast<float>(image.width - 1));
+            const uint32_t sourceY =
+                static_cast<uint32_t>(std::clamp(sourceUV.y, 0.0f, 1.0f) * static_cast<float>(image.height - 1));
+            light.cookieSamples[y * size + x] = std::clamp(readImageLuminance(image, sourceX, sourceY), 0.0f, 1.0f);
+        }
+    }
+    return true;
+}
+
+struct IesProfile {
+    std::vector<float> verticalAngles;
+    std::vector<float> horizontalAngles;
+    std::vector<float> values;
+    uint32_t verticalCount = 0;
+    uint32_t horizontalCount = 0;
+};
+
+bool loadIesProfile(const std::filesystem::path& path, IesProfile& profile, std::string* error) {
+    std::ifstream file(path);
+    if (!file.good()) {
+        if (error != nullptr) {
+            *error = "failed to open IES profile: " + path.string();
+        }
+        return false;
+    }
+    bool foundTilt = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        const std::string normalized = lower(line);
+        if (normalized.find("tilt=") == std::string::npos) {
+            continue;
+        }
+        if (normalized.find("tilt=none") == std::string::npos) {
+            if (error != nullptr) {
+                *error = "IES profile must use TILT=NONE: " + path.string();
+            }
+            return false;
+        }
+        foundTilt = true;
+        break;
+    }
+    if (!foundTilt) {
+        if (error != nullptr) {
+            *error = "IES profile is missing TILT: " + path.string();
+        }
+        return false;
+    }
+
+    uint32_t lampCount = 0;
+    uint32_t verticalCount = 0;
+    uint32_t horizontalCount = 0;
+    float lumens = 0.0f;
+    float multiplier = 0.0f;
+    int photometricType = 0;
+    int unitsType = 0;
+    float width = 0.0f;
+    float length = 0.0f;
+    float height = 0.0f;
+    if (!(file >> lampCount >> lumens >> multiplier >> verticalCount >> horizontalCount >> photometricType >>
+          unitsType >> width >> length >> height)) {
+        if (error != nullptr) {
+            *error = "invalid IES header: " + path.string();
+        }
+        return false;
+    }
+    if (verticalCount < 2 || verticalCount > 512 || horizontalCount < 1 || horizontalCount > 512) {
+        if (error != nullptr) {
+            *error = "unsupported IES angle count: " + path.string();
+        }
+        return false;
+    }
+
+    profile.verticalCount = verticalCount;
+    profile.horizontalCount = horizontalCount;
+    profile.verticalAngles.assign(verticalCount, 0.0f);
+    profile.horizontalAngles.assign(horizontalCount, 0.0f);
+    for (float& angle : profile.verticalAngles) {
+        file >> angle;
+    }
+    for (float& angle : profile.horizontalAngles) {
+        file >> angle;
+    }
+    profile.values.assign(static_cast<std::size_t>(verticalCount) * horizontalCount, 0.0f);
+    for (float& value : profile.values) {
+        file >> value;
+    }
+    if (!file.good()) {
+        if (error != nullptr) {
+            *error = "truncated IES profile: " + path.string();
+        }
+        return false;
+    }
+    return true;
+}
+
+float sampleIesProfile(const IesProfile& profile, float verticalDegrees, float horizontalDegrees) {
+    uint32_t verticalUpper = 0;
+    while (verticalUpper + 1 < profile.verticalCount &&
+           profile.verticalAngles[verticalUpper + 1] < verticalDegrees) {
+        ++verticalUpper;
+    }
+    const uint32_t verticalLower = verticalUpper;
+    const uint32_t verticalNext = std::min(verticalUpper + 1, profile.verticalCount - 1);
+    const float verticalSpan = profile.verticalAngles[verticalNext] - profile.verticalAngles[verticalLower];
+    const float verticalT = verticalSpan > 1.0e-5f
+                                ? std::clamp((verticalDegrees - profile.verticalAngles[verticalLower]) /
+                                                 verticalSpan,
+                                             0.0f, 1.0f)
+                                : 0.0f;
+
+    float horizontalDegreesWrapped = horizontalDegrees;
+    while (horizontalDegreesWrapped < 0.0f) {
+        horizontalDegreesWrapped += 360.0f;
+    }
+    while (horizontalDegreesWrapped >= 360.0f) {
+        horizontalDegreesWrapped -= 360.0f;
+    }
+
+    uint32_t horizontalUpper = profile.horizontalCount - 1;
+    uint32_t horizontalNext = 0;
+    float horizontalT = 0.0f;
+    if (profile.horizontalCount > 1) {
+        horizontalUpper = 0;
+        while (horizontalUpper + 1 < profile.horizontalCount &&
+               profile.horizontalAngles[horizontalUpper + 1] <= horizontalDegreesWrapped) {
+            ++horizontalUpper;
+        }
+        horizontalNext = (horizontalUpper + 1) % profile.horizontalCount;
+        const float lowerAngle = profile.horizontalAngles[horizontalUpper];
+        const float upperAngle = profile.horizontalAngles[horizontalNext] +
+                                 (horizontalNext == 0 ? 360.0f : 0.0f);
+        const float span = upperAngle - lowerAngle;
+        horizontalT = span > 1.0e-5f
+                          ? std::clamp((horizontalDegreesWrapped - lowerAngle) / span, 0.0f, 1.0f)
+                          : 0.0f;
+    }
+
+    const auto valueAt = [&profile](uint32_t vertical, uint32_t horizontal) {
+        return profile.values[static_cast<std::size_t>(vertical) * profile.horizontalCount + horizontal];
+    };
+    const float low = valueAt(verticalLower, horizontalUpper) * (1.0f - horizontalT) +
+                      valueAt(verticalLower, horizontalNext) * horizontalT;
+    const float high = valueAt(verticalNext, horizontalUpper) * (1.0f - horizontalT) +
+                       valueAt(verticalNext, horizontalNext) * horizontalT;
+    return low + (high - low) * verticalT;
+}
+
+bool loadIesSamples(render::Light& light, const std::filesystem::path& path, std::string* error) {
+    IesProfile profile;
+    if (!loadIesProfile(path, profile, error)) {
+        return false;
+    }
+
+    std::vector<float> slice(profile.verticalCount);
+    float maximum = 0.0f;
+    for (uint32_t index = 0; index < profile.verticalCount; ++index) {
+        slice[index] = profile.values[static_cast<std::size_t>(index) * profile.horizontalCount];
+        maximum = std::max(maximum, slice[index]);
+    }
+    if (maximum <= 0.0f) {
+        if (error != nullptr) {
+            *error = "IES profile has no positive candela values: " + path.string();
+        }
+        return false;
+    }
+
+    for (uint32_t sample = 0; sample < render::kLightIesSampleCount; ++sample) {
+        const float angle = 90.0f * static_cast<float>(sample) / static_cast<float>(render::kLightIesSampleCount - 1);
+        uint32_t upper = 0;
+        while (upper + 1 < profile.verticalCount && profile.verticalAngles[upper + 1] < angle) {
+            ++upper;
+        }
+        const uint32_t lower = upper;
+        const uint32_t next = std::min(upper + 1, profile.verticalCount - 1);
+        const float span = profile.verticalAngles[next] - profile.verticalAngles[lower];
+        const float t = span > 1.0e-5f ? std::clamp((angle - profile.verticalAngles[lower]) / span, 0.0f, 1.0f)
+                                       : 0.0f;
+        light.iesSamples[sample] =
+            std::clamp((slice[lower] + (slice[next] - slice[lower]) * t) / maximum, 0.0f, 1.0f);
+    }
+    uint32_t lastVisible = 0;
+    for (uint32_t sample = 0; sample < render::kLightIesSampleCount; ++sample) {
+        if (light.iesSamples[sample] > 0.001f) {
+            lastVisible = sample;
+        }
+    }
+    const float cutoffAngle =
+        90.0f * static_cast<float>(lastVisible) / static_cast<float>(render::kLightIesSampleCount - 1);
+    light.iesCut = std::cos(cutoffAngle * 3.14159265358979323846f / 180.0f);
+    light.hasIes = true;
+    return true;
+}
+
+bool loadIesPointSamples(render::Light& light, const std::filesystem::path& path, std::string* error) {
+    IesProfile profile;
+    if (!loadIesProfile(path, profile, error)) {
+        return false;
+    }
+    float maximum = 0.0f;
+    for (float value : profile.values) {
+        maximum = std::max(maximum, value);
+    }
+    if (maximum <= 0.0f) {
+        if (error != nullptr) {
+            *error = "IES profile has no positive candela values: " + path.string();
+        }
+        return false;
+    }
+
+    const uint32_t size = render::kLightCookieSize;
+    for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) {
+            const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(size),
+                          (static_cast<float>(y) + 0.5f) / static_cast<float>(size));
+            const Vec3 direction = octahedralDecodeDirection(uv);
+            const float vertical = std::acos(std::clamp(direction.y, -1.0f, 1.0f)) * 57.2957795131f;
+            float horizontal = std::atan2(direction.x, direction.z) * 57.2957795131f;
+            if (horizontal < 0.0f) {
+                horizontal += 360.0f;
+            }
+            const float sample = std::clamp(sampleIesProfile(profile, vertical, horizontal) / maximum, 0.0f, 1.0f);
+            light.cookieSamples[y * size + x] *= sample;
+        }
+    }
+    light.hasIes = true;
+    return true;
+}
+
+void applyLightCookie(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
+                      const std::filesystem::path& baseDirectory) {
+    render::Light* target = resolveLightTarget(scene, object, index);
+    if (target == nullptr) {
+        return;
+    }
+
+    if (!readVec2(object, "cookieScale", target->cookieScale, nullptr) ||
+        !readVec2(object, "cookieOffset", target->cookieOffset, nullptr)) {
+        HBG_LOGW("light '{}': invalid cookie scale/offset; using identity", target->name);
+        target->cookieScale = Vec2(1.0f, 1.0f);
+        target->cookieOffset = Vec2(0.0f, 0.0f);
+    }
+
+    const auto cookie = object.find("cookie");
+    if (cookie != object.end() && cookie->is_string() && !cookie->get<std::string>().empty()) {
+        const bool point = target->type == render::LightType::Point;
+        target->cookieType = point ? render::LightCookieType::PointOctahedral
+                                   : render::LightCookieType::Spot2D;
+        target->cookieMode = render::LightCookieMode::Clamp;
+        const auto mode = object.find("cookieMode");
+        if (mode != object.end() && mode->is_string()) {
+            const std::string value = lower(mode->get<std::string>());
+            if (value == "none") {
+                target->cookieMode = render::LightCookieMode::None;
+            } else if (value == "clamp") {
+                target->cookieMode = render::LightCookieMode::Clamp;
+            } else if (value == "repeat") {
+                target->cookieMode = render::LightCookieMode::Repeat;
+            } else {
+                HBG_LOGW("light '{}': unknown cookieMode '{}'; using clamp", target->name, value);
+            }
+        }
+        std::string cookieError;
+        if (!loadCookieSamples(*target, baseDirectory / cookie->get<std::string>(), &cookieError)) {
+            HBG_LOGW("light '{}': {}; cookie disabled", target->name, cookieError);
+            target->cookieMode = render::LightCookieMode::None;
+            target->cookieType = render::LightCookieType::None;
+        }
+    }
+
+    const auto ies = object.find("ies");
+    if (ies != object.end() && ies->is_string() && !ies->get<std::string>().empty()) {
+        std::string iesError;
+        if (target->type == render::LightType::Point) {
+            const bool hadCookie = target->cookieType == render::LightCookieType::PointOctahedral;
+            if (!hadCookie) {
+                target->cookieMode = render::LightCookieMode::Clamp;
+                target->cookieType = render::LightCookieType::PointOctahedral;
+                target->cookieSamples.fill(1.0f);
+            }
+            if (!loadIesPointSamples(*target, baseDirectory / ies->get<std::string>(), &iesError)) {
+                HBG_LOGW("light '{}': {}; IES disabled", target->name, iesError);
+                if (!hadCookie) {
+                    target->cookieMode = render::LightCookieMode::None;
+                    target->cookieType = render::LightCookieType::None;
+                    target->cookieSamples.fill(0.0f);
+                }
+            }
+        } else if (!loadIesSamples(*target, baseDirectory / ies->get<std::string>(), &iesError)) {
+            HBG_LOGW("light '{}': {}; IES disabled", target->name, iesError);
+        }
+    }
+}
 bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidecar,
                   const std::filesystem::path& baseDirectory, std::string* error) {
     std::ifstream file(sidecar);
@@ -579,12 +1119,15 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
         }
         std::size_t index = 0;
         for (const auto& light : *lights) {
-            if (!applyLightShadow(scene, light, index, error)) {
+            if (!applyLightArea(scene, light, index, error) ||
+                !applyLightShadow(scene, light, index, error)) {
                 return false;
             }
+            applyLightCookie(scene, light, index, baseDirectory);
             ++index;
         }
     }
+
 
     const auto decals = root.find("decals");
     if (decals != root.end()) {
@@ -631,6 +1174,23 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
         std::size_t index = 0;
         for (const auto& volume : *localFogVolumes) {
             if (!applyLocalFogVolume(scene, volume, baseDirectory, index, error)) {
+                return false;
+            }
+            ++index;
+        }
+    }
+
+    const auto objects = root.find("objects");
+    if (objects != root.end()) {
+        if (!objects->is_array()) {
+            if (error != nullptr) {
+                *error = "objects must be an array";
+            }
+            return false;
+        }
+        std::size_t index = 0;
+        for (const auto& object : *objects) {
+            if (!applyObjectLayer(scene, object, index, error)) {
                 return false;
             }
             ++index;

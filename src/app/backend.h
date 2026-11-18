@@ -65,6 +65,7 @@ struct ShadowOverrides {
     std::optional<float> shadowDimmer;
     std::optional<float> shadowFadeDistance;
     std::optional<Vec3> shadowTint;
+    std::optional<bool> cachedDirectionalShadows;
     std::optional<bool> cachedPunctualShadows;
     std::optional<bool> cachedAreaShadows;
 };
@@ -133,14 +134,19 @@ struct AppOptions {
     std::optional<bool> gpuLightListBuffers;
     std::optional<bool> gpuLightListIndirect;
     std::optional<bool> lightListFeatureFlags;
+    std::optional<bool> cookieAtlas;
+    std::optional<uint32_t> cookieAtlasSize;
     std::optional<uint32_t> lightListCapacity;
     std::optional<bool> lightLayers;
     std::optional<bool> gpuShadowCulling;
     std::optional<bool> gpuShadowIndirect;
     std::optional<bool> asyncGpuLightList;
     std::optional<bool> ssao;
+    std::optional<bool> ssaoTemporal;
     std::optional<bool> ssr;
+    std::optional<bool> ssrTemporal;
     std::optional<bool> ssgi;
+    std::optional<bool> ssgiTemporal;
     std::optional<bool> decals;
     std::optional<bool> reflectionProbes;
     float renderScale = 1.0f;

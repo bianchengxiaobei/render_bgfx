@@ -72,6 +72,7 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
         "shadowDimmer": 0.65,
         "shadowFadeDistance": 55.0,
         "shadowTint": [0.2, 0.3, 0.4],
+        "cachedDirectionalShadows": true,
         "cachedPunctualShadows": true,
         "cachedAreaShadows": true
     })";
@@ -100,6 +101,7 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
     CHECK(settings.minFilterSize == doctest::Approx(0.05f));
     CHECK(settings.microShadows);
     CHECK(settings.microShadowOpacity == doctest::Approx(0.6f));
+    CHECK(settings.cachedDirectionalShadows);
     CHECK(settings.cachedPunctualShadows);
     CHECK(settings.cachedAreaShadows);
     CHECK(settings.shadowDimmer == doctest::Approx(0.65f));
@@ -185,6 +187,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.shadowDimmer = 0.55f;
     source.shadowFadeDistance = 75.0f;
     source.shadowTint = Vec3(0.11f, 0.22f, 0.33f);
+    source.cachedDirectionalShadows = true;
     source.cachedPunctualShadows = true;
     source.cachedAreaShadows = true;
 
@@ -214,6 +217,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     CHECK(parsed.shadowDimmer == doctest::Approx(source.shadowDimmer));
     CHECK(parsed.shadowFadeDistance == doctest::Approx(source.shadowFadeDistance));
     CHECK(parsed.shadowTint == source.shadowTint);
+    CHECK(parsed.cachedDirectionalShadows);
     CHECK(parsed.cachedPunctualShadows);
     CHECK(parsed.cachedAreaShadows);
 }

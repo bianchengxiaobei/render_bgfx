@@ -45,8 +45,12 @@ static_assert(offsetof(PassUniforms, lightCounts) == 208);
 static_assert(offsetof(PassUniforms, lightListParams) == 224);
 static_assert(offsetof(PassUniforms, lightListParams2) == 240);
 static_assert(offsetof(PassUniforms, lightScreenSize) == 256);
-static_assert(sizeof(PassUniforms) == 272);
-static_assert(sizeof(MaterialUniforms) == 48);
+static_assert(offsetof(PassUniforms, cookieAtlasParams) == 272);
+static_assert(sizeof(PassUniforms) == 288);
+static_assert(offsetof(MaterialUniforms, advanced0) == 48);
+static_assert(offsetof(MaterialUniforms, advanced1) == 64);
+static_assert(offsetof(MaterialUniforms, advanced2) == 80);
+static_assert(sizeof(MaterialUniforms) == 96);
 static_assert(std::is_standard_layout_v<ObjectUniforms>);
 static_assert(offsetof(ObjectUniforms, prevModel) == 0);
 static_assert(offsetof(ObjectUniforms, lightLayerMask) == 64);
@@ -97,18 +101,27 @@ static_assert(sizeof(DebugUniforms) == 32);
 static_assert(std::is_standard_layout_v<SsaoUniforms>);
 static_assert(offsetof(SsaoUniforms, params) == 0);
 static_assert(offsetof(SsaoUniforms, params2) == 16);
-static_assert(sizeof(SsaoUniforms) == 32);
+static_assert(offsetof(SsaoUniforms, params3) == 32);
+static_assert(sizeof(SsaoUniforms) == 48);
 static_assert(std::is_standard_layout_v<SsrUniforms>);
 static_assert(offsetof(SsrUniforms, params) == 0);
 static_assert(offsetof(SsrUniforms, params2) == 16);
-static_assert(sizeof(SsrUniforms) == 32);
+static_assert(offsetof(SsrUniforms, params3) == 32);
+static_assert(sizeof(SsrUniforms) == 48);
+static_assert(std::is_standard_layout_v<SsgiUniforms>);
+static_assert(offsetof(SsgiUniforms, params) == 0);
+static_assert(offsetof(SsgiUniforms, params2) == 16);
+static_assert(offsetof(SsgiUniforms, params3) == 32);
+static_assert(offsetof(SsgiUniforms, params4) == 48);
+static_assert(sizeof(SsgiUniforms) == 64);
 static_assert(std::is_standard_layout_v<DecalUniforms>);
 static_assert(offsetof(DecalUniforms, worldToDecal) == 0);
 static_assert(offsetof(DecalUniforms, decalToWorld) == 64);
 static_assert(offsetof(DecalUniforms, params) == 128);
 static_assert(offsetof(DecalUniforms, params2) == 144);
-static_assert(offsetof(DecalUniforms, baseColor) == 160);
-static_assert(sizeof(DecalUniforms) == 176);
+static_assert(offsetof(DecalUniforms, params3) == 160);
+static_assert(offsetof(DecalUniforms, baseColor) == 176);
+static_assert(sizeof(DecalUniforms) == 192);
 static_assert(std::is_standard_layout_v<ProbeUniforms>);
 static_assert(offsetof(ProbeUniforms, worldToProbe0) == 0);
 static_assert(offsetof(ProbeUniforms, worldToProbe1) == 64);
@@ -151,7 +164,7 @@ TEST_CASE("generated global uniform descriptors match the IDL") {
 
 TEST_CASE("generated pass and material descriptors match the IDL") {
     const auto& pass = PassUniformBinder::kDescriptors;
-    REQUIRE(pass.size() == 11);
+    REQUIRE(pass.size() == 12);
     CHECK(pass[0].name == "u_pass_shadowMatrix");
     CHECK(pass[0].type == UniformType::Mat4);
     CHECK(pass[1].name == "u_pass_shadowViewProj");
@@ -169,6 +182,8 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(pass[9].name == "u_pass_lightListParams2");
     CHECK(pass[9].type == UniformType::Vec4);
     CHECK(pass[10].name == "u_pass_lightScreenSize");
+    CHECK(pass[11].name == "u_pass_cookieAtlasParams");
+    CHECK(pass[11].type == UniformType::Vec4);
 
     const auto& cluster = ClusterUniformBinder::kDescriptors;
     REQUIRE(cluster.size() == 6);
@@ -186,10 +201,13 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(cluster[5].type == UniformType::Vec4);
 
     const auto& material = MaterialUniformBinder::kDescriptors;
-    REQUIRE(material.size() == 3);
+    REQUIRE(material.size() == 6);
     CHECK(material[0].name == "u_material_baseColorFactor");
     CHECK(material[1].name == "u_material_metallicRoughness");
     CHECK(material[2].name == "u_material_emissiveFactor");
+    CHECK(material[3].name == "u_material_advanced0");
+    CHECK(material[4].name == "u_material_advanced1");
+    CHECK(material[5].name == "u_material_advanced2");
 
     const auto& object = ObjectUniformBinder::kDescriptors;
     REQUIRE(object.size() == 2);
@@ -260,30 +278,36 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(debug[1].type == UniformType::Vec4);
 
     const auto& ssao = SsaoUniformBinder::kDescriptors;
-    REQUIRE(ssao.size() == 2);
+    REQUIRE(ssao.size() == 3);
     CHECK(ssao[0].name == "u_ssao_params");
     CHECK(ssao[0].type == UniformType::Vec4);
     CHECK(ssao[1].name == "u_ssao_params2");
     CHECK(ssao[1].type == UniformType::Vec4);
+    CHECK(ssao[2].name == "u_ssao_params3");
+    CHECK(ssao[2].type == UniformType::Vec4);
 
     const auto& ssr = SsrUniformBinder::kDescriptors;
-    REQUIRE(ssr.size() == 2);
+    REQUIRE(ssr.size() == 3);
     CHECK(ssr[0].name == "u_ssr_params");
     CHECK(ssr[0].type == UniformType::Vec4);
     CHECK(ssr[1].name == "u_ssr_params2");
     CHECK(ssr[1].type == UniformType::Vec4);
+    CHECK(ssr[2].name == "u_ssr_params3");
+    CHECK(ssr[2].type == UniformType::Vec4);
 
     const auto& ssgi = SsgiUniformBinder::kDescriptors;
-    REQUIRE(ssgi.size() == 3);
+    REQUIRE(ssgi.size() == 4);
     CHECK(ssgi[0].name == "u_ssgi_params");
     CHECK(ssgi[0].type == UniformType::Vec4);
     CHECK(ssgi[1].name == "u_ssgi_params2");
     CHECK(ssgi[1].type == UniformType::Vec4);
     CHECK(ssgi[2].name == "u_ssgi_params3");
     CHECK(ssgi[2].type == UniformType::Vec4);
+    CHECK(ssgi[3].name == "u_ssgi_params4");
+    CHECK(ssgi[3].type == UniformType::Vec4);
 
     const auto& decal = DecalUniformBinder::kDescriptors;
-    REQUIRE(decal.size() == 5);
+    REQUIRE(decal.size() == 6);
     CHECK(decal[0].name == "u_decal_worldToDecal");
     CHECK(decal[0].type == UniformType::Mat4);
     CHECK(decal[1].name == "u_decal_decalToWorld");
@@ -292,8 +316,10 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(decal[2].type == UniformType::Vec4);
     CHECK(decal[3].name == "u_decal_params2");
     CHECK(decal[3].type == UniformType::Vec4);
-    CHECK(decal[4].name == "u_decal_baseColor");
+    CHECK(decal[4].name == "u_decal_params3");
     CHECK(decal[4].type == UniformType::Vec4);
+    CHECK(decal[5].name == "u_decal_baseColor");
+    CHECK(decal[5].type == UniformType::Vec4);
 
     const auto& probe = ProbeUniformBinder::kDescriptors;
     REQUIRE(probe.size() == 7);
@@ -343,6 +369,7 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_cluster_lightCounts;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_cluster_screenSize;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_material_baseColorFactor;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_material_advanced0;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_object_prevModel;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_environment_skyParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_environment_shCr;") != std::string::npos);
@@ -361,10 +388,12 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_ssgi_params;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_ssgi_params2;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_ssgi_params3;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_ssgi_params4;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_decal_worldToDecal;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_decal_decalToWorld;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_decal_params;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_decal_params2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_decal_params3;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_decal_baseColor;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_probe_worldToProbe0;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_probe_worldToProbe1;") != std::string::npos);

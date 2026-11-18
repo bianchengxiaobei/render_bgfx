@@ -1,4 +1,5 @@
 block Ssao {
     vec4 params;             # radius, intensity, bias, thickness
     vec4 params2;            # falloff, step count, half resolution, enabled
+    vec4 params3;            # history valid, feedback, max motion pixels, unused
 }

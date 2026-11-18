@@ -45,7 +45,9 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK_FALSE(result.options.litShaderMode.has_value());
     CHECK_FALSE(result.options.ssao.has_value());
     CHECK_FALSE(result.options.ssr.has_value());
+    CHECK_FALSE(result.options.ssrTemporal.has_value());
     CHECK_FALSE(result.options.ssgi.has_value());
+    CHECK_FALSE(result.options.ssgiTemporal.has_value());
     CHECK_FALSE(result.options.decals.has_value());
     CHECK_FALSE(result.options.reflectionProbes.has_value());
     CHECK(result.options.assetTestPath.empty());
@@ -71,8 +73,8 @@ TEST_CASE("parseCommandLine parses options") {
         "hbg",          "--backend=Vulkan",     "--width=1920",        "--height=1080",      "--no-vsync",
         "--verbose",    "--bgfx-debug",         "--gfx-test",          "--scene=a.gltf",     "--render-test=b.gltf",
         "--frames=7",   "--screenshot=out.png", "--render-scale=0.5",  "--debug-light-data", "--debug-wireframe",
-        "--no-shadows", "--sky=sky.hdr",        "--sky-intensity=2.5", "--sky-rotation=45"};
-    const CommandLineResult result = parseCommandLine(19, argv);
+        "--no-shadows", "--sky=sky.hdr",        "--sky-intensity=2.5", "--sky-rotation=45", "--ssao-temporal"};
+    const CommandLineResult result = parseCommandLine(20, argv);
 
     CHECK(result.ok);
     CHECK_FALSE(result.help);
@@ -96,6 +98,8 @@ TEST_CASE("parseCommandLine parses options") {
     CHECK(result.options.skyPath == "sky.hdr");
     CHECK(result.options.skyIntensity == doctest::Approx(2.5f));
     CHECK(result.options.skyRotation == doctest::Approx(45.0f));
+    CHECK(result.options.ssaoTemporal.has_value());
+    CHECK(*result.options.ssaoTemporal);
 }
 
 TEST_CASE("parseCommandLine parses contact shadow settings") {
@@ -245,10 +249,12 @@ TEST_CASE("parseCommandLine parses shadow settings") {
 }
 
 TEST_CASE("parseCommandLine parses per-light shadow defaults and cache") {
-    const char* argv[] = {"hbg", "--shadow-cache", "--area-shadow-cache", "--shadow-dimmer=0.5",
+    const char* argv[] = {"hbg", "--directional-shadow-cache", "--shadow-cache", "--area-shadow-cache", "--shadow-dimmer=0.5",
                           "--shadow-fade-distance=50", "--shadow-tint=0.1,0.2,0.3"};
-    const CommandLineResult result = parseCommandLine(6, argv);
+    const CommandLineResult result = parseCommandLine(7, argv);
     REQUIRE(result.ok);
+    REQUIRE(result.options.shadowOverrides.cachedDirectionalShadows.has_value());
+    CHECK(*result.options.shadowOverrides.cachedDirectionalShadows);
     REQUIRE(result.options.shadowOverrides.cachedPunctualShadows.has_value());
     CHECK(*result.options.shadowOverrides.cachedPunctualShadows);
     REQUIRE(result.options.shadowOverrides.cachedAreaShadows.has_value());
@@ -263,16 +269,19 @@ TEST_CASE("parseCommandLine parses per-light shadow defaults and cache") {
     render::ShadowSettings settings;
     applyShadowOverrides(result.options.shadowOverrides, settings);
     render::sanitizeShadowSettings(settings);
+    CHECK(settings.cachedDirectionalShadows);
     CHECK(settings.cachedPunctualShadows);
     CHECK(settings.cachedAreaShadows);
     CHECK(settings.shadowDimmer == doctest::Approx(0.5f));
     CHECK(settings.shadowFadeDistance == doctest::Approx(50.0f));
     CHECK(settings.shadowTint == Vec3(0.1f, 0.2f, 0.3f));
 
-    const char* disabled[] = {"hbg", "--shadow-cache", "--no-shadow-cache", "--area-shadow-cache",
+    const char* disabled[] = {"hbg", "--directional-shadow-cache", "--no-directional-shadow-cache", "--shadow-cache", "--no-shadow-cache", "--area-shadow-cache",
                               "--no-area-shadow-cache"};
-    const CommandLineResult disabledResult = parseCommandLine(5, disabled);
+    const CommandLineResult disabledResult = parseCommandLine(7, disabled);
     REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.shadowOverrides.cachedDirectionalShadows.has_value());
+    CHECK_FALSE(*disabledResult.options.shadowOverrides.cachedDirectionalShadows);
     REQUIRE(disabledResult.options.shadowOverrides.cachedPunctualShadows.has_value());
     CHECK_FALSE(*disabledResult.options.shadowOverrides.cachedPunctualShadows);
     REQUIRE(disabledResult.options.shadowOverrides.cachedAreaShadows.has_value());
@@ -377,6 +386,30 @@ TEST_CASE("parseCommandLine parses M1.10 debug views") {
     CHECK(*parse("--debug-view=ssgi").options.ssgi);
     CHECK(parse("--debug-view=global-illumination").options.debugDisplayMode ==
           render::DebugDisplayMode::SSGI);
+    CHECK(parse("--debug-view=ssao-raw").options.debugDisplayMode == render::DebugDisplayMode::SSAORaw);
+    REQUIRE(parse("--debug-view=ssao-raw").options.ssao.has_value());
+    CHECK(*parse("--debug-view=ssao-raw").options.ssao);
+    CHECK(parse("--debug-view=ssao-history").options.debugDisplayMode ==
+          render::DebugDisplayMode::SSAOHistory);
+    REQUIRE(parse("--debug-view=ssao-history").options.ssaoTemporal.has_value());
+    CHECK(*parse("--debug-view=ssao-history").options.ssaoTemporal);
+    CHECK(parse("--debug-view=ssr-raw").options.debugDisplayMode == render::DebugDisplayMode::SSRRaw);
+    REQUIRE(parse("--debug-view=ssr-raw").options.ssr.has_value());
+    CHECK(*parse("--debug-view=ssr-raw").options.ssr);
+    CHECK(parse("--debug-view=ssr-history").options.debugDisplayMode ==
+          render::DebugDisplayMode::SSRHistory);
+    REQUIRE(parse("--debug-view=ssr-history").options.ssrTemporal.has_value());
+    CHECK(*parse("--debug-view=ssr-history").options.ssrTemporal);
+    CHECK(parse("--debug-view=ssgi-raw").options.debugDisplayMode == render::DebugDisplayMode::SSGIRaw);
+    REQUIRE(parse("--debug-view=ssgi-raw").options.ssgi.has_value());
+    CHECK(*parse("--debug-view=ssgi-raw").options.ssgi);
+    CHECK(parse("--debug-view=ssgi-history").options.debugDisplayMode ==
+          render::DebugDisplayMode::SSGIHistory);
+    REQUIRE(parse("--debug-view=ssgi-history").options.ssgiTemporal.has_value());
+    CHECK(*parse("--debug-view=ssgi-history").options.ssgiTemporal);
+    CHECK(parse("--debug-view=ssao-denoised").options.debugDisplayMode == render::DebugDisplayMode::SSAO);
+    CHECK(parse("--debug-view=ssr-denoised").options.debugDisplayMode == render::DebugDisplayMode::SSR);
+    CHECK(parse("--debug-view=ssgi-denoised").options.debugDisplayMode == render::DebugDisplayMode::SSGI);
     CHECK(parse("--debug-view=decals").options.debugDisplayMode == render::DebugDisplayMode::Decals);
     REQUIRE(parse("--debug-view=decals").options.decals.has_value());
     CHECK(*parse("--debug-view=decals").options.decals);
@@ -543,6 +576,23 @@ TEST_CASE("parseCommandLine parses SSR switches") {
     }
 }
 
+TEST_CASE("parseCommandLine parses SSR temporal switches") {
+    {
+        const char* argv[] = {"hbg", "--ssr-temporal"};
+        const CommandLineResult result = parseCommandLine(2, argv);
+        REQUIRE(result.ok);
+        REQUIRE(result.options.ssrTemporal.has_value());
+        CHECK(*result.options.ssrTemporal);
+    }
+    {
+        const char* argv[] = {"hbg", "--no-ssr-temporal"};
+        const CommandLineResult result = parseCommandLine(2, argv);
+        REQUIRE(result.ok);
+        REQUIRE(result.options.ssrTemporal.has_value());
+        CHECK_FALSE(*result.options.ssrTemporal);
+    }
+}
+
 TEST_CASE("parseCommandLine parses SSGI switches") {
     {
         const char* argv[] = {"hbg", "--ssgi"};
@@ -557,6 +607,20 @@ TEST_CASE("parseCommandLine parses SSGI switches") {
         REQUIRE(result.ok);
         REQUIRE(result.options.ssgi.has_value());
         CHECK_FALSE(*result.options.ssgi);
+    }
+    {
+        const char* argv[] = {"hbg", "--ssgi-temporal"};
+        const CommandLineResult result = parseCommandLine(2, argv);
+        REQUIRE(result.ok);
+        REQUIRE(result.options.ssgiTemporal.has_value());
+        CHECK(*result.options.ssgiTemporal);
+    }
+    {
+        const char* argv[] = {"hbg", "--no-ssgi-temporal"};
+        const CommandLineResult result = parseCommandLine(2, argv);
+        REQUIRE(result.ok);
+        REQUIRE(result.options.ssgiTemporal.has_value());
+        CHECK_FALSE(*result.options.ssgiTemporal);
     }
 }
 

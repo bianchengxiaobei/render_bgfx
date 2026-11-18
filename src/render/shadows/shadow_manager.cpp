@@ -20,6 +20,7 @@ constexpr float kReferenceSlopeBias = 5.0f;
 constexpr float kWorldTexelScale = 1.41421356237f;
 constexpr float kDefaultAreaShadowCone = 120.0f;
 constexpr float kMinAreaShadowCone = 10.0f;
+constexpr float kPointShadowGuardAngle = 0.10471975512f;
 constexpr float kMaxAreaShadowCone = 179.0f;
 
 float computePunctualShadowFade(float distanceToCamera, float fadeDistance) {
@@ -327,6 +328,18 @@ bool ShadowManager::createTextures() {
         return false;
     }
 
+    if (m_settings.cachedDirectionalShadows) {
+        gfx::TextureDesc cachedDirectionalDesc = directionalDesc;
+        cachedDirectionalDesc.name = "shadow.cachedDirectionalAtlas";
+        m_cachedDirectionalTexture = m_resources->createTexture(cachedDirectionalDesc);
+        if (!m_cachedDirectionalTexture.valid()) {
+            HBG_LOGE("shadow manager: failed to create cached directional atlas {}x{}",
+                     m_directionalAtlasSize, m_directionalAtlasSize);
+            destroyTextures();
+            return false;
+        }
+    }
+
     gfx::TextureDesc punctualDesc = directionalDesc;
     punctualDesc.name = "shadow.punctualAtlas";
     m_punctualTexture = m_resources->createTexture(punctualDesc);
@@ -378,9 +391,12 @@ bool ShadowManager::createTextures() {
                  : 0.0,
              m_settings.areaResolution, shadowFilterName(m_settings.areaFilter));
 
+    gfx::VertexLayout contextLayout;
+    contextLayout.add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
     gfx::BufferDesc contextDesc;
-    contextDesc.type = gfx::BufferType::Storage;
-    contextDesc.count = kMaxShadowRequests * kShadowContextTexels * 4u;
+    contextDesc.type = gfx::BufferType::StorageVertex;
+    contextDesc.count = kMaxShadowRequests * kShadowContextTexels;
+    contextDesc.layout = &contextLayout;
     contextDesc.flags = BGFX_BUFFER_COMPUTE_READ;
     contextDesc.name = "shadow.context";
     m_contextBuffer = m_resources->createBuffer(contextDesc);
@@ -390,13 +406,7 @@ bool ShadowManager::createTextures() {
         return false;
     }
 
-    gfx::VertexLayout contextAreaLayout;
-    contextAreaLayout.add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
-    gfx::BufferDesc contextAreaDesc;
-    contextAreaDesc.type = gfx::BufferType::StorageVertex;
-    contextAreaDesc.count = kMaxShadowRequests * kShadowContextTexels;
-    contextAreaDesc.layout = &contextAreaLayout;
-    contextAreaDesc.flags = BGFX_BUFFER_COMPUTE_READ;
+    gfx::BufferDesc contextAreaDesc = contextDesc;
     contextAreaDesc.name = "shadow.contextArea";
     m_contextAreaBuffer = m_resources->createBuffer(contextAreaDesc);
     if (!m_contextAreaBuffer.valid()) {
@@ -416,6 +426,10 @@ void ShadowManager::destroyTextures() {
     if (m_directionalTexture.valid()) {
         m_resources->destroyTexture(m_directionalTexture);
         m_directionalTexture = {};
+    }
+    if (m_cachedDirectionalTexture.valid()) {
+        m_resources->destroyTexture(m_cachedDirectionalTexture);
+        m_cachedDirectionalTexture = {};
     }
     if (m_punctualTexture.valid()) {
         m_resources->destroyTexture(m_punctualTexture);
@@ -452,10 +466,15 @@ void ShadowManager::shutdown(gfx::ResourceManager& resources) {
 
 void ShadowManager::invalidate() {
     resetFrameRequests();
+    m_directionalCacheHash = 0;
     m_cacheHash = 0;
     m_areaCacheHash = 0;
+    m_cachedDirectionalRequestCount = 0;
     m_cachedRequestCount = 0;
     m_cachedAreaRequestCount = 0;
+    m_directionalCacheEligible = false;
+    m_directionalCacheValid = false;
+    m_directionalCacheDirty = false;
     m_cacheEligible = false;
     m_cacheValid = false;
     m_areaCacheEligible = false;
@@ -474,6 +493,7 @@ void ShadowManager::resetFrameRequests() {
     m_punctualRequestCount = 0;
     m_areaRequestCount = 0;
     m_shadowedLightCount = 0;
+    m_cachedDirectionalRequestCount = 0;
     m_cachedRequestCount = 0;
     m_cachedAreaRequestCount = 0;
     resetPacking();
@@ -556,6 +576,28 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
     m_areaCacheMixed = areaCacheMixed;
     m_areaUsesDynamicAtlas = hasDynamicArea;
 
+    const bool directionalCacheEligible =
+        m_settings.cachedDirectionalShadows && !m_cacheSuppressed && m_directionalRequestCount > 0;
+    m_directionalCacheEligible = directionalCacheEligible;
+    const uint64_t directionalCacheHash =
+        directionalCacheEligible ? buildCacheHash(scene, lightBuilder, ShadowAtlasType::Directional) : 0;
+    const bool directionalCacheHit =
+        directionalCacheEligible && m_directionalCacheValid && m_directionalCacheHash == directionalCacheHash;
+    m_directionalCacheDirty = directionalCacheEligible && !directionalCacheHit;
+    if (directionalCacheHit) {
+        for (ShadowRequest& request : m_requests) {
+            if (request.atlas == ShadowAtlasType::Directional) {
+                request.isCached = true;
+                ++m_cachedDirectionalRequestCount;
+            }
+        }
+    } else if (directionalCacheEligible) {
+        m_directionalCacheHash = directionalCacheHash;
+        m_directionalCacheValid = true;
+    } else {
+        m_directionalCacheHash = 0;
+        m_directionalCacheValid = false;
+    }
     const uint64_t cacheHash =
         punctualCacheEligible ? buildCacheHash(scene, lightBuilder, ShadowAtlasType::Punctual) : 0;
     if (punctualCacheEligible && m_cacheValid && m_cacheHash == cacheHash) {
@@ -728,8 +770,9 @@ bool ShadowManager::buildPunctualRequest(const Light& light, const LightShadowSe
         const uint32_t base = static_cast<uint32_t>(m_requests.size());
         for (uint32_t face = 0; face < kDirections.size(); ++face) {
             ShadowRequest request;
-            if (!makePerspectiveRequest(position, kDirections[face], kUps[face], kPi * 0.5f, nearPlane, range,
-                                        homogeneousDepth, originBottomLeft, request)) {
+            if (!makePerspectiveRequest(position, kDirections[face], kUps[face],
+                                        kPi * 0.5f + kPointShadowGuardAngle, nearPlane, range, homogeneousDepth,
+                                        originBottomLeft, request)) {
                 m_punctualCursorX = savedX;
                 m_punctualCursorY = savedY;
                 m_punctualRowHeight = savedRowHeight;
@@ -1125,6 +1168,9 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
 
     const auto& selectedLights = lightBuilder.selectedLights();
     const auto lightMatchesAtlas = [this, atlas, staticAreaOnly](const Light& light) {
+        if (atlas == ShadowAtlasType::Directional) {
+            return light.type == LightType::Directional;
+        }
         if (atlas == ShadowAtlasType::Area) {
             if (light.type != LightType::Area || light.areaShape != LightAreaShape::Rectangle) {
                 return false;
@@ -1180,7 +1226,15 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
     hashFloat(hash, m_settings.softness);
     hashUint(hash, m_settings.blockerSamples);
     hashUint(hash, m_settings.filterSamples);
-    if (atlas == ShadowAtlasType::Area) {
+        if (atlas == ShadowAtlasType::Directional) {
+        hashUint(hash, m_settings.directionalResolution);
+        hashUint(hash, m_settings.cascadeCount);
+        hashUint(hash, static_cast<uint32_t>(m_settings.directionalFilter));
+        for (float split : m_settings.cascadeSplits) {
+            hashFloat(hash, split);
+        }
+        hashFloat(hash, m_settings.cascadeFade);
+    } else if (atlas == ShadowAtlasType::Area) {
         hashUint(hash, m_settings.areaResolution);
         hashUint(hash, m_settings.areaAtlasSize);
         hashUint(hash, static_cast<uint32_t>(m_settings.areaFilter));

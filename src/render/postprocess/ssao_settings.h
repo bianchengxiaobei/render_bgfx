@@ -13,6 +13,7 @@ struct SsaoSettings {
     float falloff = 1.0f;
     int stepCount = 6;
     bool halfResolution = true;
+    bool temporalAccumulation = false;
 };
 
 void sanitizeSsaoSettings(SsaoSettings& settings);

@@ -142,6 +142,13 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
             Vec4(material.emissiveFactor.x * material.emissiveStrength,
                  material.emissiveFactor.y * material.emissiveStrength,
                  material.emissiveFactor.z * material.emissiveStrength, material.occlusionStrength);
+        gpuMaterial.uniforms.advanced0 =
+            Vec4(material.clearCoat, material.clearCoatRoughness, material.transmission, material.thickness);
+        gpuMaterial.uniforms.advanced1 =
+            Vec4(material.anisotropy, material.anisotropyRotation, material.ior, material.iridescence);
+        gpuMaterial.uniforms.advanced2 =
+            Vec4(material.iridescenceThickness, material.subsurfaceMask, static_cast<float>(material.features),
+                 material.clearCoatNormalScale);
 
         uint32_t variant = shader::MaterialVariantNone;
         if (material.normalTexture.valid()) {
@@ -160,6 +167,7 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
             variant |= shader::MaterialVariantTransparent;
         }
         gpuMaterial.variantKey = variant;
+        gpuMaterial.features = material.features;
 
         m_materials.push_back(gpuMaterial);
     }

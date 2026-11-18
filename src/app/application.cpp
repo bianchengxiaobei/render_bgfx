@@ -51,7 +51,7 @@ int Application::run(const AppOptions& options) {
             static_cast<uint16_t>(m_window.height()), static_cast<uint32_t>(options.frames), options.screenshotPath,
             options.debugDisplayMode, options.debugLightClusterSlice, !options.disableLightCluster, options.cameraOrbit,
             !options.disableShadows, options.clusterStatsReadback, m_pipelineSettings, m_frameSettings,
-            m_shadowSettings, m_postProcessProfile,
+            m_shadowSettings, m_ssaoSettings, m_ssrSettings, m_ssgiSettings, m_postProcessProfile,
             m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation);
         shutdown();
         return ok ? 0 : 1;
@@ -210,9 +210,10 @@ bool Application::loadSettings(const AppOptions& options) {
              m_shadowSettings.filterSamples, m_shadowSettings.minFilterSize, m_shadowSettings.cascadeFade,
              m_shadowSettings.microShadows, m_shadowSettings.microShadowOpacity);
     HBG_LOGI("per-light shadow defaults: dimmer={:.2f} fade_distance={:.1f} tint=({:.2f}, {:.2f}, {:.2f}) "
-             "punctual_cache={} area_cache={}",
+             "directional_cache={} punctual_cache={} area_cache={}",
              m_shadowSettings.shadowDimmer, m_shadowSettings.shadowFadeDistance,
              m_shadowSettings.shadowTint.x, m_shadowSettings.shadowTint.y, m_shadowSettings.shadowTint.z,
+             m_shadowSettings.cachedDirectionalShadows ? "true" : "false",
              m_shadowSettings.cachedPunctualShadows ? "true" : "false",
              m_shadowSettings.cachedAreaShadows ? "true" : "false");
     HBG_LOGI("contact shadows: enabled={} length={:.3f} opacity={:.2f} samples={} half_res={} directional_only={} "
@@ -279,13 +280,22 @@ bool Application::loadSettings(const AppOptions& options) {
         m_pipelineSettings.supportSSAO = *options.ssao;
         m_frameSettings.setEnabled(render::FrameSettingsField::SSAO, *options.ssao);
     }
+    if (options.ssaoTemporal) {
+        m_ssaoSettings.temporalAccumulation = *options.ssaoTemporal;
+    }
     if (options.ssr) {
         m_pipelineSettings.supportSSR = *options.ssr;
         m_frameSettings.setEnabled(render::FrameSettingsField::SSR, *options.ssr);
     }
+    if (options.ssrTemporal) {
+        m_ssrSettings.temporalAccumulation = *options.ssrTemporal;
+    }
     if (options.ssgi) {
         m_pipelineSettings.supportSSGI = *options.ssgi;
         m_frameSettings.setEnabled(render::FrameSettingsField::SSGI, *options.ssgi);
+    }
+    if (options.ssgiTemporal) {
+        m_ssgiSettings.temporalAccumulation = *options.ssgiTemporal;
     }
     if (options.decals) {
         m_pipelineSettings.supportDecals = *options.decals;
@@ -305,6 +315,12 @@ bool Application::loadSettings(const AppOptions& options) {
     }
     if (options.lightListFeatureFlags) {
         m_pipelineSettings.supportLightListFeatureFlags = *options.lightListFeatureFlags;
+    }
+    if (options.cookieAtlas) {
+        m_pipelineSettings.supportCookieAtlas = *options.cookieAtlas;
+    }
+    if (options.cookieAtlasSize) {
+        m_pipelineSettings.cookieAtlasSize = *options.cookieAtlasSize;
     }
     if (options.lightListCapacity) {
         m_pipelineSettings.lightListCapacity = *options.lightListCapacity;
@@ -357,6 +373,9 @@ bool Application::loadScene(const std::string& path) {
         return false;
     }
     m_forwardRenderer.setSettings(m_pipelineSettings, m_frameSettings);
+    m_forwardRenderer.setSsaoSettings(m_ssaoSettings);
+    m_forwardRenderer.setSsrSettings(m_ssrSettings);
+    m_forwardRenderer.setSsgiSettings(m_ssgiSettings);
     m_forwardRenderer.setShadowSettings(m_shadowSettings);
     return true;
 }

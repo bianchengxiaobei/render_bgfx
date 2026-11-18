@@ -35,6 +35,7 @@ uniform vec4 u_pass_lightCounts;
 uniform vec4 u_pass_lightListParams;
 uniform vec4 u_pass_lightListParams2;
 uniform vec4 u_pass_lightScreenSize;
+uniform vec4 u_pass_cookieAtlasParams;
 
 // Cluster
 uniform vec4 u_cluster_params;
@@ -47,20 +48,26 @@ uniform vec4 u_cluster_params2;
 // Ssao
 uniform vec4 u_ssao_params;
 uniform vec4 u_ssao_params2;
+uniform vec4 u_ssao_params3;
 
 // Ssr
 uniform vec4 u_ssr_params;
 uniform vec4 u_ssr_params2;
+uniform vec4 u_ssr_params3;
 
 // Ssgi
 uniform vec4 u_ssgi_params;
 uniform vec4 u_ssgi_params2;
 uniform vec4 u_ssgi_params3;
+uniform vec4 u_ssgi_params4;
 
 // Material
 uniform vec4 u_material_baseColorFactor;
 uniform vec4 u_material_metallicRoughness;
 uniform vec4 u_material_emissiveFactor;
+uniform vec4 u_material_advanced0;
+uniform vec4 u_material_advanced1;
+uniform vec4 u_material_advanced2;
 
 // Probe
 uniform mat4 u_probe_worldToProbe0;
@@ -86,6 +93,7 @@ uniform mat4 u_decal_worldToDecal;
 uniform mat4 u_decal_decalToWorld;
 uniform vec4 u_decal_params;
 uniform vec4 u_decal_params2;
+uniform vec4 u_decal_params3;
 uniform vec4 u_decal_baseColor;
 
 // Environment

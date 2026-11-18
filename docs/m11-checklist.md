@@ -1,7 +1,7 @@
 # M11 HDRP Lighting 2.2 规划：Cookie Atlas / Cached Area Shadow / Variant Strategy / 60fps
 
 > 工程根：`E:\Learn\hdrp-bgfx`。
-> 状态：**M11.0 shader build 工具 v1、M11.1 sampler gate（buffer context）、M11.1b cookie atlas v1、M11.2 cached area shadow v1 + mixed、M11.3 variant strategy、M11.4 1080p 60fps 已完成；M11.5 核心验收矩阵已跑通**（2026-11-16）。M11.4 用 shadow context `float4` vector load 把 D3D11 forward cap64 full-post 中位数拉到 **63.7 fps**（deferred 62.3，Vulkan 64.6/63.2）；cap128 仍为 opt-in。M11.5 目前：M10 area 36/36 0、area shadow 4/4 0、M9/transparent 路径 0、cached/cookie/variant 0、mixed cached/dynamic 4/4 0；D3D punctual/directional 保留 shadow 边缘 **1–2 ULP**（M9 64 127,795 px/max11），已按 M11.4 决策接受，area 路径用 typed StorageVertex context 做到 0。M8.7 base32 已用同一历史命令复跑：Vulkan buffer/texture 0，D3D11 typed 快路径 19,074 px/max165；HDRP 风格 structured context 诊断构建为 0，但 GPU 成本更高，未作为默认。M11.0 全量 clean O3/fixtures/perf baseline 仍待做。M10.0–M10.8 与 area Rectangle/Tube OBB 已完成。
+> 状态：**M11.0 shader build 工具 v1、M11.1 sampler gate（buffer context）、M11.1b cookie atlas v1、M11.1c 独立 cookie atlas、M11.2 cached area shadow v1 + mixed、M11.3 variant strategy、M11.4 1080p 60fps 已完成；M11.5 核心验收矩阵已跑通**（2026-11-16）。M11.4 用 shadow context `float4` vector load 把 D3D11 forward cap64 full-post 中位数拉到 **63.7 fps**（deferred 62.3，Vulkan 64.6/63.2）；cap128 仍为 opt-in。M11.5 目前：M10 area 36/36 0、area shadow 4/4 0、M9/transparent 路径 0、cached 4/4 0、mixed cached/dynamic 4/4 0、M11.1c native cookie 8/8 有差异（D3D/VK 1 px/max1、path 0）、variant 8/8 0；D3D punctual/directional 保留 shadow 边缘 **1–2 ULP**（M9 64 127,795 px/max11），已按 M11.4 决策接受，area 路径用 typed StorageVertex context 做到 0。M8.7 base32 已用同一历史命令复跑：Vulkan buffer/texture 0，D3D11 typed 快路径 19,074 px/max165；HDRP 风格 structured context 诊断构建为 0，但 GPU 成本更高，未作为默认。M11.0 全量 clean O3/fixtures/perf baseline 仍待做。M10.0–M10.8 与 area Rectangle/Tube OBB 已完成。
 > 前置基线：M10 的 36 组 area matrix、area shadow、M9 64-light/transparent、M8.7 32-light 均为当前回归基线。
 > 原则：先读 HDRP 源码再实现；不把 HDRP 没有的“GPU shadow atlas packing”写成 HDRP 对齐项；不把 29 个 Lit variants 当成无条件目标。
 
@@ -264,7 +264,7 @@ CachedAreaShadowRecord {
 | 任务 | 产出 | 状态 |
 |---|---|---|
 | **M11.0 基线/构建/CI** | shader build 进度/超时/缓存、M10 fixture、性能基线 | `[~] 工具 v1；全量 O3/fixtures/perf 待做` |
-| **M11.1 Cookie atlas / sampler gate** | sampler 预算方案、atlas、2D/octa/area、fallback | `[~] sampler gate 通过；atlas v1（8×8 tile，无 mip）` |
+| **M11.1 Cookie atlas / sampler gate** | sampler 预算方案、atlas、2D/octa/area、fallback | `[x] sampler gate；M11.1b v1 + M11.1c 独立 atlas（mip/padding/fallback）` |
 | **M11.2 Cached area shadow** | cached area atlas、invalidate、回退；all-static + mixed cached/dynamic 已实现 | `[x] v1 + mixed` |
 | **M11.3 Variant strategy** | 4 类 category variant 或否决报告 | `[x] 否决 category variants；保留 runtime gating` |
 | **M11.4 性能** | M9.7 60fps、cookie/cached 增量、buffer/texture 记录 | `[x]` D3D11 forward 63.7 / deferred 62.3 fps |
@@ -318,7 +318,7 @@ CachedAreaShadowRecord {
 
 - HDRP `Runtime/Lighting/Shadow/HDShadowContext.hlsl:13` 的实际做法是 `StructuredBuffer<HDShadowData>`，不是 UBO；本项目先尝试 UBO（`u_shadowcontext_texels[]`），D3D11 可运行，但 Vulkan 128 requests 需要 1280×vec4（20 KiB），首帧挂起超过 120s；640×vec4 只能覆盖 64 requests，不能接受 M10 的 128-request 基线。
 - 改为与 HDRP 同类的 sampler-free buffer：context 的 10 个 float4 按 request 存放，C++ 用 `ShadowManager::contextBuffer()` + `setStorageBuffer(8)`；**不再创建 `s_shadowContext` sampler**，stage 8 已释放。Storage buffer 不受 Vulkan UBO 16 KiB/1280 vec4 限制。M11.4 进一步把 shader 从 40 个 uint 逐字读取改成一次 `float4` vector load（D3D11/Vulkan）。
-- 当前回归：D3D11/Vulkan × forward/deferred，1280×720，cached vs every-frame **4/4 组合 0 diff**；`hbg_tests` 228 cases/29,268 assertions；`ctest` 2/2；D3D11/Vulkan gfx-test 通过；manifest 510/510，0 零字节。volumetric fog、shadow-cascade/filter debug view 也已用 buffer 路径跑通。
+- 当前回归：D3D11/Vulkan × forward/deferred，1280×720，cached vs every-frame **4/4 组合 0 diff**；`hbg_tests` 229 cases/29,286 assertions；`ctest` 2/2；D3D11/Vulkan gfx-test 通过；manifest 510/510，0 零字节。volumetric fog、shadow-cascade/filter debug view 也已用 buffer 路径跑通。
 - 与改动前 texture context 截图相比：Vulkan 仅 1–2 个边缘像素（max 3–6），D3D11 为 20–23 个边缘像素（max 11）；当前 cached/every-frame 为 0，数据路径与 Vulkan 结果确认一致，D3D 差异归因于 HLSL 重编译的浮点边界差异，不是结构回归。
 - 结论：**M11.1 sampler gate 通过**（stage 8 sampler 空闲）；但 shadow context buffer 仍占 D3D SRV t8，cookie atlas 不能直接放 stage 8。M11.1b v1 将 8×8 cookie tiles 打包进已有 `s_lightData` 纹理，不增加 sampler/SRV，详见 5.2.2。
 
@@ -337,8 +337,29 @@ CachedAreaShadowRecord {
   - 同后端 buffer/texture/CPU light-list 三路径：D3D11 与 Vulkan 的 area/spot forward 均 **0 diff**；D3D11 deferred area/spot 的 buffer/texture **0 diff**，Vulkan deferred area/spot buffer/texture **0 diff**。
   - 16-cookie `m11_area16_cookie`（16 个 area 全带 cookie）：`tiles=16/128`，on/off **138,127 px/max 106**；128-tile capacity 未触发 fallback。
   - cached area：D3D11/Vulkan cached vs every-frame 1280×720 **0 diff**；volumetric fog D3D/VK 运行通过。
-  - `hbg_tests` **228 cases / 29,268 assertions**；atlas 单元测试覆盖 tile 打包、copyTo、非 cookie light、128 capacity。
-- **限制**：8×8 tile、无 mip/padding、无原始分辨率 cookie、atlas 容量固定 128、无独立 `_CookieAtlas` 纹理；原始分辨率/mip 留给 M11.1c，M11.3 已单独评估 variant（保留 runtime gating、否决编译期 category variants）。
+  - `hbg_tests` **229 cases / 29,286 assertions**；atlas 单元测试覆盖 tile 打包、copyTo、非 cookie light、128 capacity。
+- **限制（M11.1b v1）**：8×8 tile、无 mip/padding、无原始分辨率 cookie、atlas 容量固定 128、无独立 `_CookieAtlas` 纹理；原始分辨率/mip 由 M11.1c 补全。
+
+**5.2.3 M11.1c 独立 cookie atlas（2026-11-16）**
+
+- **目标与 HDRP 对齐**：按 `Runtime/Lighting/LightCookieManager.cs:37-62` 的 `PowerOfTwoTextureAtlas`、`CookieSampling.hlsl:29-55` 的 `RemapUVWithPadding`/mip、`LightEvaluation.hlsl:16-113` 的 area hit UV，建立独立 `_CookieAtlas`，支持原始分辨率、2 px padding、mip 和 HDRP 风格 scaleOffset。
+- **独立纹理**：新增 `lighting.cookieAtlas`，默认 **1024×1024 RGBA8**（512/2048 可配），mipCount=log2(size)+1（1024 为 11）；RGBA8 约 **5.33 MiB**（含 mips），2048 约 **21.3 MiB**。项目 cookie 是标量亮度，HDRP 的 R11G11B10 彩色 cookie 不适用；不使用 RGBA16F。
+- **stage 预算**：M11.1 的 shadow context 仍占 SRV t8；要新增 cookie sampler 必须释放一个 texture stage。将原 stage 14/15 的两张 reflection probe 纹理合并为 `s_probeMaps` 2D texture array（stage 14），stage 15 给 `s_cookieAtlas`；没有新增 sampler，D3D11 仍为 16 个。Probe array 保持原 equirect/mip 采样语义，4 个静态 probe 上限、2 个 active layer。
+- **CPU atlas**：`CookieAtlas` 按 POT tile 打包；native 源上限 256×256，tile 大小 `nextPow2(max(w,h)+2*padding)`，每个 tile 内 payload 外围 2 px 边缘扩展；tile 对齐到 mip，逐 mip box downsample。1024 atlas 的 16 个 16×16 area cookie 使用 16 个 32×32 tile；512/2048 也验证通过。
+- **数据契约**：light data 为 **20 texels/light**（0–10 base + 11 atlas scaleOffset + 12–19 IES），light-data 纹理缩小为 **64×192**；LTC 表仍在 rows 128–191、x=0..63。`texel11.xy/zw` 为 padded atlas rect 的 scale/offset；`texel7.z` 保留 tileIndex 诊断，`texel7.w` 保留 areaShape/hasIes。
+- **Shader**：`hbgSampleLightCookieScaledLod` 先做用户 scale/offset 与 clamp/repeat，再按 HDRP `RemapUVWithPadding` 做 padding inset、mip clamp 和 `texture2DLod`；area 使用 `SampleAreaLightCookie` 同类的 LTC hit UV 与 `mipLevel`（roughness/mip trimming），directional/spot/point 使用 lod 0；point octa 与 IES 继续共用 native atlas，spot IES 仍走 light-data。
+- **fallback**：`--no-cookie-atlas` / `supportCookieAtlas=false` 使用独立 atlas 的 legacy 8×8 tile + `texelFetch`，保持 M11.1b/M10 查询语义；atlas 满/无 native 数据时返回白纹理，不黑屏；`--cookie-atlas-size=512|1024|2048` 与 `config/pipeline.json` 已接入。
+- **验证**：`m11_area16_cookie` 16 area cookie，640×360/D3D11/Vulkan/forward/deferred/buffer/texture：
+  - native vs legacy：forward **136,925 px/max82**，deferred **136,924 px/max82**（8/8 组合均有差异，证明原生 cookie 生效）。
+  - D3D11 vs Vulkan：所有 path/mode **1 px/max1**（area shadow 边缘精度，保持 M11.5 例外）。
+  - texture vs buffer：forward/deferred 全部 **0 diff**（M11.1c 的 atlas 数据与路径无关）。
+  - 512/2048 atlas：`tiles=16/128 native=16`，mips=10/12，双后端运行通过。
+  - directional cookie on/off **1,092 px/max79**；point IES native/legacy **127,445 px/max79**（D3D）/ **127,373 px/max79**（VK）；1 个静态 reflection probe 的 array 路径运行通过。
+  - 1280×720、300 帧、D3D11 forward、area16：native **34.8 fps**（28.71 ms），legacy **35.4 fps**（28.27 ms），native atlas 约 **0.34 ms** 增量；Debug 构建，非 M11.4 full-post 门禁。
+- **上传缓存（HDRP `NeedsUpdate` 对齐）**：`CookieAtlas` 对 selected light、native source 指针/尺寸/cookie mode 和实际 tile layout 生成 64-bit content hash；`uploadCookieAtlas` 在 hash 与纹理均未变化时跳过整张 atlas 上传，纹理重建时强制重传。按 HDRP `LightCookieManager.Fetch2DCookie` 的 `PowerOfTwoTextureAtlas.NeedsUpdate` 语义，避免每帧上传 5.33 MiB（1024）/21.3 MiB（2048）。D3D11/Vulkan native/legacy 对 M11.1c matrix 截图仍 **0 diff**；1280×720 area16 300 帧 native 1024 **33.3 fps**、2048 **33.4 fps**（无 4 倍上传惩罚；与上一轮 34.8 fps 的差异属于 Debug/系统噪声，不作为性能提升或回归结论）。
+- **布局排序（HDRP `RelayoutEntries` 对齐）**：`requiredTileSize()` 统一计算 legacy/native 的 POT tile（含 2 px padding），ForwardRenderer 按 tile size 从大到小稳定排序后分配；对齐 `PowerOfTwoTextureAtlas.RelayoutEntries` 的“biggest to smallest”顺序，但不做 HDRP 的二叉树 allocator。`m11_area16_cookie` 的 D3D11/Vulkan native/legacy 四组对旧 matrix 仍 **0 diff**（tile 坐标变化由 light-data scaleOffset 吸收）。
+- **测试/工具**：`hbg_tests` **231 cases/29,299 assertions**；`ctest` 2/2；D3D11/Vulkan gfx-test；510 binaries/0 zero-byte；forward.fs/forward_buffer.fs/deferred_lighting(.buffer) O3 变体已重建。
+- **已知限制**：native source 上限 256；tile 采用 largest-first 对齐 shelf，非 HDRP 的二叉树 allocator，atlas 满时直接白 fallback，不回退到 8×8 tile；没有 HDR/彩色 cookie、streaming、async upload、defrag；2048 保持 opt-in。上传缓存假设 cookie 源在场景加载后不变；后续动态 cookie 编辑需要 Light cookie revision/updateCount 才能像 HDRP `NeedsUpdate` 一样失效。
 
 **验收**
 
@@ -366,7 +387,7 @@ CachedAreaShadowRecord {
 
 - D3D11/Vulkan × forward/deferred，1280×720：all-static cached vs every-frame **4/4 0 diff**；mixed cached/dynamic vs every-frame **4/4 0 diff**。
 - mixed cached 帧 `shadow_area_cache=true`、`shadow_cached_area=2`（4 area 中 2 静态）、`shadow_drawn=4`；每帧只绘制 2 个动态 request。
-- `hbg_tests` **228 cases/29,268 assertions**；`ctest` 2/2；D3D11/Vulkan `--gfx-test` 通过。
+- `hbg_tests` **229 cases/29,286 assertions**；`ctest` 2/2；D3D11/Vulkan `--gfx-test` 通过。
 - 单元测试覆盖首帧不缓存、cache hit、caster 变化失效、area light `EveryFrame` 禁用、suppression 回退，以及 static-only → mixed → static-only 模式切换失效。
 
 **后续**
@@ -416,6 +437,14 @@ CachedAreaShadowRecord {
 - cap128 不要求 >60，但必须有稳定记录和回退建议（37.5/40.1 fps，保持 opt-in）。
 - M9/M10 既有场景不回归；D3D punctual/directional 边缘 1–2 ULP 已在 M11.5 接受；area 路径 0。
 
+### 5.6a Shadow context / atlas texel P0 修复（2026-11-17）
+
+- **D3D11 shadow context 类型**：`shadow.context` 原为 `Storage`（D3D11 index buffer，R32_UINT SRV），但 `shaders/lighting/shadows.sc` 按 typed `Buffer<float4>` 读取；D3D11 forward/debug 实际读到全 0，表现为“无阴影”，Vulkan 因 raw/structured 路径不同仍能读到数据，造成 D3D/VK 视觉分叉。改为 `StorageVertex` + `RGBA32F` layout，与 HDRP `HDShadowContext.hlsl:13` 的 `StructuredBuffer<HDShadowData>` 语义一致；`shadow.contextArea` 复用同一 layout。源码：`src/render/shadows/shadow_manager.cpp:381-399`。
+- **Atlas PCF texel**：`hbgSampleDirectionalRequest` / `hbgSamplePunctualRequest` / `hbgSampleAreaShadow` 把 `requestParams.zw = 1/viewport` 直接当作 atlas UV texel；实际应为 `atlasRect.xy * requestParams.zw = 1/atlasSize`。point 256/atlas 2048 时 taps 间距放大 8×，directional 1024/2048 放大 2×，是条带/块状阴影的主因。源码：`shaders/lighting/shadows.sc:435/508/585`；HDRP 对照 `HDShadowSampling.hlsl:54-66` 的 atlas UV / shadowAtlasSize 语义。
+- **Point seam**：按 HDRP `HDShadowUtils.cs:374-410` 的 guard angle，给 point face 的 90° 透视加 6° guard（`shadow_manager.cpp:23/728`），减轻 cube face 边界细线；完全 seam 处理仍属 M12.2。
+- **验证**：补充首帧 shadow atlas 完整 clear（消除未初始化深度）后，`m26_ssgi_corner`、`m122_area_point_dir` 带 shadows D3D/VK 均 **0 diff**；`m26_pointonly` / `m41_point_scene` 路径保持可见 point shadow。point 不再出现整墙竖条；directional-only 静态阴影保持 on/off 差异，未退化为关闭。已知残留：point cube face 边界仍有约 1 px 细线，后续 M12.2 处理。
+- 注意：本次 shader 增量重建已完成 forward/forward_buffer variant 0–6、deferred 4、fog 6、debug shadow 6；forward variant 7–15 仍为零字节，全量 518 variant 的 clean/完整重建待执行（构建中断留下 zero-byte 副本，测试场景使用 variant 0）。
+
 ### 5.6 M11.5 M11 验收
 
 **M11.5 核心矩阵（2026-11-16）**
@@ -423,8 +452,8 @@ CachedAreaShadowRecord {
 - **M10 area 36/36 0 diff**：`m10_area.gltf`，1080（1920×1080）/1440（2560×1141）/4K（3840×1141）× D3D11/Vulkan × forward/deferred × buffer/texture/CPU，当前构建对 M10.8 基线逐像素 0；同分辨率三路径也全部 0。
 - **Area shadow 4/4 0**：`m10_area_shadow.gltf`，1080，D3D11/Vulkan × forward/deferred 对 M10.8 on 基线 0；on/off 差异分别 46,063/46,106（D3D）与 46,068/46,098（VK），证明功能未退化为 off。
 - **M9 64 / transparent64**：D3D11/Vulkan × forward/deferred × buffer/texture/CPU，buffer 对 texture/CPU 全部 0（M9 8/8、transparent 8/8）；Vulkan 对 M10.8 buffer 基线 0。D3D11 M9 64 对 M10.8 为 **127,795 px/max11**，分布在 shadow 边缘，判定为 M11.4 vector load 的 1–2 ULP 精度差并接受；area 路径已用 typed context 做到 0。
-- **Cookie / cached / mixed / variant**：`m11_area16_cookie` D3D/VK × forward/deferred buffer/texture **4/4 0**；cached area all-static **4/4 0**；mixed cached/dynamic **4/4 0**；`m10_area16`/`m11_point100` 的 feature-flag on/off D3D/VK × forward/deferred **8/8 0**（spot 组沿用 M11.3 的 4/4 0）。
-- **测试/工具**：`hbg_tests` 228 cases/29,268 assertions、`ctest` 2/2、D3D11/Vulkan gfx-test、`git diff --check`、510 binaries/0 zero-byte 通过。
+- **Cookie / cached / mixed / variant**：M11.1c native vs legacy `m11_area16_cookie` 8/8 组合均有可见差异（forward 136,925/max82、deferred 136,924/max82）；D3D/VK 所有 path/mode **1 px/max1**，texture/buffer **0 diff**。M11.1b legacy baseline 与 M10 cookie 基线保持；cached area all-static **4/4 0**；mixed cached/dynamic **4/4 0**；`m10_area16`/`m11_point100` 的 feature-flag on/off D3D/VK × forward/deferred **8/8 0**（spot 组沿用 M11.3 的 4/4 0）。
+- **测试/工具**：`hbg_tests` 231 cases/29,299 assertions、`ctest` 2/2、D3D11/Vulkan gfx-test、`git diff --check`、510 binaries/0 zero-byte 通过；M11.1c atlas 上传缓存与 largest-first 布局排序已加。
 - **M8.7 base32 复跑**：同一历史命令（`m5_shadow_stress`，1280×720，capacity=32，forward+contact，`hbg_m78` 基线）下，Vulkan buffer/texture **0 diff**；D3D11 typed 快路径 buffer/texture 均为 **19,074 px/max165**，差异集中在 shadow 边缘。改用 HDRP `HDShadowContext.hlsl` 同类的 `StructuredBuffer<float4>` 诊断构建后 D3D11 **0 diff**，证明 context 数据/布局正确；但 structured 在该 64-light full-post 场景约 **2× GPU 时间**（A/B 中位数约 43.3 vs 52.3 fps），未作为默认。默认仍保留 M11.4 的 typed vector load，并接受 D3D 精度例外。
 - **未收口**：M11.0 全量 clean O3、fixtures/perf baseline；M8.7 的默认 D3D 严格 0 仍受上述 typed 精度限制。
 
@@ -456,7 +485,7 @@ CachedAreaShadowRecord {
 | M10 area shadow 1080 | D3D11/Vulkan | forward/deferred | on/off 有差异；基线不回归 |
 | M9 64-light / transparent64 | D3D11/Vulkan | buffer/texture/CPU | 0 diff |
 | M8.7 base32 | D3D11/Vulkan | buffer/texture | Vulkan 0；D3D typed 19,074/max165 例外；structured 诊断 0 |
-| Cookie 0/1/2/8/16 | D3D11/Vulkan | forward/deferred × buffer/texture | 0 diff；on/off 有差异 |
+| Cookie 0/1/2/8/16 | D3D11/Vulkan | forward/deferred × buffer/texture | native/legacy 有差异；backend 1 px max1；path 0 diff；on/off 有差异 |
 | Cookie 缺失/atlas 满 | 双后端 | forward/deferred | white fallback，无崩溃 |
 | Cached area 静态 / mixed | 双后端 | forward/deferred | all-static 与 mixed 均首帧=every-frame；warm 帧静态不重绘，0 diff |
 | Cached area 失效 | 双后端 | forward/deferred | 移动/变换后正确重绘 |

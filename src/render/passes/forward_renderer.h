@@ -43,6 +43,7 @@ class ForwardRenderer {
         uint32_t gbufferTargets = 0;
         uint32_t postProcessPasses = 0;
         bool deferred = false;
+        bool deferredAdvanced = false;
         bool stencil = false;
         bool postProcessActive = false;
         bool postProcessComputeSupported = false;
@@ -64,11 +65,22 @@ class ForwardRenderer {
         float volumetricFogScale = 1.0f;
         bool volumetricFogTemporal = false;
         bool volumetricFogHistoryValid = false;
+        bool ssaoTemporal = false;
+        bool ssaoHistoryValid = false;
+        uint32_t ssaoHistoryFrames = 0;
+        bool ssrTemporal = false;
+        bool ssrHistoryValid = false;
+        uint32_t ssrHistoryFrames = 0;
+        bool ssgiTemporal = false;
+        bool ssgiHistoryValid = false;
+        uint32_t ssgiHistoryFrames = 0;
         uint32_t volumetricFogPunctualLights = 0;
         uint32_t volumetricFogLocalVolumes = 0;
         uint32_t volumetricFogLocalMasks = 0;
         uint32_t shadowDrawnItems = 0;
         uint32_t shadowCulledItems = 0;
+        bool shadowDirectionalCacheActive = false;
+        uint32_t shadowCachedDirectionalRequests = 0;
         bool shadowCacheActive = false;
         uint32_t shadowCachedRequests = 0;
         bool shadowAreaCacheActive = false;
@@ -210,12 +222,17 @@ class ForwardRenderer {
         RenderGraphTextureHandle ssao;
         RenderGraphTextureHandle ssaoRaw;
         RenderGraphTextureHandle ssaoBlur;
+        RenderGraphTextureHandle ssaoHistory;
+        RenderGraphTextureHandle ssaoHistoryPrevious;
         RenderGraphTextureHandle ssr;
+        RenderGraphTextureHandle ssrRaw;
+        RenderGraphTextureHandle ssrHistoryPrevious;
         RenderGraphTextureHandle ssgiRaw;
         RenderGraphTextureHandle ssgi;
+        RenderGraphTextureHandle ssgiHistoryPrevious;
         RenderGraphBufferHandle fullscreen;
-        std::array<RenderGraphTextureHandle, 3> decal{};
-        std::array<RenderGraphTextureHandle, 4> gbuffer{};
+        std::array<RenderGraphTextureHandle, 4> decal{};
+        std::array<RenderGraphTextureHandle, 5> gbuffer{};
     };
 
     bool shadowsActive() const;
@@ -269,6 +286,9 @@ class ForwardRenderer {
     void bindLightListTexture(gfx::Encoder& encoder, bool cluster) const;
     void updateEnvironmentUniforms();
     void bindProbeTextures(gfx::Encoder& encoder) const;
+    bool ensureCookieAtlasTexture();
+    void uploadCookieAtlas();
+    void bindCookieAtlas(gfx::Encoder& encoder) const;
     void updateContactShadowUniforms();
     void updatePostProcessUniforms();
     void updateSsaoUniforms(bool enabled);
@@ -281,6 +301,12 @@ class ForwardRenderer {
     void releaseLocalFogMaskTextures(gfx::ResourceManager& resources);
     bool ensureVolumetricFogHistory(uint16_t fogWidth, uint16_t fogHeight);
     void releaseVolumetricFogHistory();
+    bool ensureSsaoHistory(uint16_t width, uint16_t height);
+    void releaseSsaoHistory();
+    bool ensureSsrHistory(uint16_t width, uint16_t height);
+    void releaseSsrHistory();
+    bool ensureSsgiHistory(uint16_t width, uint16_t height);
+    void releaseSsgiHistory();
     void addShadowPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                        const RenderScene& scene);
@@ -301,13 +327,13 @@ class ForwardRenderer {
     void addSkyPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle environment);
     RenderGraphTextureHandle addVolumetricFogPass(RenderGraph& graph, const FramePassResources& resources,
                                                   RenderGraphTextureHandle color, const RenderScene& scene);
-    void addGBufferClearPass(RenderGraph& graph, const std::array<RenderGraphTextureHandle, 4>& gbuffer,
+    void addGBufferClearPass(RenderGraph& graph, const std::array<RenderGraphTextureHandle, 5>& gbuffer,
                              RenderGraphTextureHandle depth, RenderGraphBufferHandle fullscreen);
     void addDecalPasses(RenderGraph& graph, const FramePassResources& resources, const RenderScene& scene);
     void addGBufferPass(RenderGraph& graph, const FramePassResources& resources, const RenderScene& scene);
-    void addSSAOPasses(RenderGraph& graph, const FramePassResources& resources);
-    void addSSRPasses(RenderGraph& graph, const FramePassResources& resources);
-    void addSSGIPasses(RenderGraph& graph, const FramePassResources& resources);
+    void addSSAOPasses(RenderGraph& graph, FramePassResources& resources);
+    void addSSRPasses(RenderGraph& graph, FramePassResources& resources);
+    void addSSGIPasses(RenderGraph& graph, FramePassResources& resources);
     void addDeferredLightingPass(RenderGraph& graph, const FramePassResources& resources);
     void recordForwardFrame(RenderGraph& graph, FramePassResources& resources, const RenderScene& scene,
                             DebugDisplayMode debugMode, bool materialDebug);
@@ -362,6 +388,11 @@ class ForwardRenderer {
     void renderSSAOBlurPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                             uint16_t width, uint16_t height, gfx::TextureHandle ssaoInput,
                             gfx::TextureHandle depthPyramid, gfx::TextureHandle normalBuffer);
+    void renderSSAOTemporalPass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
+                                gfx::TextureHandle ssaoInput, gfx::TextureHandle depthPyramid,
+                                gfx::TextureHandle motionVectors, gfx::TextureHandle history,
+                                bool historyValid);
     void renderSSAOUpsamplePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                 uint16_t width, uint16_t height, gfx::TextureHandle ssaoInput,
                                 gfx::TextureHandle depthPyramid, gfx::TextureHandle normalBuffer);
@@ -370,6 +401,11 @@ class ForwardRenderer {
                             gfx::TextureHandle depthPyramid, gfx::TextureHandle gbuffer0,
                             gfx::TextureHandle gbuffer1, gfx::TextureHandle gbuffer2,
                             gfx::TextureHandle environment, gfx::TextureHandle ssao);
+    void renderSSRTemporalPass(gfx::Encoder& encoder, bgfx::ViewId view,
+                               gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
+                               gfx::TextureHandle ssrInput, gfx::TextureHandle depthPyramid,
+                               gfx::TextureHandle motionVectors, gfx::TextureHandle history,
+                               bool historyValid);
     void renderSSRCompositePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                 uint16_t width, uint16_t height, gfx::TextureHandle ssr);
     void renderSSGITracePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -379,6 +415,12 @@ class ForwardRenderer {
     void renderSSGIDenoisePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                uint16_t width, uint16_t height, gfx::TextureHandle ssgiRaw,
                                gfx::TextureHandle depthPyramid);
+    void renderSSGITemporalPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
+                                uint16_t width, uint16_t height, gfx::TextureHandle ssgiRaw,
+                                gfx::TextureHandle depthPyramid, gfx::TextureHandle motionVectors,
+                                gfx::TextureHandle history, gfx::TextureHandle historyDepth,
+                                gfx::TextureHandle historyNormal, gfx::TextureHandle currentNormal,
+                                bool historyValid);
     void renderSSGICompositePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                  uint16_t width, uint16_t height, gfx::TextureHandle ssgi,
                                  gfx::TextureHandle depthPyramid, gfx::TextureHandle gbuffer0,
@@ -388,11 +430,11 @@ class ForwardRenderer {
                                  gfx::TextureHandle lightList, bool gbufferTarget, bool halfResolution,
                                  uint16_t width, uint16_t height);
     void renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                                gfx::TextureHandle depthPyramid, const std::array<gfx::TextureHandle, 4>& gbuffer,
+                                gfx::TextureHandle depthPyramid, const std::array<gfx::TextureHandle, 5>& gbuffer,
                                 gfx::TextureHandle lightData,
                                 gfx::TextureHandle lightList, gfx::TextureHandle directionalShadow,
                                 gfx::TextureHandle punctualShadow, gfx::BufferHandle shadowContext,
-                                gfx::TextureHandle environment, gfx::TextureHandle ssao);
+                                gfx::TextureHandle environment, gfx::TextureHandle ssao, bool advanced);
     void renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                            const RenderScene& scene, bool transparent, bool forwardOnly,
                            gfx::TextureHandle contactShadow);
@@ -401,7 +443,7 @@ class ForwardRenderer {
     void renderDebugMaterialPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                  const RenderScene& scene, DebugDisplayMode debugMode);
     void renderDebugGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                                const std::array<gfx::TextureHandle, 4>& gbuffer, gfx::TextureHandle depth,
+                                const std::array<gfx::TextureHandle, 5>& gbuffer, gfx::TextureHandle depth,
                                 DebugDisplayMode debugMode);
     void renderPresentation(gfx::Encoder& encoder, bgfx::ViewId view, gfx::TextureHandle color,
                             gfx::TextureHandle depth, gfx::TextureHandle lightData, gfx::TextureHandle lightList,
@@ -436,14 +478,14 @@ class ForwardRenderer {
     gfx::generated::FogUniformBinder m_fogBinder;
     gfx::generated::ContactUniformBinder m_contactBinder;
 
-    std::array<gfx::TextureHandle, 4> m_gbufferTextures{};
+    std::array<gfx::TextureHandle, 5> m_gbufferTextures{};
     bool m_deferredLightLayersActive = false;
-    std::array<gfx::UniformHandle, 4> m_gbufferSamplers{};
+    std::array<gfx::UniformHandle, 5> m_gbufferSamplers{};
     uint16_t m_gbufferWidth = 0;
     uint16_t m_gbufferHeight = 0;
-    std::array<gfx::TextureHandle, 3> m_decalTextures{};
+    std::array<gfx::TextureHandle, 4> m_decalTextures{};
     std::array<gfx::TextureHandle, 3> m_decalFallbackTextures{};
-    std::array<gfx::UniformHandle, 3> m_decalSamplers{};
+    std::array<gfx::UniformHandle, 4> m_decalSamplers{};
     gfx::UniformHandle m_decalAlbedoSampler;
     gfx::UniformHandle m_decalNormalSampler;
     gfx::UniformHandle m_decalMaskSampler;
@@ -453,14 +495,23 @@ class ForwardRenderer {
     gfx::UniformHandle m_hdrSampler;
     gfx::TextureHandle m_environmentFallback;
     gfx::UniformHandle m_environmentSampler;
-    std::array<gfx::UniformHandle, 2> m_probeSamplers{};
+    gfx::UniformHandle m_probeArraySampler;
+    gfx::TextureHandle m_probeArrayFallback;
+    gfx::UniformHandle m_cookieAtlasSampler;
+    gfx::TextureHandle m_cookieAtlasTexture;
+    gfx::TextureHandle m_cookieAtlasFallback;
     gfx::TextureHandle m_ssaoFallback;
     gfx::TextureHandle m_contactShadowFallback;
     gfx::UniformHandle m_ssaoSampler;
     gfx::UniformHandle m_ssaoInputSampler;
+    gfx::UniformHandle m_ssaoHistorySampler;
     gfx::UniformHandle m_ssrSampler;
+    gfx::UniformHandle m_ssrHistorySampler;
     gfx::UniformHandle m_ssgiSampler;
     gfx::UniformHandle m_ssgiRawSampler;
+    gfx::UniformHandle m_ssgiHistorySampler;
+    gfx::UniformHandle m_ssgiHistoryDepthSampler;
+    gfx::UniformHandle m_ssgiHistoryNormalSampler;
     gfx::TextureHandle m_lightDataTexture;
     gfx::UniformHandle m_lightDataSampler;
     std::vector<Vec4> m_lightDataUpload;
@@ -529,6 +580,8 @@ class ForwardRenderer {
     Vec3 m_ambientColor{0.08f, 0.09f, 0.11f};
     LightBuilder m_lightBuilder;
     CookieAtlas m_cookieAtlas;
+    uint64_t m_cookieAtlasUploadHash = 0;
+    bool m_cookieAtlasUploaded = false;
     LightListBuilder m_lightListBuilder;
     LightListBuilder m_clusterStatsReferenceBuilder;
     bool m_clusterStatsReferenceValid = false;
@@ -581,6 +634,8 @@ class ForwardRenderer {
     bool m_jitterEnabled = false;
     bool m_depthPrepassActive = false;
     bool m_deferredActive = false;
+    bool m_advancedMaterialActive = false;
+    bool m_advancedLightingActive = false;
     bool m_volumetricFogActive = false;
     uint32_t m_volumetricFogSteps = 0;
     uint16_t m_volumetricFogWidth = 0;
@@ -616,6 +671,30 @@ class ForwardRenderer {
     uint32_t m_fogHistoryIndex = 0;
     uint32_t m_fogHistoryFrame = 0;
     bool m_fogHistoryValid = false;
+    std::array<gfx::TextureHandle, 2> m_ssaoHistoryTextures{};
+    uint16_t m_ssaoHistoryWidth = 0;
+    uint16_t m_ssaoHistoryHeight = 0;
+    uint32_t m_ssaoHistoryIndex = 0;
+    uint32_t m_ssaoHistoryFrame = 0;
+    bool m_ssaoHistoryValid = false;
+    bool m_ssaoTemporalActive = false;
+    bool m_ssaoTemporalFallbackLogged = false;
+    std::array<gfx::TextureHandle, 2> m_ssrHistoryTextures{};
+    uint16_t m_ssrHistoryWidth = 0;
+    uint16_t m_ssrHistoryHeight = 0;
+    uint32_t m_ssrHistoryIndex = 0;
+    uint32_t m_ssrHistoryFrame = 0;
+    bool m_ssrHistoryValid = false;
+    bool m_ssrTemporalActive = false;
+    std::array<gfx::TextureHandle, 2> m_ssgiHistoryTextures{};
+    std::array<gfx::TextureHandle, 2> m_ssgiHistoryDepthTextures{};
+    std::array<gfx::TextureHandle, 2> m_ssgiHistoryNormalTextures{};
+    uint16_t m_ssgiHistoryWidth = 0;
+    uint16_t m_ssgiHistoryHeight = 0;
+    uint32_t m_ssgiHistoryIndex = 0;
+    uint32_t m_ssgiHistoryFrame = 0;
+    bool m_ssgiHistoryValid = false;
+    bool m_ssgiTemporalActive = false;
     mutable bool m_deferredFallbackLogged = false;
     mutable bool m_decalFallbackLogged = false;
     float m_renderScale = 1.0f;

@@ -42,6 +42,8 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                    int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit, bool shadowsEnabled,
                    bool clusterStatsReadback, const render::PipelineSettings& pipelineSettings,
                    const render::FrameSettings& frameSettings, const render::ShadowSettings& shadowSettings,
+                   const render::SsaoSettings& ssaoSettings, const render::SsrSettings& ssrSettings,
+                   const render::SsgiSettings& ssgiSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
                    const std::string& skyPath, float skyIntensity, float skyRotation) {
@@ -67,6 +69,9 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
         frameOverride.setEnabled(render::FrameSettingsField::ContactShadows, true);
     }
     renderer.setSettings(pipeline, frameOverride);
+    renderer.setSsaoSettings(ssaoSettings);
+    renderer.setSsrSettings(ssrSettings);
+    renderer.setSsgiSettings(ssgiSettings);
     renderer.setShadowSettings(shadowSettings);
     renderer.setPostProcessProfile(postProcessProfile);
     renderer.setVolumetricFogSettings(volumetricFogSettings);
@@ -118,7 +123,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  "post_history={} post_exposure={} post_uber={} post_bloom={} post_taa={} post_dof={} "
                  "post_motion_blur={} post_fxaa={} fog={} fog_steps={} fog_scale={:.3f} fog_lowres={}x{} "
                  "fog_temporal={} fog_history={} fog_lights={} fog_local={} fog_local_masks={} "
-                 "shadow_drawn={} shadow_culled={} shadow_cache={} shadow_cached={} shadow_area_cache={} "
+                 "shadow_drawn={} shadow_culled={} shadow_dir_cache={} shadow_cached_dir={} shadow_cache={} shadow_cached={} shadow_area_cache={} "
                  "shadow_cached_area={} contact={} contact_res={}x{} "
                  "gpu_light_list={} gpu_light_list_requested={} gpu_light_list_fallback={} light_list_passes={} "
                  "light_list_cpu_ms={:.3f} shadow_cull_path={} shadow_indirect={} shadow_cull_dispatches={} "
@@ -128,7 +133,9 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  "cluster_stats_gpu={} cluster_stats_pending={} cluster_stats_clusters={} "
                  "cluster_stats_active={} cluster_stats_overflow_clusters={} cluster_stats_overflow_lights={} "
                  "cluster_stats_max_overflow={} cluster_stats_max_lights={} "
-                 "taa_history={} taa_frames={} gpuFrame={}",
+                 "taa_history={} taa_frames={} ssao_temporal={} ssao_history={} ssao_frames={} "
+                 "ssr_temporal={} ssr_history={} ssr_frames={} ssgi_temporal={} ssgi_history={} "
+                 "ssgi_frames={} gpuFrame={}",
                  count, averageFrameMs, averageFrameMs > 0.0 ? 1000.0 / averageFrameMs : 0.0, cpuSubmitMs,
                  gpuFrameMs, stats->numDraw, stats->numCompute, stats->numTextures,
                  stats->numPrims[bgfx::Topology::TriList], diagnostics.passCount,
@@ -150,6 +157,8 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.volumetricFogHistoryValid ? "true" : "false", diagnostics.volumetricFogPunctualLights,
                  diagnostics.volumetricFogLocalVolumes, diagnostics.volumetricFogLocalMasks,
                  diagnostics.shadowDrawnItems, diagnostics.shadowCulledItems,
+                 diagnostics.shadowDirectionalCacheActive ? "true" : "false",
+                 diagnostics.shadowCachedDirectionalRequests,
                  diagnostics.shadowCacheActive ? "true" : "false", diagnostics.shadowCachedRequests,
                  diagnostics.shadowAreaCacheActive ? "true" : "false", diagnostics.shadowCachedAreaRequests,
                  diagnostics.contactShadowsActive ? "true" : "false", diagnostics.contactShadowWidth,
@@ -169,7 +178,13 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.clusterStatsActiveClusters, diagnostics.clusterStatsOverflowClusters,
                  diagnostics.clusterStatsOverflowLights, diagnostics.clusterStatsMaxOverflow,
                  diagnostics.clusterStatsMaxLights, diagnostics.postProcessTaaHistoryValid ? "true" : "false",
-                 diagnostics.postProcessTaaHistoryFrames, stats->gpuFrameNum);
+                 diagnostics.postProcessTaaHistoryFrames, diagnostics.ssaoTemporal ? "true" : "false",
+                 diagnostics.ssaoHistoryValid ? "true" : "false", diagnostics.ssaoHistoryFrames,
+                 diagnostics.ssrTemporal ? "true" : "false",
+                 diagnostics.ssrHistoryValid ? "true" : "false", diagnostics.ssrHistoryFrames,
+                 diagnostics.ssgiTemporal ? "true" : "false",
+                 diagnostics.ssgiHistoryValid ? "true" : "false", diagnostics.ssgiHistoryFrames,
+                 stats->gpuFrameNum);
     }
 
     bool clusterStatsOk = true;

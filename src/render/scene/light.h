@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace hbg::render {
 
@@ -54,6 +55,9 @@ struct Light {
     Vec2 cookieScale{1.0f, 1.0f};
     Vec2 cookieOffset{0.0f, 0.0f};
     std::array<float, 64> cookieSamples{};
+    std::vector<float> cookieNative;
+    uint32_t cookieNativeWidth = 0;
+    uint32_t cookieNativeHeight = 0;
     std::array<float, 8> iesSamples{};
     float iesCut = 0.0f;
     bool hasIes = false;

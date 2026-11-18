@@ -133,7 +133,7 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     writeFile(gltfPath, json.data(), json.size());
 
     const std::string sidecar = R"({
-        "hdrp":{"renderQueue":2451,"features":{"clearCoat":true}},
+        "hdrp":{"renderQueue":2451,"features":{"clearCoat":true,"subsurfaceScattering":true},"clearCoat":0.4,"clearCoatRoughness":0.12,"transmission":0.3,"thickness":0.5,"ior":1.4,"iridescence":0.2,"anisotropy":0.6,"anisotropyRotation":0.25,"subsurfaceMask":0.7},
         "lights":[{
             "name":"LightNode",
             "shadow":{
@@ -184,6 +184,16 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(material.alphaMode == AlphaMode::Mask);
     CHECK(material.renderQueue == 2451);
     CHECK((material.features & MaterialFeatureClearCoat) != 0);
+    CHECK((material.features & MaterialFeatureSubsurface) != 0);
+    CHECK(material.clearCoat == doctest::Approx(0.4f));
+    CHECK(material.clearCoatRoughness == doctest::Approx(0.12f));
+    CHECK(material.transmission == doctest::Approx(0.3f));
+    CHECK(material.thickness == doctest::Approx(0.5f));
+    CHECK(material.ior == doctest::Approx(1.4f));
+    CHECK(material.iridescence == doctest::Approx(0.2f));
+    CHECK(material.anisotropy == doctest::Approx(0.6f));
+    CHECK(material.anisotropyRotation == doctest::Approx(0.25f));
+    CHECK(material.subsurfaceMask == doctest::Approx(0.7f));
     CHECK(material.baseColorFactor == Vec4(0.8f, 0.2f, 0.1f, 1.0f));
     CHECK(material.metallic == doctest::Approx(0.1f));
     CHECK(material.roughness == doctest::Approx(0.7f));
@@ -401,7 +411,9 @@ TEST_CASE("scene sidecar loads static decal data and textures") {
             "normalBlend": 0.5,
             "metallic": 0.2,
             "ao": 0.8,
-            "roughness": 0.4
+            "roughness": 0.4,
+            "layerMask": 5,
+            "channelMask": 17
         }]
     })";
     writeFile(sidecarPath, sidecar.data(), sidecar.size());
@@ -426,6 +438,8 @@ TEST_CASE("scene sidecar loads static decal data and textures") {
     CHECK(decal.metallic == doctest::Approx(0.2f));
     CHECK(decal.ambientOcclusion == doctest::Approx(0.8f));
     CHECK(decal.roughness == doctest::Approx(0.4f));
+    CHECK(decal.layerMask == 5u);
+    CHECK(decal.channelMask == 17u);
     CHECK(decal.enabled);
 }
 

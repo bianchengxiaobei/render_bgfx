@@ -14,6 +14,20 @@ struct SurfaceData
     float materialAmbientOcclusion;
     vec3  normalWS;
     vec3  geometricNormalWS;
+    vec3  tangentWS;
+#ifdef HBG_ADVANCED_MATERIAL
+    float clearCoatMask;
+    float clearCoatRoughness;
+    float clearCoatNormalScale;
+    float transmissionMask;
+    float thickness;
+    float ior;
+    float anisotropy;
+    float anisotropyRotation;
+    float iridescenceMask;
+    float iridescenceThickness;
+    float subsurfaceMask;
+#endif
     vec3  emissive;
     float contactShadowMask;
     float contactShadowFade;

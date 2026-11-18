@@ -12,6 +12,10 @@ struct LitResult
     vec3 specular;
 };
 
+#ifdef HBG_ADVANCED_MATERIAL
+#include "lighting/direct_lighting_advanced.sc"
+#endif
+
 float hbgComputeMicroShadowing(float ambientOcclusion, float NdotL, float opacity)
 {
     const float aperture = 2.0 * ambientOcclusion * ambientOcclusion;
@@ -29,6 +33,9 @@ vec3 hbgComputeShadowColor(float shadow, vec3 shadowTint, float penumbraTint)
 LitResult hbgEvaluateLight(SurfaceData surfaceData, vec3 viewWS, vec3 lightDirectionWS, vec3 radiance,
                            vec3 visibility)
 {
+#ifdef HBG_ADVANCED_MATERIAL
+    return hbgEvaluateLightAdvanced(surfaceData, viewWS, lightDirectionWS, radiance, visibility);
+#endif
     LitResult result;
     result.diffuse = vec3(0.0, 0.0, 0.0);
     result.specular = vec3(0.0, 0.0, 0.0);
@@ -68,7 +75,11 @@ vec3 hbgEvaluateAmbient(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition
 {
     vec3 N = normalize(surfaceData.normalWS);
     vec3 V = normalize(viewWS);
+#ifdef HBG_ADVANCED_MATERIAL
+    vec3 f0 = hbgAdvancedFresnel0(surfaceData, max(dot(N, V), 1.0e-4));
+#else
     vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
+#endif
     float NdotV = max(dot(N, V), 1.0e-4);
 
     vec3 fresnel = hbgF_Schlick(f0, NdotV);
@@ -85,6 +96,10 @@ vec3 hbgEvaluateAmbient(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition
         const float intensity = u_environment_skyParams.x;
         result = surfaceData.baseColor * (1.0 - surfaceData.metallic) * surfaceData.ambientOcclusion *
                  hbgSampleSH9(N) * intensity;
+#ifdef HBG_ADVANCED_MATERIAL
+        result += surfaceData.baseColor * hbgSaturate(surfaceData.subsurfaceMask) *
+                  hbgSampleSH9(N) * intensity * 0.25;
+#endif
     }
 
     if (skyIblEnabled || u_probe_global.x > 0.5)
@@ -95,7 +110,23 @@ vec3 hbgEvaluateAmbient(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition
         float probeWeight = 0.0;
         const vec3 environmentReflection =
             hbgSampleReflection(worldPosition, reflection, perceptualRoughness, probeWeight);
+#ifdef HBG_ADVANCED_MATERIAL
+        const float coatMask = hbgSaturate(surfaceData.clearCoatMask);
+        result += environmentReflection * (f0 * ab.x + ab.y) * surfaceData.ambientOcclusion *
+                  (1.0 - coatMask * 0.5);
+        if (coatMask > 0.0)
+        {
+            const float coatRoughness = clamp(surfaceData.clearCoatRoughness, 0.002, 1.0);
+            const vec2 coatAb = hbgEnvBRDFApprox(NdotV, coatRoughness);
+            float coatProbeWeight = 0.0;
+            const vec3 coatReflection = hbgSampleReflection(worldPosition, reflection, coatRoughness,
+                                                             coatProbeWeight);
+            result += coatReflection * (vec3(0.04, 0.04, 0.04) * coatAb.x + coatAb.y) *
+                      coatMask * surfaceData.ambientOcclusion;
+        }
+#else
         result += environmentReflection * (f0 * ab.x + ab.y) * surfaceData.ambientOcclusion;
+#endif
     }
     return result;
 }

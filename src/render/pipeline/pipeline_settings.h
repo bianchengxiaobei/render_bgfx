@@ -43,6 +43,8 @@ struct PipelineSettings {
     bool supportGpuLightListBuffers = true;
     bool supportGpuLightListIndirect = false;
     bool supportLightListFeatureFlags = true;
+    bool supportCookieAtlas = true;
+    uint32_t cookieAtlasSize = 1024;
     uint32_t lightListCapacity = 64;
     bool supportGpuShadowCulling = false;
     bool supportGpuShadowIndirect = false;

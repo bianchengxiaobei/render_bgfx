@@ -362,9 +362,10 @@ void DebugUI::drawPanel() {
         }
 
         ImGui::Separator();
+        constexpr std::size_t kMaxDebugModes = 64;
         const std::size_t modeCount = render::debugDisplayModeCount();
-        const std::size_t shownModes = std::min<std::size_t>(modeCount, 32);
-        const char* modeNames[32]{};
+        const std::size_t shownModes = std::min<std::size_t>(modeCount, kMaxDebugModes);
+        const char* modeNames[kMaxDebugModes]{};
         for (std::size_t index = 0; index < shownModes; ++index) {
             modeNames[index] = render::debugDisplayModeNameAt(index);
         }

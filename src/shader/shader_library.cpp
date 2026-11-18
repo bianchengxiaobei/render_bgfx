@@ -186,18 +186,23 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto decal = backend->find("decal");
     const auto decalClear = backend->find("decalClear");
     const auto deferredLighting = backend->find("deferredLighting");
+    const auto deferredLightingAdvanced = backend->find("deferredLightingAdvanced");
     const auto ssao = backend->find("ssao");
     const auto ssaoBlur = backend->find("ssaoBlur");
+    const auto ssaoTemporal = backend->find("ssaoTemporal");
     const auto ssaoUpsample = backend->find("ssaoUpsample");
     const auto debugSsao = backend->find("debugSsao");
     const auto ssrTrace = backend->find("ssrTrace");
+    const auto ssrTemporal = backend->find("ssrTemporal");
     const auto ssrComposite = backend->find("ssrComposite");
     const auto debugSsr = backend->find("debugSsr");
     const auto debugDecals = backend->find("debugDecals");
     const auto ssgiTrace = backend->find("ssgiTrace");
     const auto ssgiDenoise = backend->find("ssgiDenoise");
+    const auto ssgiTemporal = backend->find("ssgiTemporal");
     const auto ssgiComposite = backend->find("ssgiComposite");
     const auto debugSsgi = backend->find("debugSsgi");
+    const auto debugSsgiRaw = backend->find("debugSsgiRaw");
     const auto contactShadows = backend->find("contactShadows");
     const auto lightScreenAabb = backend->find("lightScreenAabb");
     const auto lightBigTile = backend->find("lightBigTile");
@@ -225,12 +230,14 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         debugRoughness == backend->end() || debugGbuffer == backend->end() || wireframe == backend->end() ||
         gbufferDecals == backend->end() ||
         decal == backend->end() || decalClear == backend->end() || deferredLighting == backend->end() ||
-        ssao == backend->end() || ssaoBlur == backend->end() || ssaoUpsample == backend->end() ||
-        debugSsao == backend->end() || ssrTrace == backend->end() || ssrComposite == backend->end() ||
+        deferredLightingAdvanced == backend->end() ||
+        ssao == backend->end() || ssaoBlur == backend->end() || ssaoTemporal == backend->end() ||
+        ssaoUpsample == backend->end() || debugSsao == backend->end() || ssrTrace == backend->end() ||
+        ssrTemporal == backend->end() || ssrComposite == backend->end() ||
         debugSsr == backend->end() || debugDecals == backend->end() || ssgiTrace == backend->end() ||
-        ssgiDenoise == backend->end() ||
+        ssgiDenoise == backend->end() || ssgiTemporal == backend->end() ||
         ssgiComposite == backend->end() ||
-        debugSsgi == backend->end() || contactShadows == backend->end() ||
+        debugSsgi == backend->end() || debugSsgiRaw == backend->end() || contactShadows == backend->end() ||
         lightScreenAabbBuffer == backend->end() || lightBigTileBuffer == backend->end() ||
         lightFptlBuffer == backend->end() || lightClusterBuffer == backend->end() ||
         lightIndirectArgs == backend->end() ||
@@ -358,18 +365,23 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.decal = readFiles(*decal, false);
     m_files.decalClear = readFiles(*decalClear, false);
     m_files.deferredLighting = readFiles(*deferredLighting, false);
+    m_files.deferredLightingAdvanced = readFiles(*deferredLightingAdvanced, false);
     m_files.ssao = readFiles(*ssao, false);
     m_files.ssaoBlur = readFiles(*ssaoBlur, false);
+    m_files.ssaoTemporal = readFiles(*ssaoTemporal, false);
     m_files.ssaoUpsample = readFiles(*ssaoUpsample, false);
     m_files.debugSsao = readFiles(*debugSsao, false);
     m_files.ssrTrace = readFiles(*ssrTrace, false);
+    m_files.ssrTemporal = readFiles(*ssrTemporal, false);
     m_files.ssrComposite = readFiles(*ssrComposite, false);
     m_files.debugSsr = readFiles(*debugSsr, false);
     m_files.debugDecals = readFiles(*debugDecals, false);
     m_files.ssgiTrace = readFiles(*ssgiTrace, false);
     m_files.ssgiDenoise = readFiles(*ssgiDenoise, false);
+    m_files.ssgiTemporal = readFiles(*ssgiTemporal, false);
     m_files.ssgiComposite = readFiles(*ssgiComposite, false);
     m_files.debugSsgi = readFiles(*debugSsgi, false);
+    m_files.debugSsgiRaw = readFiles(*debugSsgiRaw, false);
     m_files.contactShadows = readCompute(*contactShadows);
     if (lightScreenAabb != backend->end()) {
         m_files.lightScreenAabb = readCompute(*lightScreenAabb);
@@ -420,19 +432,25 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.gbufferDecals.fragments.empty() && !m_files.decal.vertex.empty() &&
               !m_files.decal.fragments.empty() && !m_files.decalClear.vertex.empty() &&
               !m_files.decalClear.fragments.empty() && !m_files.deferredLighting.vertex.empty() &&
-              !m_files.deferredLighting.fragments.empty() && !m_files.ssao.vertex.empty() &&
+              !m_files.deferredLighting.fragments.empty() &&
+              !m_files.deferredLightingAdvanced.vertex.empty() &&
+              !m_files.deferredLightingAdvanced.fragments.empty() && !m_files.ssao.vertex.empty() &&
               !m_files.ssao.fragments.empty() && !m_files.ssaoBlur.vertex.empty() &&
-              !m_files.ssaoBlur.fragments.empty() && !m_files.ssaoUpsample.vertex.empty() &&
+              !m_files.ssaoBlur.fragments.empty() && !m_files.ssaoTemporal.vertex.empty() &&
+              !m_files.ssaoTemporal.fragments.empty() && !m_files.ssaoUpsample.vertex.empty() &&
               !m_files.ssaoUpsample.fragments.empty() && !m_files.debugSsao.vertex.empty() &&
               !m_files.debugSsao.fragments.empty() && !m_files.ssrTrace.vertex.empty() &&
-              !m_files.ssrTrace.fragments.empty() && !m_files.ssrComposite.vertex.empty() &&
+              !m_files.ssrTrace.fragments.empty() && !m_files.ssrTemporal.vertex.empty() &&
+              !m_files.ssrTemporal.fragments.empty() && !m_files.ssrComposite.vertex.empty() &&
               !m_files.ssrComposite.fragments.empty() && !m_files.debugSsr.vertex.empty() &&
               !m_files.debugSsr.fragments.empty() && !m_files.debugDecals.vertex.empty() &&
               !m_files.debugDecals.fragments.empty() && !m_files.ssgiTrace.vertex.empty() &&
               !m_files.ssgiTrace.fragments.empty() && !m_files.ssgiDenoise.vertex.empty() &&
-              !m_files.ssgiDenoise.fragments.empty() && !m_files.ssgiComposite.vertex.empty() &&
+              !m_files.ssgiDenoise.fragments.empty() && !m_files.ssgiTemporal.vertex.empty() &&
+              !m_files.ssgiTemporal.fragments.empty() && !m_files.ssgiComposite.vertex.empty() &&
               !m_files.ssgiComposite.fragments.empty() && !m_files.debugSsgi.vertex.empty() &&
-              !m_files.debugSsgi.fragments.empty() && !m_files.contactShadows.compute.empty() &&
+              !m_files.debugSsgi.fragments.empty() && !m_files.debugSsgiRaw.vertex.empty() &&
+              !m_files.debugSsgiRaw.fragments.empty() && !m_files.contactShadows.compute.empty() &&
               !m_files.debugContactShadows.vertex.empty() && !m_files.debugContactShadows.fragments.empty() &&
               !m_files.debugShadowCascade.vertex.empty() && !m_files.debugShadowCascade.fragments.empty() &&
               !m_files.debugShadowFilter.vertex.empty() && !m_files.debugShadowFilter.fragments.empty() &&
@@ -729,12 +747,20 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.deferredLighting;
         variant = 0;
         break;
+    case PassId::DeferredLightingAdvanced:
+        files = &m_files.deferredLightingAdvanced;
+        variant = 0;
+        break;
     case PassId::SSAO:
         files = &m_files.ssao;
         variant = 0;
         break;
     case PassId::SSAOBlur:
         files = &m_files.ssaoBlur;
+        variant = 0;
+        break;
+    case PassId::SSAOTemporal:
+        files = &m_files.ssaoTemporal;
         variant = 0;
         break;
     case PassId::SSAOUpsample:
@@ -747,6 +773,10 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::SSR:
         files = &m_files.ssrTrace;
+        variant = 0;
+        break;
+    case PassId::SSRTemporal:
+        files = &m_files.ssrTemporal;
         variant = 0;
         break;
     case PassId::SSRComposite:
@@ -769,12 +799,20 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.ssgiDenoise;
         variant = 0;
         break;
+    case PassId::SSGITemporal:
+        files = &m_files.ssgiTemporal;
+        variant = 0;
+        break;
     case PassId::SSGIComposite:
         files = &m_files.ssgiComposite;
         variant = 0;
         break;
     case PassId::DebugSSGI:
         files = &m_files.debugSsgi;
+        variant = 0;
+        break;
+    case PassId::DebugSSGIRaw:
+        files = &m_files.debugSsgiRaw;
         variant = 0;
         break;
     case PassId::ContactShadows:

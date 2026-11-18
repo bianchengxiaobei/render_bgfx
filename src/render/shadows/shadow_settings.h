@@ -52,6 +52,7 @@ struct ShadowSettings {
     bool microShadows = false;
     float microShadowOpacity = 1.0f;
     ContactShadowSettings contactShadows;
+    bool cachedDirectionalShadows = false;
     bool cachedPunctualShadows = false;
     bool cachedAreaShadows = false;
 

@@ -88,7 +88,27 @@ bool applyMaterialOverride(Material& material, const nlohmann::json& override, s
         applyFeature(material, MaterialFeatureIor, *features, "ior");
         applyFeature(material, MaterialFeatureIridescence, *features, "iridescence");
         applyFeature(material, MaterialFeatureAnisotropy, *features, "anisotropy");
+        applyFeature(material, MaterialFeatureSubsurface, *features, "subsurfaceScattering");
     }
+
+    const auto readFeatureFloat = [&](const char* key, float& target) {
+        const auto iterator = override.find(key);
+        if (iterator != override.end() && iterator->is_number()) {
+            target = iterator->get<float>();
+        }
+    };
+    readFeatureFloat("clearCoat", material.clearCoat);
+    readFeatureFloat("clearCoatRoughness", material.clearCoatRoughness);
+    readFeatureFloat("clearCoatNormalScale", material.clearCoatNormalScale);
+    readFeatureFloat("transmission", material.transmission);
+    readFeatureFloat("thickness", material.thickness);
+    readFeatureFloat("ior", material.ior);
+    readFeatureFloat("iridescence", material.iridescence);
+    readFeatureFloat("iridescenceIor", material.iridescenceIor);
+    readFeatureFloat("iridescenceThickness", material.iridescenceThickness);
+    readFeatureFloat("anisotropy", material.anisotropy);
+    readFeatureFloat("anisotropyRotation", material.anisotropyRotation);
+    readFeatureFloat("subsurfaceMask", material.subsurfaceMask);
 
     return true;
 }
@@ -286,6 +306,14 @@ bool applyDecal(render::RenderScene& scene, const nlohmann::json& object, const 
     decal.metallic = std::clamp(readFloat(object, "metallic", decal.metallic), 0.0f, 1.0f);
     decal.ambientOcclusion = std::clamp(readFloat(object, "ao", decal.ambientOcclusion), 0.0f, 1.0f);
     decal.roughness = std::clamp(readFloat(object, "roughness", decal.roughness), 0.0f, 1.0f);
+    uint32_t layerMask = decal.layerMask;
+    uint32_t channelMask = decal.channelMask;
+    if (!readUint(object, "layerMask", layerMask, error) ||
+        !readUint(object, "channelMask", channelMask, error)) {
+        return false;
+    }
+    decal.layerMask = std::min<uint32_t>(layerMask, 0x7fu);
+    decal.channelMask = std::min<uint32_t>(channelMask, 0x1fu);
     decal.size = Vec3(std::max(std::abs(decal.size.x), 1.0e-3f), std::max(std::abs(decal.size.y), 1.0e-3f),
                       std::max(std::abs(decal.size.z), 1.0e-3f));
 
@@ -619,6 +647,12 @@ bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, 
         return false;
     }
     target->lightLayerMask = static_cast<uint16_t>(std::min<uint32_t>(mask, 0xffffu));
+
+    uint32_t decalMask = target->decalLayerMask;
+    if (!readUint(object, "decalLayerMask", decalMask, error)) {
+        return false;
+    }
+    target->decalLayerMask = static_cast<uint8_t>(std::min<uint32_t>(decalMask, 0x7fu));
     return true;
 }
 render::Light* resolveLightTarget(render::RenderScene& scene, const nlohmann::json& object, std::size_t index) {
@@ -725,6 +759,28 @@ float readImageLuminance(const ImageAsset& image, uint32_t x, uint32_t y) {
            255.0f;
 }
 
+float sampleImageLuminance(const ImageAsset& image, Vec2 uv) {
+    const float x = std::clamp(uv.x, 0.0f, 1.0f) * static_cast<float>(image.width - 1u);
+    const float y = std::clamp(uv.y, 0.0f, 1.0f) * static_cast<float>(image.height - 1u);
+    const uint32_t x0 = static_cast<uint32_t>(std::floor(x));
+    const uint32_t y0 = static_cast<uint32_t>(std::floor(y));
+    const uint32_t x1 = std::min(x0 + 1u, image.width - 1u);
+    const uint32_t y1 = std::min(y0 + 1u, image.height - 1u);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+    const float low = readImageLuminance(image, x0, y0) * (1.0f - tx) + readImageLuminance(image, x1, y0) * tx;
+    const float high = readImageLuminance(image, x0, y1) * (1.0f - tx) + readImageLuminance(image, x1, y1) * tx;
+    return low * (1.0f - ty) + high * ty;
+}
+
+uint32_t nextCookiePowerOfTwo(uint32_t value) {
+    uint32_t result = 1;
+    while (result < value && result < render::kCookieAtlasMaxNativeSize) {
+        result <<= 1;
+    }
+    return std::clamp(result, 8u, render::kCookieAtlasMaxNativeSize);
+}
+
 Vec3 octahedralDecodeDirection(Vec2 encoded) {
     Vec2 f(encoded.x * 2.0f - 1.0f, encoded.y * 2.0f - 1.0f);
     Vec3 n(f.x, f.y, 1.0f - std::abs(f.x) - std::abs(f.y));
@@ -752,7 +808,7 @@ bool loadCookieSamples(render::Light& light, const std::filesystem::path& path, 
     if (!TextureLoader::loadFromFile(path, image, error)) {
         return false;
     }
-    const uint32_t size = render::kLightCookieSize;
+    const uint32_t size = render::kCookieLegacySize;
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
             const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(size),
@@ -761,11 +817,36 @@ bool loadCookieSamples(render::Light& light, const std::filesystem::path& path, 
             if (light.cookieType == render::LightCookieType::PointOctahedral) {
                 sourceUV = octahedralDecode(uv);
             }
-            const uint32_t sourceX =
-                static_cast<uint32_t>(std::clamp(sourceUV.x, 0.0f, 1.0f) * static_cast<float>(image.width - 1));
-            const uint32_t sourceY =
-                static_cast<uint32_t>(std::clamp(sourceUV.y, 0.0f, 1.0f) * static_cast<float>(image.height - 1));
-            light.cookieSamples[y * size + x] = std::clamp(readImageLuminance(image, sourceX, sourceY), 0.0f, 1.0f);
+            light.cookieSamples[y * size + x] =
+                std::clamp(sampleImageLuminance(image, sourceUV), 0.0f, 1.0f);
+        }
+    }
+
+    if (light.cookieType == render::LightCookieType::PointOctahedral) {
+        const uint32_t nativeSize = nextCookiePowerOfTwo(std::max(image.width, image.height));
+        light.cookieNativeWidth = nativeSize;
+        light.cookieNativeHeight = nativeSize;
+        light.cookieNative.assign(static_cast<std::size_t>(nativeSize) * nativeSize, 1.0f);
+        for (uint32_t y = 0; y < nativeSize; ++y) {
+            for (uint32_t x = 0; x < nativeSize; ++x) {
+                const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(nativeSize),
+                              (static_cast<float>(y) + 0.5f) / static_cast<float>(nativeSize));
+                light.cookieNative[static_cast<std::size_t>(y) * nativeSize + x] =
+                    std::clamp(sampleImageLuminance(image, octahedralDecode(uv)), 0.0f, 1.0f);
+            }
+        }
+    } else {
+        light.cookieNativeWidth = nextCookiePowerOfTwo(image.width);
+        light.cookieNativeHeight = nextCookiePowerOfTwo(image.height);
+        light.cookieNative.assign(
+            static_cast<std::size_t>(light.cookieNativeWidth) * light.cookieNativeHeight, 1.0f);
+        for (uint32_t y = 0; y < light.cookieNativeHeight; ++y) {
+            for (uint32_t x = 0; x < light.cookieNativeWidth; ++x) {
+                const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(light.cookieNativeWidth),
+                              (static_cast<float>(y) + 0.5f) / static_cast<float>(light.cookieNativeHeight));
+                light.cookieNative[static_cast<std::size_t>(y) * light.cookieNativeWidth + x] =
+                    std::clamp(sampleImageLuminance(image, uv), 0.0f, 1.0f);
+            }
         }
     }
     return true;
@@ -971,7 +1052,7 @@ bool loadIesPointSamples(render::Light& light, const std::filesystem::path& path
         return false;
     }
 
-    const uint32_t size = render::kLightCookieSize;
+    const uint32_t size = render::kCookieLegacySize;
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
             const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(size),
@@ -984,6 +1065,26 @@ bool loadIesPointSamples(render::Light& light, const std::filesystem::path& path
             }
             const float sample = std::clamp(sampleIesProfile(profile, vertical, horizontal) / maximum, 0.0f, 1.0f);
             light.cookieSamples[y * size + x] *= sample;
+        }
+    }
+
+    if (light.cookieNativeWidth == 0 || light.cookieNativeHeight == 0) {
+        light.cookieNativeWidth = 64;
+        light.cookieNativeHeight = 64;
+        light.cookieNative.assign(static_cast<std::size_t>(light.cookieNativeWidth) * light.cookieNativeHeight, 1.0f);
+    }
+    for (uint32_t y = 0; y < light.cookieNativeHeight; ++y) {
+        for (uint32_t x = 0; x < light.cookieNativeWidth; ++x) {
+            const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(light.cookieNativeWidth),
+                          (static_cast<float>(y) + 0.5f) / static_cast<float>(light.cookieNativeHeight));
+            const Vec3 direction = octahedralDecodeDirection(uv);
+            const float vertical = std::acos(std::clamp(direction.y, -1.0f, 1.0f)) * 57.2957795131f;
+            float horizontal = std::atan2(direction.x, direction.z) * 57.2957795131f;
+            if (horizontal < 0.0f) {
+                horizontal += 360.0f;
+            }
+            const float sample = std::clamp(sampleIesProfile(profile, vertical, horizontal) / maximum, 0.0f, 1.0f);
+            light.cookieNative[static_cast<std::size_t>(y) * light.cookieNativeWidth + x] *= sample;
         }
     }
     light.hasIes = true;

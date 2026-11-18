@@ -183,6 +183,7 @@ void LightBuilder::build(const RenderScene& scene, const Vec3& cameraPosition, c
         m_data->texels[base + 7] =
             Vec4(static_cast<float>(light.cookieMode), static_cast<float>(light.cookieType), 0.0f,
                  static_cast<float>(cookieShapeFlags));
+        m_data->texels[base + 11] = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
         m_data->texels[base + 8] = Vec4(right.x, right.y, right.z, halfWidth);
         m_data->texels[base + 9] = Vec4(up.x, up.y, up.z, halfHeight);
         m_data->texels[base + 10] = Vec4(light.cookieScale.x, light.cookieScale.y, light.cookieOffset.x,
@@ -242,11 +243,12 @@ void LightBuilder::setShadowDimmer(uint32_t lightIndex, float dimmer) {
     m_data->texels[lightIndex * kGpuLightTexels + 4].w = std::clamp(dimmer, 0.0f, 1.0f);
 }
 
-void LightBuilder::setCookieAtlas(uint32_t lightIndex, uint32_t tileIndex) {
+void LightBuilder::setCookieAtlas(uint32_t lightIndex, uint32_t tileIndex, Vec4 scaleOffset) {
     if (lightIndex >= m_selectedLights.size() || tileIndex >= kCookieAtlasTileCapacity) {
         return;
     }
     m_data->texels[lightIndex * kGpuLightTexels + 7].z = static_cast<float>(tileIndex + 1u);
+    m_data->texels[lightIndex * kGpuLightTexels + 11] = scaleOffset;
 }
 
 } // namespace hbg::render

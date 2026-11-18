@@ -20,7 +20,7 @@ class LightBuilder {
     const std::vector<const Light*>& selectedLights() const { return m_selectedLights; }
     void setShadowIndex(uint32_t lightIndex, int32_t shadowIndex);
     void setShadowDimmer(uint32_t lightIndex, float dimmer);
-    void setCookieAtlas(uint32_t lightIndex, uint32_t tileIndex);
+    void setCookieAtlas(uint32_t lightIndex, uint32_t tileIndex, Vec4 scaleOffset);
     void setShadowedCount(uint32_t count) { m_data->shadowedCount = count; }
 
   private:

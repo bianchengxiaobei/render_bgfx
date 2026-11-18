@@ -163,6 +163,24 @@ bool readMSAA(const Json& document, const char* key, MSAASamples& value, std::st
     return true;
 }
 
+bool readCookieAtlasSize(const Json& document, const char* key, uint32_t& value, std::string& error) {
+    const auto it = document.find(key);
+    if (it == document.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        error = std::string(key) + " must be 512, 1024 or 2048";
+        return false;
+    }
+    const int64_t requested = it->get<int64_t>();
+    if (requested != 512 && requested != 1024 && requested != 2048) {
+        error = std::string(key) + " must be 512, 1024 or 2048";
+        return false;
+    }
+    value = static_cast<uint32_t>(requested);
+    return true;
+}
+
 bool readLightListCapacity(const Json& document, const char* key, uint32_t& value, std::string& error) {
     const auto it = document.find(key);
     if (it == document.end()) {
@@ -266,6 +284,10 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportGpuLightListIndirect, error);
         } else if (key == "supportLightListFeatureFlags") {
             ok = readBool(document, key.c_str(), settings.supportLightListFeatureFlags, error);
+        } else if (key == "supportCookieAtlas") {
+            ok = readBool(document, key.c_str(), settings.supportCookieAtlas, error);
+        } else if (key == "cookieAtlasSize") {
+            ok = readCookieAtlasSize(document, key.c_str(), settings.cookieAtlasSize, error);
         } else if (key == "lightListCapacity") {
             ok = readLightListCapacity(document, key.c_str(), settings.lightListCapacity, error);
         } else if (key == "supportGpuShadowCulling") {
@@ -392,6 +414,8 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportGpuLightListBuffers"] = settings.supportGpuLightListBuffers;
     document["supportGpuLightListIndirect"] = settings.supportGpuLightListIndirect;
     document["supportLightListFeatureFlags"] = settings.supportLightListFeatureFlags;
+    document["supportCookieAtlas"] = settings.supportCookieAtlas;
+    document["cookieAtlasSize"] = settings.cookieAtlasSize;
     document["lightListCapacity"] = settings.lightListCapacity;
     document["supportGpuShadowCulling"] = settings.supportGpuShadowCulling;
     document["supportGpuShadowIndirect"] = settings.supportGpuShadowIndirect;

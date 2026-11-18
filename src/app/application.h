@@ -34,6 +34,9 @@ class Application {
     render::PipelineSettings m_pipelineSettings;
     render::FrameSettings m_frameSettings;
     render::PostProcessProfile m_postProcessProfile;
+    render::SsaoSettings m_ssaoSettings;
+    render::SsrSettings m_ssrSettings;
+    render::SsgiSettings m_ssgiSettings;
     render::VolumetricFogSettings m_volumetricFogSettings;
     render::ShadowSettings m_shadowSettings;
     DebugUI m_debugUi;

@@ -14,6 +14,7 @@ struct SsgiSettings {
     float thickness = 0.5f;
     float ambientBias = 0.5f;
     bool halfResolution = true;
+    bool temporalAccumulation = false;
     bool enabled = true;
 };
 

@@ -41,6 +41,7 @@
   "shadowDimmer": 1.0,
   "shadowFadeDistance": 10000.0,
   "shadowTint": [0.0, 0.0, 0.0],
+  "cachedDirectionalShadows": false,
   "cachedPunctualShadows": false,
   "cachedAreaShadows": false
 }

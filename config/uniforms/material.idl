@@ -2,4 +2,7 @@ block Material {
     vec4 baseColorFactor;
     vec4 metallicRoughness; # metallic, roughness, normalScale, alphaCutoff
     vec4 emissiveFactor;
+    vec4 advanced0;          # clearCoat, clearCoatRoughness, transmission, thickness
+    vec4 advanced1;          # anisotropy, anisotropyRotation, ior, iridescence
+    vec4 advanced2;          # iridescenceThickness, subsurfaceMask, features bits, unused
 }

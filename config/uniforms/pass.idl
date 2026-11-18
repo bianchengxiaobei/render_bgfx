@@ -10,4 +10,5 @@ block Pass {
     vec4 lightListParams;    # tile size, tiles x, tiles y, enabled
     vec4 lightListParams2;   # list stride, capacity, max fptl lights, max big-tile lights
     vec4 lightScreenSize;    # render width, render height, inverse width, inverse height
+    vec4 cookieAtlasParams; # atlas size, padding / size, last valid mip, unused
 }

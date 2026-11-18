@@ -191,7 +191,7 @@ vec4 hbgSampleLtcGgx(float perceptualRoughness, float ndotV)
 }
 
 vec3 hbgLtcRectCookie(vec3 v0, vec3 v1, vec3 v2, vec3 v3, vec3 formFactor, int lightIndex,
-                      int cookieMode, vec2 scale, vec2 offset)
+                      int cookieMode, vec2 scale, vec2 offset, float perceptualRoughness)
 {
     if (cookieMode == HBG_LIGHT_COOKIE_MODE_NONE)
     {
@@ -224,7 +224,16 @@ vec3 hbgLtcRectCookie(vec3 v0, vec3 v1, vec3 v2, vec3 v3, vec3 formFactor, int l
     const float v = dot(hitPosition, ortho) / max(dot(ortho, ortho), 1.0e-8);
     const float u = (dot(hitPosition, right) - upRightMixing * v) * recSqLengthRight;
     const vec2 hitUV = vec2(1.0 - u, v);
-    const float sample = hbgSampleLightCookieScaled(lightIndex, hitUV, cookieMode, scale, offset);
+
+    const vec4 atlasTransform = hbgLightCookieAtlasTransform(lightIndex);
+    const float cookieWidth = max(atlasTransform.x * u_pass_cookieAtlasParams.x, 1.0);
+    const float cookieMipCount = max(log2(cookieWidth), 0.0);
+    float mipLevel =
+        0.5 * log2(1.0e-8 + HBG_PI * hitDistance * hitDistance * rsqrt(sqArea)) + cookieMipCount;
+    const float mipTrimming = hbgSaturate((0.3 - perceptualRoughness) / 0.3);
+    mipLevel = clamp(mipLevel, 0.0, mix(cookieMipCount, 3.0, mipTrimming));
+    const float sample =
+        hbgSampleLightCookieScaledLod(lightIndex, hitUV, cookieMode, scale, offset, mipLevel);
     return vec3(sample, sample, sample);
 }
 

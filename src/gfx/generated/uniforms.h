@@ -100,13 +100,14 @@ struct PassUniforms {
     Vec4 lightListParams;
     Vec4 lightListParams2;
     Vec4 lightScreenSize;
+    Vec4 cookieAtlasParams;
 };
 
 class PassUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_pass_";
 
-    inline static const std::array<UniformDesc, 11> kDescriptors = {
+    inline static const std::array<UniformDesc, 12> kDescriptors = {
         UniformDesc{"u_pass_shadowMatrix", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowViewProj", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowParams", UniformType::Vec4, 1},
@@ -118,6 +119,7 @@ class PassUniformBinder {
         UniformDesc{"u_pass_lightListParams", UniformType::Vec4, 1},
         UniformDesc{"u_pass_lightListParams2", UniformType::Vec4, 1},
         UniformDesc{"u_pass_lightScreenSize", UniformType::Vec4, 1},
+        UniformDesc{"u_pass_cookieAtlasParams", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -137,6 +139,7 @@ class PassUniformBinder {
         m_block.set(8, uniforms.lightListParams);
         m_block.set(9, uniforms.lightListParams2);
         m_block.set(10, uniforms.lightScreenSize);
+        m_block.set(11, uniforms.cookieAtlasParams);
     }
 
   private:
@@ -186,15 +189,17 @@ class ClusterUniformBinder {
 struct SsaoUniforms {
     Vec4 params;
     Vec4 params2;
+    Vec4 params3;
 };
 
 class SsaoUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_ssao_";
 
-    inline static const std::array<UniformDesc, 2> kDescriptors = {
+    inline static const std::array<UniformDesc, 3> kDescriptors = {
         UniformDesc{"u_ssao_params", UniformType::Vec4, 1},
         UniformDesc{"u_ssao_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_ssao_params3", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -205,6 +210,7 @@ class SsaoUniformBinder {
     void upload(const SsaoUniforms& uniforms) const {
         m_block.set(0, uniforms.params);
         m_block.set(1, uniforms.params2);
+        m_block.set(2, uniforms.params3);
     }
 
   private:
@@ -214,15 +220,17 @@ class SsaoUniformBinder {
 struct SsrUniforms {
     Vec4 params;
     Vec4 params2;
+    Vec4 params3;
 };
 
 class SsrUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_ssr_";
 
-    inline static const std::array<UniformDesc, 2> kDescriptors = {
+    inline static const std::array<UniformDesc, 3> kDescriptors = {
         UniformDesc{"u_ssr_params", UniformType::Vec4, 1},
         UniformDesc{"u_ssr_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_ssr_params3", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -233,6 +241,7 @@ class SsrUniformBinder {
     void upload(const SsrUniforms& uniforms) const {
         m_block.set(0, uniforms.params);
         m_block.set(1, uniforms.params2);
+        m_block.set(2, uniforms.params3);
     }
 
   private:
@@ -243,16 +252,18 @@ struct SsgiUniforms {
     Vec4 params;
     Vec4 params2;
     Vec4 params3;
+    Vec4 params4;
 };
 
 class SsgiUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_ssgi_";
 
-    inline static const std::array<UniformDesc, 3> kDescriptors = {
+    inline static const std::array<UniformDesc, 4> kDescriptors = {
         UniformDesc{"u_ssgi_params", UniformType::Vec4, 1},
         UniformDesc{"u_ssgi_params2", UniformType::Vec4, 1},
         UniformDesc{"u_ssgi_params3", UniformType::Vec4, 1},
+        UniformDesc{"u_ssgi_params4", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -264,6 +275,7 @@ class SsgiUniformBinder {
         m_block.set(0, uniforms.params);
         m_block.set(1, uniforms.params2);
         m_block.set(2, uniforms.params3);
+        m_block.set(3, uniforms.params4);
     }
 
   private:
@@ -274,16 +286,22 @@ struct MaterialUniforms {
     Vec4 baseColorFactor;
     Vec4 metallicRoughness;
     Vec4 emissiveFactor;
+    Vec4 advanced0;
+    Vec4 advanced1;
+    Vec4 advanced2;
 };
 
 class MaterialUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_material_";
 
-    inline static const std::array<UniformDesc, 3> kDescriptors = {
+    inline static const std::array<UniformDesc, 6> kDescriptors = {
         UniformDesc{"u_material_baseColorFactor", UniformType::Vec4, 1},
         UniformDesc{"u_material_metallicRoughness", UniformType::Vec4, 1},
         UniformDesc{"u_material_emissiveFactor", UniformType::Vec4, 1},
+        UniformDesc{"u_material_advanced0", UniformType::Vec4, 1},
+        UniformDesc{"u_material_advanced1", UniformType::Vec4, 1},
+        UniformDesc{"u_material_advanced2", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -295,6 +313,9 @@ class MaterialUniformBinder {
         m_block.set(0, uniforms.baseColorFactor);
         m_block.set(1, uniforms.metallicRoughness);
         m_block.set(2, uniforms.emissiveFactor);
+        m_block.set(3, uniforms.advanced0);
+        m_block.set(4, uniforms.advanced1);
+        m_block.set(5, uniforms.advanced2);
     }
 
   private:
@@ -411,6 +432,7 @@ struct DecalUniforms {
     Mat4 decalToWorld;
     Vec4 params;
     Vec4 params2;
+    Vec4 params3;
     Vec4 baseColor;
 };
 
@@ -418,11 +440,12 @@ class DecalUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_decal_";
 
-    inline static const std::array<UniformDesc, 5> kDescriptors = {
+    inline static const std::array<UniformDesc, 6> kDescriptors = {
         UniformDesc{"u_decal_worldToDecal", UniformType::Mat4, 1},
         UniformDesc{"u_decal_decalToWorld", UniformType::Mat4, 1},
         UniformDesc{"u_decal_params", UniformType::Vec4, 1},
         UniformDesc{"u_decal_params2", UniformType::Vec4, 1},
+        UniformDesc{"u_decal_params3", UniformType::Vec4, 1},
         UniformDesc{"u_decal_baseColor", UniformType::Vec4, 1},
     };
 
@@ -436,7 +459,8 @@ class DecalUniformBinder {
         m_block.set(1, uniforms.decalToWorld);
         m_block.set(2, uniforms.params);
         m_block.set(3, uniforms.params2);
-        m_block.set(4, uniforms.baseColor);
+        m_block.set(4, uniforms.params3);
+        m_block.set(5, uniforms.baseColor);
     }
 
   private:

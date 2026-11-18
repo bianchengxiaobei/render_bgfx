@@ -211,18 +211,19 @@ const char* ForwardRenderer::deferredUnavailableReason() const {
     if (caps == nullptr) {
         return "bgfx capabilities are unavailable";
     }
-    if (caps->limits.maxFBAttachments < 5) {
-        return "backend supports fewer than five framebuffer attachments";
+    if (caps->limits.maxFBAttachments < 6) {
+        return "backend supports fewer than six framebuffer attachments";
     }
     if (selectDepthFormat() != gfx::TextureFormat::D24S8) {
         return "D24S8 depth-stencil is unavailable";
     }
 
-    constexpr std::array<gfx::TextureFormat, 4> kGBufferFormats = {
+    constexpr std::array<gfx::TextureFormat, 5> kGBufferFormats = {
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA16F,
+        gfx::TextureFormat::RGBA32F,
     };
     for (gfx::TextureFormat format : kGBufferFormats) {
         if (!framebufferFormatSupported(format)) {
@@ -244,17 +245,19 @@ bool ForwardRenderer::ensureGBufferTextures(uint16_t renderWidth, uint16_t rende
     }
 
     releaseGBufferTextures();
-    constexpr std::array<gfx::TextureFormat, 4> kFormats = {
+    constexpr std::array<gfx::TextureFormat, 5> kFormats = {
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA8,
         gfx::TextureFormat::RGBA16F,
+        gfx::TextureFormat::RGBA32F,
     };
-    constexpr std::array<const char*, 4> kNames = {
+    constexpr std::array<const char*, 5> kNames = {
         "gbuffer.baseColor",
         "gbuffer.material",
         "gbuffer.normal",
         "gbuffer.emissive",
+        "gbuffer.advanced",
     };
     for (std::size_t index = 0; index < m_gbufferTextures.size(); ++index) {
         gfx::TextureDesc desc;
@@ -305,10 +308,11 @@ bool ForwardRenderer::ensureDecalTextures(uint16_t renderWidth, uint16_t renderH
     }
 
     releaseDecalTextures();
-    constexpr std::array<const char*, 3> kNames = {
+    constexpr std::array<const char*, 4> kNames = {
         "decal.dbuffer0",
         "decal.dbuffer1",
         "decal.dbuffer2",
+        "decal.dbuffer3",
     };
     for (std::size_t index = 0; index < m_decalTextures.size(); ++index) {
         gfx::TextureDesc desc;
@@ -456,6 +460,7 @@ void ForwardRenderer::setGpuLightListBufferEnabled(bool enabled) {
 void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, const FrameSettings& frameSettings) {
     m_pipelineSettings = pipelineSettings;
     m_pipelineSettings.lightListCapacity = sanitizeLightListCapacity(m_pipelineSettings.lightListCapacity);
+    m_cookieAtlas.configure(m_pipelineSettings.cookieAtlasSize, m_pipelineSettings.supportCookieAtlas);
     m_lightListCapacity = m_pipelineSettings.lightListCapacity;
     m_lightListTextureCapacity = m_lightListCapacity;
     m_lightListEffectiveCapacity = m_lightListCapacity;
@@ -518,18 +523,31 @@ void ForwardRenderer::setPostProcessProfile(const PostProcessProfile& profile) {
 }
 
 void ForwardRenderer::setSsaoSettings(const SsaoSettings& settings) {
+    const bool temporalChanged = m_ssaoSettings.temporalAccumulation != settings.temporalAccumulation;
     m_ssaoSettings = settings;
     sanitizeSsaoSettings(m_ssaoSettings);
+    if (temporalChanged || !m_ssaoSettings.temporalAccumulation) {
+        releaseSsaoHistory();
+        m_ssaoTemporalFallbackLogged = false;
+    }
 }
 
 void ForwardRenderer::setSsrSettings(const SsrSettings& settings) {
+    const bool temporalChanged = m_ssrSettings.temporalAccumulation != settings.temporalAccumulation;
     m_ssrSettings = settings;
     sanitizeSsrSettings(m_ssrSettings);
+    if (temporalChanged || !m_ssrSettings.temporalAccumulation) {
+        releaseSsrHistory();
+    }
 }
 
 void ForwardRenderer::setSsgiSettings(const SsgiSettings& settings) {
+    const bool temporalChanged = m_ssgiSettings.temporalAccumulation != settings.temporalAccumulation;
     m_ssgiSettings = settings;
     sanitizeSsgiSettings(m_ssgiSettings);
+    if (temporalChanged || !m_ssgiSettings.temporalAccumulation) {
+        releaseSsgiHistory();
+    }
 }
 
 void ForwardRenderer::setVolumetricFogSettings(const VolumetricFogSettings& settings) {
@@ -552,9 +570,14 @@ void ForwardRenderer::setRenderScale(float scale) {
     if (sanitized == m_renderScale) {
         return;
     }
+    HBG_LOGI("forward renderer render scale: {:.3f} -> {:.3f}", m_renderScale, sanitized);
     m_renderScale = sanitized;
     m_viewState.resetHistory();
     m_postProcessChain.resetHistory();
+    releaseSsaoHistory();
+    releaseSsrHistory();
+    releaseSsgiHistory();
+    releaseVolumetricFogHistory();
 }
 
 bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& scene, uint16_t width, uint16_t height) {
@@ -651,29 +674,38 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
             resources.createUniform({kFogMaskSamplerNames[index], gfx::UniformType::Sampler, 1});
     }
     m_environmentSampler = resources.createUniform({"s_environmentMap", gfx::UniformType::Sampler, 1});
-    m_probeSamplers[0] = resources.createUniform({"s_probeMap0", gfx::UniformType::Sampler, 1});
-    m_probeSamplers[1] = resources.createUniform({"s_probeMap1", gfx::UniformType::Sampler, 1});
+    m_probeArraySampler = resources.createUniform({"s_probeMaps", gfx::UniformType::Sampler, 1});
+    m_cookieAtlasSampler = resources.createUniform({"s_cookieAtlas", gfx::UniformType::Sampler, 1});
     m_ssaoSampler = resources.createUniform({"s_ssao", gfx::UniformType::Sampler, 1});
     m_ssaoInputSampler = resources.createUniform({"s_ssaoInput", gfx::UniformType::Sampler, 1});
+    m_ssaoHistorySampler = resources.createUniform({"s_ssaoHistory", gfx::UniformType::Sampler, 1});
     m_ssrSampler = resources.createUniform({"s_ssr", gfx::UniformType::Sampler, 1});
+    m_ssrHistorySampler = resources.createUniform({"s_ssrHistory", gfx::UniformType::Sampler, 1});
     m_ssgiSampler = resources.createUniform({"s_ssgi", gfx::UniformType::Sampler, 1});
     m_ssgiRawSampler = resources.createUniform({"s_ssgiRaw", gfx::UniformType::Sampler, 1});
+    m_ssgiHistorySampler = resources.createUniform({"s_ssgiHistory", gfx::UniformType::Sampler, 1});
+    m_ssgiHistoryDepthSampler =
+        resources.createUniform({"s_ssgiHistoryDepth", gfx::UniformType::Sampler, 1});
+    m_ssgiHistoryNormalSampler =
+        resources.createUniform({"s_ssgiHistoryNormal", gfx::UniformType::Sampler, 1});
     m_decalAlbedoSampler = resources.createUniform({"s_decalAlbedo", gfx::UniformType::Sampler, 1});
     m_decalNormalSampler = resources.createUniform({"s_decalNormal", gfx::UniformType::Sampler, 1});
     m_decalMaskSampler = resources.createUniform({"s_decalMask", gfx::UniformType::Sampler, 1});
-    constexpr std::array<const char*, 3> kDecalSamplerNames = {
+    constexpr std::array<const char*, 4> kDecalSamplerNames = {
         "s_decal0",
         "s_decal1",
         "s_decal2",
+        "s_decal3",
     };
     for (std::size_t index = 0; index < m_decalSamplers.size(); ++index) {
         m_decalSamplers[index] = resources.createUniform({kDecalSamplerNames[index], gfx::UniformType::Sampler, 1});
     }
-    constexpr std::array<const char*, 4> kGBufferSamplerNames = {
+    constexpr std::array<const char*, 5> kGBufferSamplerNames = {
         "s_gbuffer0",
         "s_gbuffer1",
         "s_gbuffer2",
         "s_gbuffer3",
+        "s_gbuffer4",
     };
     for (std::size_t index = 0; index < m_gbufferSamplers.size(); ++index) {
         m_gbufferSamplers[index] = resources.createUniform({kGBufferSamplerNames[index], gfx::UniformType::Sampler, 1});
@@ -688,6 +720,20 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     environmentFallbackDesc.dataSize = static_cast<uint32_t>(sizeof(kBlackPixel));
     environmentFallbackDesc.name = "sky.fallback";
     m_environmentFallback = resources.createTexture(environmentFallbackDesc);
+
+    constexpr std::array<float, 4> kWhiteFloatPixel = {1.0f, 1.0f, 1.0f, 1.0f};
+    gfx::TextureDesc probeArrayFallbackDesc;
+    probeArrayFallbackDesc.width = 1;
+    probeArrayFallbackDesc.height = 1;
+    probeArrayFallbackDesc.layers = 1;
+    probeArrayFallbackDesc.format = gfx::TextureFormat::RGBA32F;
+    probeArrayFallbackDesc.flags = BGFX_SAMPLER_UVW_CLAMP;
+    probeArrayFallbackDesc.data = kWhiteFloatPixel.data();
+    probeArrayFallbackDesc.dataSize = static_cast<uint32_t>(sizeof(kWhiteFloatPixel));
+    probeArrayFallbackDesc.name = "probe.fallbackArray";
+    m_probeArrayFallback = resources.createTexture(probeArrayFallbackDesc);
+    m_cookieAtlasFallback = createSolidTexture(resources, 255, 255, 255, 255, "cookieAtlas.fallback");
+
     std::string probeError;
     if (!m_probeManager.load(resources, scene.probes, scene.images, &probeError)) {
         HBG_LOGW("probes: static reflection probe upload failed: {}", probeError);
@@ -720,10 +766,14 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
         !std::all_of(m_fogMaskSamplers.begin(), m_fogMaskSamplers.end(),
                      [](gfx::UniformHandle uniform) { return uniform.valid(); }) ||
         !m_environmentSampler.valid() || !m_environmentFallback.valid() ||
-        !m_probeSamplers[0].valid() || !m_probeSamplers[1].valid() || !m_ssaoSampler.valid() ||
-        !m_ssaoInputSampler.valid() || !m_ssaoFallback.valid() || !m_contactShadowFallback.valid() ||
-        !m_contactShadowSampler.valid() || !m_ssrSampler.valid() ||
-        !m_ssgiSampler.valid() || !m_ssgiRawSampler.valid() || !m_decalAlbedoSampler.valid() ||
+        !m_probeArraySampler.valid() || !m_probeArrayFallback.valid() ||
+        !m_cookieAtlasSampler.valid() || !m_cookieAtlasFallback.valid() || !m_ssaoSampler.valid() ||
+        !m_ssaoInputSampler.valid() || !m_ssaoHistorySampler.valid() || !m_ssaoFallback.valid() ||
+        !m_contactShadowFallback.valid() ||
+        !m_contactShadowSampler.valid() || !m_ssrSampler.valid() || !m_ssrHistorySampler.valid() ||
+        !m_ssgiSampler.valid() || !m_ssgiRawSampler.valid() || !m_ssgiHistorySampler.valid() ||
+        !m_ssgiHistoryDepthSampler.valid() || !m_ssgiHistoryNormalSampler.valid() ||
+        !m_decalAlbedoSampler.valid() ||
         !m_decalNormalSampler.valid() || !m_decalMaskSampler.valid() ||
         !std::all_of(m_decalSamplers.begin(), m_decalSamplers.end(),
                      [](gfx::UniformHandle uniform) { return uniform.valid(); }) ||
@@ -813,6 +863,11 @@ void ForwardRenderer::resize(uint16_t width, uint16_t height) {
         }
         releaseGBufferTextures();
         releaseDecalTextures();
+        m_viewState.resetHistory();
+        releaseSsaoHistory();
+        releaseSsrHistory();
+        releaseSsgiHistory();
+        releaseVolumetricFogHistory();
     }
     m_width = width;
     m_height = height;
@@ -861,22 +916,56 @@ void ForwardRenderer::updateLights(const RenderScene& scene) {
                          m_shadowSettings.contactShadows.directionalOnly, &m_shadowSettings, m_lightListCapacity,
                          m_pipelineSettings.supportLightLayers);
 
-    m_cookieAtlas.beginFrame();
+    uint64_t cookieSignature = 1469598103934665603ull;
     const auto& selectedLights = m_lightBuilder.selectedLights();
+    std::vector<uint32_t> cookieOrder;
+    cookieOrder.reserve(selectedLights.size());
     for (uint32_t index = 0; index < selectedLights.size(); ++index) {
+        const Light* light = selectedLights[index];
+        if (light == nullptr || light->cookieMode == LightCookieMode::None) {
+            continue;
+        }
+        cookieOrder.push_back(index);
+        const auto mix = [&cookieSignature](uint64_t value) {
+            cookieSignature ^= value;
+            cookieSignature *= 1099511628211ull;
+        };
+        mix(reinterpret_cast<uintptr_t>(light));
+        mix(reinterpret_cast<uintptr_t>(light->cookieNative.data()));
+        mix(light->cookieNativeWidth);
+        mix(light->cookieNativeHeight);
+        mix(light->cookieNative.size());
+        mix(static_cast<uint64_t>(light->cookieMode));
+    }
+    std::stable_sort(cookieOrder.begin(), cookieOrder.end(), [&](uint32_t first, uint32_t second) {
+        const uint32_t firstSize = m_cookieAtlas.requiredTileSize(*selectedLights[first]);
+        const uint32_t secondSize = m_cookieAtlas.requiredTileSize(*selectedLights[second]);
+        if (firstSize != secondSize) {
+            return firstSize > secondSize;
+        }
+        return first < second;
+    });
+    m_cookieAtlas.beginFrame(cookieSignature);
+    for (uint32_t index : cookieOrder) {
         uint32_t tileIndex = 0;
-        if (m_cookieAtlas.allocate(*selectedLights[index], &tileIndex)) {
-            m_lightBuilder.setCookieAtlas(index, tileIndex);
+        Vec4 atlasScaleOffset;
+        if (m_cookieAtlas.allocate(*selectedLights[index], &tileIndex, &atlasScaleOffset)) {
+            m_lightBuilder.setCookieAtlas(index, tileIndex, atlasScaleOffset);
         }
     }
 
     const GpuLightData& lightData = m_lightBuilder.data();
     if (m_frameIndex == 0) {
-        HBG_LOGI("cookie atlas: tiles={}/{} lights={}", m_cookieAtlas.tileCount(),
-                 kCookieAtlasTileCapacity, selectedLights.size());
+        HBG_LOGI("cookie atlas: tiles={}/{} native={} size={} mips={} lights={}", m_cookieAtlas.tileCount(),
+                 kCookieAtlasTileCapacity, m_cookieAtlas.nativeTileCount(), m_cookieAtlas.size(),
+                 m_cookieAtlas.mipCount(), selectedLights.size());
     }
 
     m_passUniforms = {};
+    m_passUniforms.cookieAtlasParams =
+        Vec4(static_cast<float>(m_cookieAtlas.size()),
+             static_cast<float>(m_cookieAtlas.padding()) / static_cast<float>(m_cookieAtlas.size()),
+             static_cast<float>(m_cookieAtlas.mipCount() - 1u), 0.0f);
     m_passUniforms.lightDirection = Vec4(lightData.primaryDirection.x, lightData.primaryDirection.y,
                                          lightData.primaryDirection.z, lightData.primaryIntensity);
     m_passUniforms.lightColor =
@@ -916,8 +1005,12 @@ void ForwardRenderer::updateLights(const RenderScene& scene) {
                  m_passUniforms.shadowCascadeSplits.x,
                  m_passUniforms.shadowCascadeSplits.y, m_passUniforms.shadowCascadeSplits.z,
                  m_passUniforms.shadowCascadeSplits.w);
-        HBG_LOGI("shadow cache: punctual_active={} punctual_cached={} area_active={} area_cached={} "
+        HBG_LOGI("shadow cache: directional_active={} directional_cached={} directional_dirty={} "
+                 "punctual_active={} punctual_cached={} area_active={} area_cached={} "
                  "area_dynamic_atlas={} area_mixed={} area_dirty={}",
+                 m_shadowManager.directionalCacheActive() ? "true" : "false",
+                 m_shadowManager.cachedDirectionalRequestCount(),
+                 m_shadowManager.directionalCacheDirty() ? "true" : "false",
                  m_shadowManager.cacheActive() ? "true" : "false", m_shadowManager.cachedRequestCount(),
                  m_shadowManager.areaCacheActive() ? "true" : "false",
                  m_shadowManager.cachedAreaRequestCount(),
@@ -927,6 +1020,7 @@ void ForwardRenderer::updateLights(const RenderScene& scene) {
     }
 
     uploadLightData();
+    uploadCookieAtlas();
     updateLightList();
     m_passUniforms.lightListParams2.w = m_shadowManager.areaRequestCount() > 0 ? 1.0f : 0.0f;
     updateEnvironmentUniforms();
@@ -950,12 +1044,16 @@ void ForwardRenderer::updateEnvironmentUniforms() {
 }
 
 void ForwardRenderer::bindProbeTextures(gfx::Encoder& encoder) const {
-    for (std::size_t index = 0; index < m_probeSamplers.size(); ++index) {
-        const gfx::TextureHandle texture = m_probeManager.texture(index);
-        encoder.setTexture(static_cast<uint8_t>(14 + index), m_probeSamplers[index],
-                           texture.valid() ? texture : m_environmentFallback,
-                           texture.valid() ? BGFX_SAMPLER_V_CLAMP : BGFX_SAMPLER_UVW_CLAMP);
-    }
+    const gfx::TextureHandle probeArray = m_probeManager.textureArray();
+    encoder.setTexture(14, m_probeArraySampler, probeArray.valid() ? probeArray : m_probeArrayFallback,
+                       BGFX_SAMPLER_V_CLAMP);
+    bindCookieAtlas(encoder);
+}
+
+void ForwardRenderer::bindCookieAtlas(gfx::Encoder& encoder) const {
+    const gfx::TextureHandle texture = m_cookieAtlasTexture.valid() ? m_cookieAtlasTexture : m_cookieAtlasFallback;
+    const uint32_t flags = BGFX_SAMPLER_UVW_CLAMP | (m_cookieAtlas.native() ? 0u : BGFX_SAMPLER_POINT);
+    encoder.setTexture(15, m_cookieAtlasSampler, texture, flags);
 }
 
 gfx::ProgramHandle ForwardRenderer::lightListProgram(shader::PassId pass, uint64_t materialKey) {
@@ -1031,6 +1129,7 @@ void ForwardRenderer::updateSsrUniforms(bool enabled) {
                                 m_ssrSettings.thickness, m_ssrSettings.roughnessFade);
     m_ssrUniforms.params2 =
         Vec4(m_ssrSettings.edgeFade, m_ssrSettings.intensity, enabled ? 1.0f : 0.0f, 0.0f);
+    m_ssrUniforms.params3 = Vec4(0.0f, m_ssrSettings.temporalWeight, 0.0f, 0.0f);
 }
 
 void ForwardRenderer::updateSsgiUniforms(bool enabled) {
@@ -1041,6 +1140,7 @@ void ForwardRenderer::updateSsgiUniforms(bool enabled) {
     m_ssgiUniforms.params2 = Vec4(m_ssgiSettings.falloff, m_ssgiSettings.thickness,
                                   m_ssgiSettings.halfResolution ? 1.0f : 0.0f, enabled ? 1.0f : 0.0f);
     m_ssgiUniforms.params3 = Vec4(m_ssgiSettings.ambientBias, 0.0f, 0.0f, 0.0f);
+    m_ssgiUniforms.params4 = Vec4(0.0f, 0.02f, 8.0f, 0.0f);
 }
 
 void ForwardRenderer::updateVolumetricFogUniforms(bool enabled, bool historyValid, bool temporalActive,
@@ -1263,6 +1363,201 @@ void ForwardRenderer::releaseVolumetricFogHistory() {
     m_fogHistoryValid = false;
 }
 
+bool ForwardRenderer::ensureSsaoHistory(uint16_t width, uint16_t height) {
+    if (m_resources == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    if (m_ssaoHistoryTextures[0].valid() && m_ssaoHistoryTextures[1].valid() &&
+        m_ssaoHistoryWidth == width && m_ssaoHistoryHeight == height) {
+        return true;
+    }
+
+    releaseSsaoHistory();
+    gfx::TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = gfx::TextureFormat::RGBA8;
+    desc.renderTarget = true;
+    desc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    for (uint32_t index = 0; index < m_ssaoHistoryTextures.size(); ++index) {
+        desc.name = "ssao.history." + std::to_string(index);
+        m_ssaoHistoryTextures[index] = m_resources->createTexture(desc);
+        if (!m_ssaoHistoryTextures[index].valid()) {
+            HBG_LOGE("ssao: failed to create history texture ({}x{})", width, height);
+            releaseSsaoHistory();
+            return false;
+        }
+    }
+    m_ssaoHistoryWidth = width;
+    m_ssaoHistoryHeight = height;
+    m_ssaoHistoryIndex = 0;
+    m_ssaoHistoryFrame = 0;
+    m_ssaoHistoryValid = false;
+    HBG_LOGI("ssao: history created {}x{} RGBA8", width, height);
+    return true;
+}
+
+void ForwardRenderer::releaseSsaoHistory() {
+    if (m_resources != nullptr) {
+        for (gfx::TextureHandle& texture : m_ssaoHistoryTextures) {
+            if (texture.valid()) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+    } else {
+        for (gfx::TextureHandle& texture : m_ssaoHistoryTextures) {
+            texture = {};
+        }
+    }
+    m_ssaoHistoryWidth = 0;
+    m_ssaoHistoryHeight = 0;
+    m_ssaoHistoryIndex = 0;
+    m_ssaoHistoryFrame = 0;
+    m_ssaoHistoryValid = false;
+}
+
+bool ForwardRenderer::ensureSsrHistory(uint16_t width, uint16_t height) {
+    if (m_resources == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    if (m_ssrHistoryTextures[0].valid() && m_ssrHistoryTextures[1].valid() &&
+        m_ssrHistoryWidth == width && m_ssrHistoryHeight == height) {
+        return true;
+    }
+
+    releaseSsrHistory();
+    gfx::TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = gfx::TextureFormat::RGBA16F;
+    desc.renderTarget = true;
+    desc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+    for (uint32_t index = 0; index < m_ssrHistoryTextures.size(); ++index) {
+        desc.name = "ssr.history." + std::to_string(index);
+        m_ssrHistoryTextures[index] = m_resources->createTexture(desc);
+        if (!m_ssrHistoryTextures[index].valid()) {
+            HBG_LOGE("ssr: failed to create history texture ({}x{})", width, height);
+            releaseSsrHistory();
+            return false;
+        }
+    }
+    m_ssrHistoryWidth = width;
+    m_ssrHistoryHeight = height;
+    m_ssrHistoryIndex = 0;
+    m_ssrHistoryFrame = 0;
+    m_ssrHistoryValid = false;
+    HBG_LOGI("ssr: history created {}x{} {}", width, height, gfx::textureFormatName(desc.format));
+    return true;
+}
+
+void ForwardRenderer::releaseSsrHistory() {
+    if (m_resources != nullptr) {
+        for (gfx::TextureHandle& texture : m_ssrHistoryTextures) {
+            if (texture.valid()) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+    } else {
+        for (gfx::TextureHandle& texture : m_ssrHistoryTextures) {
+            texture = {};
+        }
+    }
+    m_ssrHistoryWidth = 0;
+    m_ssrHistoryHeight = 0;
+    m_ssrHistoryIndex = 0;
+    m_ssrHistoryFrame = 0;
+    m_ssrHistoryValid = false;
+}
+
+bool ForwardRenderer::ensureSsgiHistory(uint16_t width, uint16_t height) {
+    if (m_resources == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    if (m_ssgiHistoryTextures[0].valid() && m_ssgiHistoryTextures[1].valid() &&
+        m_ssgiHistoryDepthTextures[0].valid() && m_ssgiHistoryDepthTextures[1].valid() &&
+        m_ssgiHistoryNormalTextures[0].valid() && m_ssgiHistoryNormalTextures[1].valid() &&
+        m_ssgiHistoryWidth == width && m_ssgiHistoryHeight == height) {
+        return true;
+    }
+
+    releaseSsgiHistory();
+    gfx::TextureDesc colorDesc;
+    colorDesc.width = width;
+    colorDesc.height = height;
+    colorDesc.format = gfx::TextureFormat::RGBA16F;
+    colorDesc.renderTarget = true;
+    colorDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+
+    gfx::TextureDesc depthDesc = colorDesc;
+    depthDesc.format = gfx::TextureFormat::R32F;
+
+    gfx::TextureDesc normalDesc = colorDesc;
+    normalDesc.format = gfx::TextureFormat::RGBA8;
+
+    for (uint32_t index = 0; index < m_ssgiHistoryTextures.size(); ++index) {
+        colorDesc.name = "ssgi.history." + std::to_string(index);
+        m_ssgiHistoryTextures[index] = m_resources->createTexture(colorDesc);
+        depthDesc.name = "ssgi.historyDepth." + std::to_string(index);
+        m_ssgiHistoryDepthTextures[index] = m_resources->createTexture(depthDesc);
+        normalDesc.name = "ssgi.historyNormal." + std::to_string(index);
+        m_ssgiHistoryNormalTextures[index] = m_resources->createTexture(normalDesc);
+        if (!m_ssgiHistoryTextures[index].valid() || !m_ssgiHistoryDepthTextures[index].valid() ||
+            !m_ssgiHistoryNormalTextures[index].valid()) {
+            HBG_LOGE("ssgi: failed to create history textures ({}x{})", width, height);
+            releaseSsgiHistory();
+            return false;
+        }
+    }
+    m_ssgiHistoryWidth = width;
+    m_ssgiHistoryHeight = height;
+    m_ssgiHistoryIndex = 0;
+    m_ssgiHistoryFrame = 0;
+    m_ssgiHistoryValid = false;
+    HBG_LOGI("ssgi: history created {}x{} {} + R32F + RGBA8", width, height,
+             gfx::textureFormatName(colorDesc.format));
+    return true;
+}
+
+void ForwardRenderer::releaseSsgiHistory() {
+    if (m_resources != nullptr) {
+        for (gfx::TextureHandle& texture : m_ssgiHistoryTextures) {
+            if (texture.valid()) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+        for (gfx::TextureHandle& texture : m_ssgiHistoryDepthTextures) {
+            if (texture.valid()) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+        for (gfx::TextureHandle& texture : m_ssgiHistoryNormalTextures) {
+            if (texture.valid()) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+    } else {
+        for (gfx::TextureHandle& texture : m_ssgiHistoryTextures) {
+            texture = {};
+        }
+        for (gfx::TextureHandle& texture : m_ssgiHistoryDepthTextures) {
+            texture = {};
+        }
+        for (gfx::TextureHandle& texture : m_ssgiHistoryNormalTextures) {
+            texture = {};
+        }
+    }
+    m_ssgiHistoryWidth = 0;
+    m_ssgiHistoryHeight = 0;
+    m_ssgiHistoryIndex = 0;
+    m_ssgiHistoryFrame = 0;
+    m_ssgiHistoryValid = false;
+}
+
 bool ForwardRenderer::ensureLightDataTexture() {
     if (m_resources == nullptr) {
         return false;
@@ -1291,6 +1586,65 @@ bool ForwardRenderer::ensureLightDataTexture() {
     return true;
 }
 
+bool ForwardRenderer::ensureCookieAtlasTexture() {
+    if (m_resources == nullptr) {
+        return false;
+    }
+    const gfx::Texture* current = m_resources->texture(m_cookieAtlasTexture);
+    if (current != nullptr && current->desc().width == m_cookieAtlas.size() &&
+        current->desc().height == m_cookieAtlas.size() &&
+        current->desc().mipCount == m_cookieAtlas.mipCount()) {
+        return true;
+    }
+    if (m_cookieAtlasTexture.valid()) {
+        m_resources->destroyTexture(m_cookieAtlasTexture);
+        m_cookieAtlasTexture = {};
+    }
+    m_cookieAtlasUploaded = false;
+
+    gfx::TextureDesc desc;
+    desc.width = static_cast<uint16_t>(m_cookieAtlas.size());
+    desc.height = static_cast<uint16_t>(m_cookieAtlas.size());
+    desc.mipCount = static_cast<uint8_t>(m_cookieAtlas.mipCount());
+    desc.format = gfx::TextureFormat::RGBA8;
+    desc.flags = BGFX_SAMPLER_UVW_CLAMP;
+    desc.name = "lighting.cookieAtlas";
+    m_cookieAtlasTexture = m_resources->createTexture(desc);
+    if (!m_cookieAtlasTexture.valid()) {
+        HBG_LOGE("forward renderer: failed to create cookie atlas texture ({}x{}, mips={})", desc.width, desc.height,
+                 desc.mipCount);
+        return false;
+    }
+    return true;
+}
+
+void ForwardRenderer::uploadCookieAtlas() {
+    if (!ensureCookieAtlasTexture()) {
+        return;
+    }
+    if (m_cookieAtlasUploaded && m_cookieAtlasUploadHash == m_cookieAtlas.contentHash()) {
+        m_cookieAtlas.clearDirty();
+        return;
+    }
+    for (uint32_t mip = 0; mip < m_cookieAtlas.mipCount(); ++mip) {
+        const uint32_t mipSize = std::max(1u, m_cookieAtlas.size() >> mip);
+        const std::vector<uint8_t>& data = m_cookieAtlas.mipData(mip);
+        if (data.size() != static_cast<std::size_t>(mipSize) * mipSize * 4u) {
+            HBG_LOGE("forward renderer: cookie atlas mip {} has an invalid size", mip);
+            return;
+        }
+        if (!m_resources->updateTexture(m_cookieAtlasTexture, data.data(), static_cast<uint32_t>(data.size()),
+                                        static_cast<uint16_t>(mipSize), static_cast<uint16_t>(mipSize),
+                                        static_cast<uint16_t>(mipSize * 4u), 0, static_cast<uint8_t>(mip))) {
+            HBG_LOGE("forward renderer: failed to upload cookie atlas mip {}", mip);
+            return;
+        }
+    }
+    m_cookieAtlasUploadHash = m_cookieAtlas.contentHash();
+    m_cookieAtlasUploaded = true;
+    m_cookieAtlas.clearDirty();
+}
+
 void ForwardRenderer::uploadLightData() {
     if (!ensureLightDataTexture()) {
         return;
@@ -1305,7 +1659,6 @@ void ForwardRenderer::uploadLightData() {
         auto target = m_lightDataUpload.begin() + static_cast<std::size_t>(row) * kLightDataTextureWidth;
         std::copy_n(source, kGpuLightTexels, target);
     }
-    m_cookieAtlas.copyTo(m_lightDataUpload, kLightDataTextureWidth, kCookieAtlasOriginX, 0);
     const auto& ltc = ltcGgxTable();
     for (uint32_t index = 0; index < kLtcLutTexelCount; ++index) {
         const uint32_t row = index / kLtcLutSize;
@@ -2388,6 +2741,7 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
         m_deferredActive ? static_cast<uint32_t>(m_gbufferTextures.size())
                           : 0u;
     diagnostics.deferred = m_deferredActive;
+    diagnostics.deferredAdvanced = m_deferredActive && m_advancedLightingActive;
     diagnostics.stencil = m_deferredActive && selectDepthFormat() == gfx::TextureFormat::D24S8;
     diagnostics.postProcessPasses = m_postProcessChain.postProcessPassCount();
     diagnostics.postProcessActive =
@@ -2416,11 +2770,22 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
     diagnostics.volumetricFogScale = m_volumetricFogSettings.resolutionScale;
     diagnostics.volumetricFogTemporal = m_volumetricFogTemporalActive;
     diagnostics.volumetricFogHistoryValid = m_fogHistoryValid;
+    diagnostics.ssaoTemporal = m_ssaoTemporalActive;
+    diagnostics.ssaoHistoryValid = m_ssaoHistoryValid;
+    diagnostics.ssaoHistoryFrames = m_ssaoHistoryFrame;
+    diagnostics.ssrTemporal = m_ssrTemporalActive;
+    diagnostics.ssrHistoryValid = m_ssrHistoryValid;
+    diagnostics.ssrHistoryFrames = m_ssrHistoryFrame;
+    diagnostics.ssgiTemporal = m_ssgiTemporalActive;
+    diagnostics.ssgiHistoryValid = m_ssgiHistoryValid;
+    diagnostics.ssgiHistoryFrames = m_ssgiHistoryFrame;
     diagnostics.volumetricFogPunctualLights = m_volumetricFogPunctualLights;
     diagnostics.volumetricFogLocalVolumes = m_volumetricFogLocalVolumes;
     diagnostics.volumetricFogLocalMasks = m_volumetricFogLocalMasks;
     diagnostics.shadowDrawnItems = m_shadowDrawnItems;
     diagnostics.shadowCulledItems = m_shadowCulledItems;
+    diagnostics.shadowDirectionalCacheActive = m_shadowManager.directionalCacheActive();
+    diagnostics.shadowCachedDirectionalRequests = m_shadowManager.cachedDirectionalRequestCount();
     diagnostics.shadowCacheActive = m_shadowManager.cacheActive();
     diagnostics.shadowCachedRequests = m_shadowManager.cachedRequestCount();
     diagnostics.shadowAreaCacheActive = m_shadowManager.areaCacheActive();
@@ -2534,6 +2899,19 @@ void ForwardRenderer::buildDrawLists(const RenderScene& scene) {
         m_wireframeDrawList.build(scene, m_viewState, desc);
     } else {
         m_wireframeDrawList.clear();
+    }
+
+    m_advancedMaterialActive = false;
+    const uint32_t advancedMask = asset::MaterialFeatureClearCoat | asset::MaterialFeatureTransmission |
+                                  asset::MaterialFeatureIridescence | asset::MaterialFeatureAnisotropy |
+                                  asset::MaterialFeatureSubsurface;
+    const std::vector<GpuMaterial>& materials = m_materialSystem.materials();
+    for (const DrawItem& item : m_gbufferDrawList.items()) {
+        if (item.materialIndex < materials.size() &&
+            (materials[item.materialIndex].features & advancedMask) != 0) {
+            m_advancedMaterialActive = true;
+            break;
+        }
     }
 }
 
@@ -3299,7 +3677,7 @@ RenderGraphTextureHandle ForwardRenderer::addVolumetricFogPass(RenderGraph& grap
     return output;
 }
 
-void ForwardRenderer::addGBufferClearPass(RenderGraph& graph, const std::array<RenderGraphTextureHandle, 4>& gbuffer,
+void ForwardRenderer::addGBufferClearPass(RenderGraph& graph, const std::array<RenderGraphTextureHandle, 5>& gbuffer,
                                           RenderGraphTextureHandle depth,
                                           RenderGraphBufferHandle fullscreen) {
     if (!std::all_of(gbuffer.begin(), gbuffer.end(),
@@ -3393,7 +3771,7 @@ void ForwardRenderer::addGBufferPass(RenderGraph& graph, const FramePassResource
     });
 }
 
-void ForwardRenderer::addSSAOPasses(RenderGraph& graph, const FramePassResources& resources) {
+void ForwardRenderer::addSSAOPasses(RenderGraph& graph, FramePassResources& resources) {
     if (!resources.ssao.valid() || !resources.ssaoRaw.valid() || !resources.ssaoBlur.valid() ||
         !resources.depthPyramid.valid() || !resources.gbuffer[2].valid() || !resources.fullscreen.valid()) {
         return;
@@ -3433,21 +3811,63 @@ void ForwardRenderer::addSSAOPasses(RenderGraph& graph, const FramePassResources
                            context.texture(resources.depthPyramid), context.texture(resources.gbuffer[2]));
     });
 
+    RenderGraphTextureHandle upsampleInput = resources.ssaoBlur;
+    const bool temporal = m_ssaoTemporalActive && resources.motionVector.valid() &&
+                          m_ssaoHistoryTextures[0].valid() && m_ssaoHistoryTextures[1].valid() &&
+                          m_ssaoHistoryWidth == resolution[0] && m_ssaoHistoryHeight == resolution[1];
+    if (temporal) {
+        const uint32_t previousIndex = m_ssaoHistoryIndex;
+        const uint32_t nextIndex = previousIndex ^ 1u;
+        const RenderGraphTextureHandle previous =
+            graph.importTexture(m_ssaoHistoryTextures[previousIndex], "SSAO History Previous");
+        const RenderGraphTextureHandle next =
+            graph.importTexture(m_ssaoHistoryTextures[nextIndex], "SSAO History");
+        const bool historyValid = m_ssaoHistoryValid && m_ssaoHistoryFrame > 0 && m_viewState.historyValid();
+        if (historyValid) {
+            resources.ssaoHistoryPrevious = previous;
+        }
+
+        RenderGraphBuilder temporalPass = graph.addRasterPass("SSAO Temporal");
+        temporalPass.setColorAttachment(next);
+        temporalPass.readTexture(resources.ssaoBlur);
+        temporalPass.readTexture(resources.depthPyramid);
+        temporalPass.readTexture(resources.motionVector);
+        temporalPass.readTexture(previous);
+        temporalPass.readBuffer(resources.fullscreen);
+        temporalPass.setViewSize(resolution[0], resolution[1]);
+        temporalPass.allowCulling(false);
+        temporalPass.setRenderFunc([this, resources, previous, historyValid](RenderGraphContext& context) {
+            renderSSAOTemporalPass(context.encoder(), context.viewId(), context.frameBuffer(), context.width(),
+                                   context.height(), context.texture(resources.ssaoBlur),
+                                   context.texture(resources.depthPyramid),
+                                   context.texture(resources.motionVector), context.texture(previous),
+                                   historyValid);
+        });
+
+        m_ssaoHistoryIndex = nextIndex;
+        m_ssaoHistoryValid = true;
+        ++m_ssaoHistoryFrame;
+        resources.ssaoHistory = next;
+        upsampleInput = next;
+    } else {
+        m_ssaoHistoryValid = false;
+    }
+
     RenderGraphBuilder upsample = graph.addRasterPass("SSAO Upsample");
     upsample.setColorAttachment(resources.ssao);
-    upsample.readTexture(resources.ssaoBlur);
+    upsample.readTexture(upsampleInput);
     upsample.readTexture(resources.depthPyramid);
     upsample.readTexture(resources.gbuffer[2]);
     upsample.readBuffer(resources.fullscreen);
     upsample.allowCulling(false);
-    upsample.setRenderFunc([this, resources](RenderGraphContext& context) {
+    upsample.setRenderFunc([this, resources, upsampleInput](RenderGraphContext& context) {
         renderSSAOUpsamplePass(context.encoder(), context.viewId(), context.frameBuffer(), context.width(),
-                               context.height(), context.texture(resources.ssaoBlur),
+                               context.height(), context.texture(upsampleInput),
                                context.texture(resources.depthPyramid), context.texture(resources.gbuffer[2]));
     });
 }
 
-void ForwardRenderer::addSSGIPasses(RenderGraph& graph, const FramePassResources& resources) {
+void ForwardRenderer::addSSGIPasses(RenderGraph& graph, FramePassResources& resources) {
     if (!resources.ssgiRaw.valid() || !resources.ssgi.valid() || !resources.color.valid() ||
         !resources.depth.valid() || !resources.depthPyramid.valid() || !resources.gbuffer[0].valid() ||
         !resources.gbuffer[1].valid() || !resources.gbuffer[2].valid() || !resources.fullscreen.valid()) {
@@ -3480,16 +3900,75 @@ void ForwardRenderer::addSSGIPasses(RenderGraph& graph, const FramePassResources
                             context.texture(resources.environment));
     });
 
+    RenderGraphTextureHandle denoiseInput = resources.ssgiRaw;
+    const bool temporal = m_ssgiTemporalActive && resources.motionVector.valid() &&
+                          m_ssgiHistoryTextures[0].valid() && m_ssgiHistoryTextures[1].valid() &&
+                          m_ssgiHistoryDepthTextures[0].valid() && m_ssgiHistoryDepthTextures[1].valid() &&
+                          m_ssgiHistoryNormalTextures[0].valid() && m_ssgiHistoryNormalTextures[1].valid() &&
+                          m_ssgiHistoryWidth == resolution[0] && m_ssgiHistoryHeight == resolution[1] &&
+                          m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSGITemporal, 0, 0}).valid();
+    if (temporal) {
+        const uint32_t previousIndex = m_ssgiHistoryIndex;
+        const uint32_t nextIndex = previousIndex ^ 1u;
+        const RenderGraphTextureHandle previous =
+            graph.importTexture(m_ssgiHistoryTextures[previousIndex], "SSGI History Previous");
+        const RenderGraphTextureHandle next =
+            graph.importTexture(m_ssgiHistoryTextures[nextIndex], "SSGI History");
+        const RenderGraphTextureHandle previousDepth =
+            graph.importTexture(m_ssgiHistoryDepthTextures[previousIndex], "SSGI History Depth Previous");
+        const RenderGraphTextureHandle nextDepth =
+            graph.importTexture(m_ssgiHistoryDepthTextures[nextIndex], "SSGI History Depth");
+        const RenderGraphTextureHandle previousNormal =
+            graph.importTexture(m_ssgiHistoryNormalTextures[previousIndex], "SSGI History Normal Previous");
+        const RenderGraphTextureHandle nextNormal =
+            graph.importTexture(m_ssgiHistoryNormalTextures[nextIndex], "SSGI History Normal");
+        const bool historyValid = m_ssgiHistoryValid && m_ssgiHistoryFrame > 0 && m_viewState.historyValid();
+        if (historyValid) {
+            resources.ssgiHistoryPrevious = previous;
+        }
+
+        RenderGraphBuilder temporalPass = graph.addRasterPass("SSGI Temporal");
+        temporalPass.setColorAttachment(next, 0);
+        temporalPass.setColorAttachment(nextDepth, 1);
+        temporalPass.setColorAttachment(nextNormal, 2);
+        temporalPass.readTexture(resources.ssgiRaw);
+        temporalPass.readTexture(resources.depthPyramid);
+        temporalPass.readTexture(resources.motionVector);
+        temporalPass.readTexture(resources.gbuffer[2]);
+        temporalPass.readTexture(previous);
+        temporalPass.readTexture(previousDepth);
+        temporalPass.readTexture(previousNormal);
+        temporalPass.readBuffer(resources.fullscreen);
+        temporalPass.setViewSize(resolution[0], resolution[1]);
+        temporalPass.allowCulling(false);
+        temporalPass.setRenderFunc([this, resources, previous, previousDepth, previousNormal,
+                                     historyValid](RenderGraphContext& context) {
+            renderSSGITemporalPass(context.encoder(), context.viewId(), context.frameBuffer(), context.width(),
+                                   context.height(), context.texture(resources.ssgiRaw),
+                                   context.texture(resources.depthPyramid),
+                                   context.texture(resources.motionVector), context.texture(previous),
+                                   context.texture(previousDepth), context.texture(previousNormal),
+                                   context.texture(resources.gbuffer[2]), historyValid);
+        });
+
+        m_ssgiHistoryIndex = nextIndex;
+        m_ssgiHistoryValid = true;
+        ++m_ssgiHistoryFrame;
+        denoiseInput = next;
+    } else {
+        m_ssgiHistoryValid = false;
+    }
+
     RenderGraphBuilder denoise = graph.addRasterPass("SSGI Denoise");
     denoise.setColorAttachment(resources.ssgi);
-    denoise.readTexture(resources.ssgiRaw);
+    denoise.readTexture(denoiseInput);
     denoise.readTexture(resources.depthPyramid);
     denoise.readBuffer(resources.fullscreen);
     denoise.setViewSize(resolution[0], resolution[1]);
     denoise.allowCulling(false);
-    denoise.setRenderFunc([this, resources](RenderGraphContext& context) {
+    denoise.setRenderFunc([this, resources, denoiseInput](RenderGraphContext& context) {
         renderSSGIDenoisePass(context.encoder(), context.viewId(), context.frameBuffer(), context.width(),
-                              context.height(), context.texture(resources.ssgiRaw),
+                              context.height(), context.texture(denoiseInput),
                               context.texture(resources.depthPyramid));
     });
 
@@ -3514,7 +3993,7 @@ void ForwardRenderer::addSSGIPasses(RenderGraph& graph, const FramePassResources
     });
 }
 
-void ForwardRenderer::addSSRPasses(RenderGraph& graph, const FramePassResources& resources) {
+void ForwardRenderer::addSSRPasses(RenderGraph& graph, FramePassResources& resources) {
     if (!resources.ssr.valid() || !resources.color.valid() || !resources.depth.valid() ||
         !resources.depthPyramid.valid() || !resources.gbuffer[0].valid() || !resources.gbuffer[1].valid() ||
         !resources.gbuffer[2].valid() || !resources.fullscreen.valid()) {
@@ -3525,6 +4004,7 @@ void ForwardRenderer::addSSRPasses(RenderGraph& graph, const FramePassResources&
         return;
     }
 
+    resources.ssrRaw = resources.ssr;
     RenderGraphBuilder trace = graph.addRasterPass("SSR");
     trace.setColorAttachment(resources.ssr);
     trace.setDepthAttachment(resources.depth);
@@ -3550,6 +4030,47 @@ void ForwardRenderer::addSSRPasses(RenderGraph& graph, const FramePassResources&
                            context.texture(resources.environment), context.texture(resources.ssao));
     });
 
+    const bool temporal = m_ssrTemporalActive && resources.motionVector.valid() &&
+                          m_ssrHistoryTextures[0].valid() && m_ssrHistoryTextures[1].valid() &&
+                          m_ssrHistoryWidth == m_viewState.renderWidth() &&
+                          m_ssrHistoryHeight == m_viewState.renderHeight() &&
+                          m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSRTemporal, 0, 0}).valid();
+    if (temporal) {
+        const uint32_t previousIndex = m_ssrHistoryIndex;
+        const uint32_t nextIndex = previousIndex ^ 1u;
+        const RenderGraphTextureHandle previous =
+            graph.importTexture(m_ssrHistoryTextures[previousIndex], "SSR History Previous");
+        const RenderGraphTextureHandle next =
+            graph.importTexture(m_ssrHistoryTextures[nextIndex], "SSR History");
+        const bool historyValid = m_ssrHistoryValid && m_ssrHistoryFrame > 0 && m_viewState.historyValid();
+        if (historyValid) {
+            resources.ssrHistoryPrevious = previous;
+        }
+
+        RenderGraphBuilder temporalPass = graph.addRasterPass("SSR Temporal");
+        temporalPass.setColorAttachment(next);
+        temporalPass.readTexture(resources.ssr);
+        temporalPass.readTexture(resources.depthPyramid);
+        temporalPass.readTexture(resources.motionVector);
+        temporalPass.readTexture(previous);
+        temporalPass.readBuffer(resources.fullscreen);
+        temporalPass.allowCulling(false);
+        temporalPass.setRenderFunc([this, resources, previous, historyValid](RenderGraphContext& context) {
+            renderSSRTemporalPass(context.encoder(), context.viewId(), context.frameBuffer(), context.width(),
+                                  context.height(), context.texture(resources.ssr),
+                                  context.texture(resources.depthPyramid),
+                                  context.texture(resources.motionVector), context.texture(previous),
+                                  historyValid);
+        });
+
+        m_ssrHistoryIndex = nextIndex;
+        m_ssrHistoryValid = true;
+        ++m_ssrHistoryFrame;
+        resources.ssr = next;
+    } else {
+        m_ssrHistoryValid = false;
+    }
+
     RenderGraphBuilder composite = graph.addRasterPass("SSR Composite");
     composite.setColorAttachment(resources.color);
     composite.setDepthAttachment(resources.depth);
@@ -3574,13 +4095,25 @@ void ForwardRenderer::addDeferredLightingPass(RenderGraph& graph, const FramePas
         return;
     }
 
-    const gfx::ProgramHandle program = lightListProgram(shader::PassId::DeferredLighting);
+    const bool advancedRequested = m_advancedMaterialActive;
+    shader::PassId deferredPass =
+        advancedRequested ? shader::PassId::DeferredLightingAdvanced : shader::PassId::DeferredLighting;
+    gfx::ProgramHandle program = lightListProgram(deferredPass);
+    if (!program.valid() && advancedRequested) {
+        if (m_frameIndex == 0) {
+            HBG_LOGW("advanced deferred lighting program is invalid; falling back to standard deferred");
+        }
+        deferredPass = shader::PassId::DeferredLighting;
+        program = lightListProgram(deferredPass);
+    }
     if (!program.valid()) {
         if (m_frameIndex == 0) {
             HBG_LOGW("deferred lighting program is invalid; deferred opaque will not be lit");
         }
         return;
     }
+    const bool advanced = deferredPass == shader::PassId::DeferredLightingAdvanced;
+    m_advancedLightingActive = advanced;
 
     RenderGraphBuilder pass = graph.addRasterPass("Deferred Lighting");
     pass.setColorAttachment(resources.color);
@@ -3614,19 +4147,21 @@ void ForwardRenderer::addDeferredLightingPass(RenderGraph& graph, const FramePas
         pass.readTexture(resources.ssao);
     }
     pass.readBuffer(resources.fullscreen);
-    pass.setRenderFunc([this, resources, program](RenderGraphContext& context) {
-        const std::array<gfx::TextureHandle, 4> gbuffer = {
+    pass.setRenderFunc([this, resources, program, advanced](RenderGraphContext& context) {
+        const std::array<gfx::TextureHandle, 5> gbuffer = {
             context.texture(resources.gbuffer[0]),
             context.texture(resources.gbuffer[1]),
             context.texture(resources.gbuffer[2]),
             context.texture(resources.gbuffer[3]),
+            context.texture(resources.gbuffer[4]),
         };
         renderDeferredLighting(context.encoder(), context.viewId(), context.frameBuffer(),
                                context.texture(resources.depthPyramid), gbuffer,
                                context.texture(resources.lightData),
                                context.texture(resources.lightList), context.texture(resources.directionalShadow),
                                context.texture(resources.punctualShadow), context.buffer(resources.shadowContext),
-                               context.texture(resources.environment), context.texture(resources.ssao));
+                               context.texture(resources.environment), context.texture(resources.ssao),
+                               advanced);
     });
 }
 
@@ -3786,11 +4321,12 @@ void ForwardRenderer::addDebugGBufferPass(RenderGraph& graph, const FramePassRes
     pass.readBuffer(resources.fullscreen);
     pass.allowCulling(false);
     pass.setRenderFunc([this, resources, debugMode](RenderGraphContext& context) {
-        const std::array<gfx::TextureHandle, 4> gbuffer = {
+        const std::array<gfx::TextureHandle, 5> gbuffer = {
             context.texture(resources.gbuffer[0]),
             context.texture(resources.gbuffer[1]),
             context.texture(resources.gbuffer[2]),
             context.texture(resources.gbuffer[3]),
+            context.texture(resources.gbuffer[4]),
         };
         renderDebugGBufferPass(context.encoder(), context.viewId(), context.frameBuffer(), gbuffer,
                                context.texture(resources.depth), debugMode);
@@ -3812,8 +4348,23 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
     const bool shadowCascadeDebug = debugMode == DebugDisplayMode::ShadowCascade;
     const bool shadowFilterDebug = debugMode == DebugDisplayMode::ShadowFilter;
     const bool ssaoDebug = debugMode == DebugDisplayMode::SSAO;
+    const bool ssaoRawDebug = debugMode == DebugDisplayMode::SSAORaw;
+    const bool ssaoHistoryDebug = debugMode == DebugDisplayMode::SSAOHistory;
     const bool ssrDebug = debugMode == DebugDisplayMode::SSR;
+    const bool ssrRawDebug = debugMode == DebugDisplayMode::SSRRaw;
+    const bool ssrHistoryDebug = debugMode == DebugDisplayMode::SSRHistory;
     const bool ssgiDebug = debugMode == DebugDisplayMode::SSGI;
+    const bool ssgiRawDebug = debugMode == DebugDisplayMode::SSGIRaw;
+    const bool ssgiHistoryDebug = debugMode == DebugDisplayMode::SSGIHistory;
+    const bool ssaoAnyDebug = ssaoDebug || ssaoRawDebug || ssaoHistoryDebug;
+    const bool ssrAnyDebug = ssrDebug || ssrRawDebug || ssrHistoryDebug;
+    const bool ssgiAnyDebug = ssgiDebug || ssgiRawDebug || ssgiHistoryDebug;
+    const RenderGraphTextureHandle ssaoSource =
+        ssaoRawDebug ? resources.ssaoRaw : ssaoHistoryDebug ? resources.ssaoHistoryPrevious : resources.ssao;
+    const RenderGraphTextureHandle ssrSource =
+        ssrRawDebug ? resources.ssrRaw : ssrHistoryDebug ? resources.ssrHistoryPrevious : resources.ssr;
+    const RenderGraphTextureHandle ssgiSource =
+        ssgiRawDebug ? resources.ssgiRaw : ssgiHistoryDebug ? resources.ssgiHistoryPrevious : resources.ssgi;
     const bool contactDebug = debugMode == DebugDisplayMode::ContactShadows;
     const bool decalDebug = debugMode == DebugDisplayMode::Decals;
     const bool exposureDebug = debugMode == DebugDisplayMode::Exposure;
@@ -3851,8 +4402,14 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
                            : shadowCascadeDebug    ? "Debug Shadow Cascade"
                            : shadowFilterDebug     ? "Debug Shadow Filter"
                            : ssaoDebug             ? "Debug SSAO"
+                           : ssaoRawDebug          ? "Debug SSAO Raw"
+                           : ssaoHistoryDebug      ? "Debug SSAO History"
                            : ssrDebug              ? "Debug SSR"
+                           : ssrRawDebug           ? "Debug SSR Raw"
+                           : ssrHistoryDebug       ? "Debug SSR History"
                            : ssgiDebug             ? "Debug SSGI"
+                           : ssgiRawDebug          ? "Debug SSGI Raw"
+                           : ssgiHistoryDebug      ? "Debug SSGI History"
                            : contactDebug          ? "Debug Contact Shadows"
                            : decalDebug            ? "Debug Decals"
                            : exposureDebug         ? "Debug Exposure"
@@ -3899,13 +4456,15 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
         pass.readTexture(resources.depth);
         pass.readTexture(resources.directionalShadow);
         pass.readBuffer(resources.shadowContext);
-    } else if (ssaoDebug) {
-        pass.readTexture(resources.ssao);
-    } else if (ssrDebug) {
-        pass.readTexture(resources.ssr);
-    } else if (ssgiDebug) {
-        pass.readTexture(resources.ssgi);
-        pass.readTexture(resources.depthPyramid);
+    } else if (ssaoAnyDebug) {
+        pass.readTexture(ssaoSource);
+    } else if (ssrAnyDebug) {
+        pass.readTexture(ssrSource);
+    } else if (ssgiAnyDebug) {
+        pass.readTexture(ssgiSource);
+        if (ssgiDebug) {
+            pass.readTexture(resources.depthPyramid);
+        }
     } else if (contactDebug) {
         if (resources.contactShadow.valid()) {
             pass.readTexture(resources.contactShadow);
@@ -3943,16 +4502,16 @@ void ForwardRenderer::addPresentationPass(RenderGraph& graph, const FramePassRes
     pass.readBuffer(resources.fullscreen);
     pass.writeBackbuffer();
     pass.setRenderFunc([this, resources, normalSource, presentationColor, colorGradingLut, exposureValue,
-                        exposureHistogram, bloomColor, taaHistory, dofCoc, debugMode](RenderGraphContext& context) {
+                        exposureHistogram, bloomColor, taaHistory, dofCoc, ssaoSource, ssrSource, ssgiSource,
+                        debugMode](RenderGraphContext& context) {
         renderPresentation(context.encoder(), context.viewId(), context.texture(presentationColor),
                            context.texture(resources.depth), context.texture(resources.lightData),
                            context.texture(resources.lightList), context.texture(normalSource),
                            context.texture(resources.motionVector), context.texture(resources.depthPyramid),
                            context.texture(resources.directionalShadow), context.texture(resources.punctualShadow),
                            context.buffer(resources.shadowContext), context.texture(resources.contactShadow),
-                           context.texture(resources.ssao),
-                           context.texture(resources.ssr),
-                           context.texture(resources.ssgi), context.texture(resources.decal[0]),
+                           context.texture(ssaoSource), context.texture(ssrSource), context.texture(ssgiSource),
+                           context.texture(resources.decal[0]),
                             context.buffer(resources.fullscreen), debugMode, context.texture(exposureValue),
                             context.texture(exposureHistogram), context.texture(colorGradingLut),
                             context.texture(bloomColor), context.texture(taaHistory), context.texture(dofCoc));
@@ -4119,8 +4678,8 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
                        m_skyManager.valid() ? BGFX_SAMPLER_V_CLAMP : BGFX_SAMPLER_UVW_CLAMP);
     bindProbeTextures(encoder);
     encoder.setTexture(5, m_lightDataSampler, m_lightDataTexture, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
-    if (m_shadowManager.directionalTexture().valid()) {
-        encoder.setTexture(6, m_shadowSampler, m_shadowManager.directionalTexture(),
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        encoder.setTexture(6, m_shadowSampler, m_shadowManager.activeDirectionalTexture(),
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
     }
     if (m_shadowManager.contextBuffer().valid()) {
@@ -4128,10 +4687,10 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
     }
     if (m_shadowManager.activePunctualTexture().valid()) {
         encoder.setTexture(9, m_shadowPunctualSampler, m_shadowManager.activePunctualTexture(),
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
-    if (m_shadowManager.directionalTexture().valid()) {
-        encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.directionalTexture(),
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.activeDirectionalTexture(),
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
     const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
@@ -4254,6 +4813,7 @@ void ForwardRenderer::updateDecalUniforms(const Decal& decal) {
     }
     m_decalUniforms.params = Vec4(decal.opacity, decal.angleFade, decal.normalBlend, static_cast<float>(flags));
     m_decalUniforms.params2 = Vec4(decal.metallic, decal.ambientOcclusion, decal.roughness, 0.0f);
+    m_decalUniforms.params3 = Vec4(static_cast<float>(decal.layerMask), static_cast<float>(decal.channelMask), 0.0f, 0.0f);
     m_decalUniforms.baseColor = decal.baseColor;
 }
 
@@ -4352,6 +4912,39 @@ void ForwardRenderer::renderSSAOBlurPass(gfx::Encoder& encoder, bgfx::ViewId vie
     encoder.submit(view, program);
 }
 
+void ForwardRenderer::renderSSAOTemporalPass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                             gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
+                                             gfx::TextureHandle ssaoInput, gfx::TextureHandle depthPyramid,
+                                             gfx::TextureHandle motionVectors, gfx::TextureHandle history,
+                                             bool historyValid) {
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSAOTemporal, 0, 0});
+    if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !ssaoInput.valid() || !depthPyramid.valid() ||
+        !motionVectors.valid() || !history.valid() || width == 0 || height == 0) {
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, width, height);
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewClear(view, BGFX_CLEAR_COLOR, 0xffffffff, 1.0f, 0);
+    encoder.touch(view);
+    encoder.setState(gfx::state::kNoDepth);
+    m_globalBinder.upload(m_globalUniforms);
+    m_ssaoUniforms.params3 =
+        Vec4(historyValid ? 1.0f : 0.0f, 0.90f, 32.0f, 0.0f);
+    m_ssaoBinder.upload(m_ssaoUniforms);
+    encoder.setTexture(0, m_ssaoInputSampler, ssaoInput,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(1, m_motionVectorSampler, motionVectors,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(2, m_ssaoHistorySampler, history,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(4, m_depthPyramidSampler, depthPyramid,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+    encoder.submit(view, program);
+}
+
 void ForwardRenderer::renderSSAOUpsamplePass(gfx::Encoder& encoder, bgfx::ViewId view,
                                              gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
                                              gfx::TextureHandle ssaoInput, gfx::TextureHandle depthPyramid,
@@ -4411,6 +5004,37 @@ void ForwardRenderer::renderSSRTracePass(gfx::Encoder& encoder, bgfx::ViewId vie
     encoder.setTexture(11, m_ssaoSampler, ssao.valid() ? ssao : m_ssaoFallback,
                        BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     encoder.setTexture(12, m_hdrSampler, sceneColor, BGFX_SAMPLER_UVW_CLAMP);
+    encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+    encoder.submit(view, program);
+}
+
+void ForwardRenderer::renderSSRTemporalPass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                            gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
+                                            gfx::TextureHandle ssrInput, gfx::TextureHandle depthPyramid,
+                                            gfx::TextureHandle motionVectors, gfx::TextureHandle history,
+                                            bool historyValid) {
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSRTemporal, 0, 0});
+    if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !ssrInput.valid() || !depthPyramid.valid() ||
+        !motionVectors.valid() || !history.valid() || width == 0 || height == 0) {
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, width, height);
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewClear(view, BGFX_CLEAR_COLOR, 0x00000000, 1.0f, 0);
+    encoder.touch(view);
+    encoder.setState(gfx::state::kNoDepth);
+    m_globalBinder.upload(m_globalUniforms);
+    m_ssrUniforms.params3.x = historyValid ? 1.0f : 0.0f;
+    m_ssrBinder.upload(m_ssrUniforms);
+    encoder.setTexture(0, m_ssrSampler, ssrInput, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(1, m_motionVectorSampler, motionVectors,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(2, m_ssrHistorySampler, history,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(4, m_depthPyramidSampler, depthPyramid,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
     encoder.submit(view, program);
 }
@@ -4486,6 +5110,41 @@ void ForwardRenderer::renderSSGIDenoisePass(gfx::Encoder& encoder, bgfx::ViewId 
     encoder.submit(view, program);
 }
 
+void ForwardRenderer::renderSSGITemporalPass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                             gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
+                                             gfx::TextureHandle ssgiRaw, gfx::TextureHandle depthPyramid,
+                                             gfx::TextureHandle motionVectors, gfx::TextureHandle history,
+                                             gfx::TextureHandle historyDepth, gfx::TextureHandle historyNormal,
+                                             gfx::TextureHandle currentNormal, bool historyValid) {
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSGITemporal, 0, 0});
+    if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !ssgiRaw.valid() || !depthPyramid.valid() ||
+        !motionVectors.valid() || !history.valid() || !historyDepth.valid() || !historyNormal.valid() ||
+        !currentNormal.valid() || width == 0 || height == 0) {
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, width, height);
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewClear(view, BGFX_CLEAR_COLOR, 0x00000000, 1.0f, 0);
+    encoder.touch(view);
+    encoder.setState(gfx::state::kNoDepth);
+    m_globalBinder.upload(m_globalUniforms);
+    m_ssgiUniforms.params4.x = historyValid ? 1.0f : 0.0f;
+    m_ssgiBinder.upload(m_ssgiUniforms);
+    encoder.setTexture(0, m_ssgiRawSampler, ssgiRaw, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(1, m_motionVectorSampler, motionVectors, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(2, m_gbufferSamplers[2], currentNormal, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(3, m_ssgiHistorySampler, history, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(4, m_depthPyramidSampler, depthPyramid, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(5, m_ssgiHistoryDepthSampler, historyDepth,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(6, m_ssgiHistoryNormalSampler, historyNormal,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+    encoder.submit(view, program);
+}
+
 void ForwardRenderer::renderSSGICompositePass(gfx::Encoder& encoder, bgfx::ViewId view,
                                                gfx::FrameBufferHandle frameBuffer, uint16_t width, uint16_t height,
                                                gfx::TextureHandle ssgi, gfx::TextureHandle depthPyramid,
@@ -4551,12 +5210,14 @@ void ForwardRenderer::renderContactShadowPass(gfx::Encoder& encoder, bgfx::ViewI
 
 void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId view,
                                              gfx::FrameBufferHandle frameBuffer, gfx::TextureHandle depthPyramid,
-                                             const std::array<gfx::TextureHandle, 4>& gbuffer,
+                                             const std::array<gfx::TextureHandle, 5>& gbuffer,
                                              gfx::TextureHandle lightData, gfx::TextureHandle lightList,
                                              gfx::TextureHandle directionalShadow, gfx::TextureHandle punctualShadow,
                                              gfx::BufferHandle shadowContext, gfx::TextureHandle environment,
-                                             gfx::TextureHandle ssao) {
-    const gfx::ProgramHandle program = lightListProgram(shader::PassId::DeferredLighting);
+                                             gfx::TextureHandle ssao, bool advanced) {
+    (void)lightList;
+    const gfx::ProgramHandle program = lightListProgram(
+        advanced ? shader::PassId::DeferredLightingAdvanced : shader::PassId::DeferredLighting);
     if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !depthPyramid.valid() || !lightData.valid() ||
         !std::all_of(gbuffer.begin(), gbuffer.end(), [](gfx::TextureHandle texture) { return texture.valid(); })) {
         return;
@@ -4580,9 +5241,9 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
     m_probeBinder.upload(m_probeUniforms);
     m_ssaoBinder.upload(m_ssaoUniforms);
     m_objectUniforms.lightLayerMask =
-        Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, m_deferredLightLayersActive ? 1.0f : 0.0f);
+        Vec4(static_cast<float>(kRenderingLayersMask), 127.0f, 0.0f, m_deferredLightLayersActive ? 1.0f : 0.0f);
     m_objectBinder.upload(m_objectUniforms);
-    for (std::size_t index = 0; index < gbuffer.size(); ++index) {
+    for (std::size_t index = 0; index < 4; ++index) {
         encoder.setTexture(static_cast<uint8_t>(index), m_gbufferSamplers[index], gbuffer[index],
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
@@ -4598,9 +5259,12 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
     }
     if (punctualShadow.valid()) {
         encoder.setTexture(9, m_shadowPunctualSampler, punctualShadow,
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
-    if (directionalShadow.valid()) {
+    if (advanced) {
+        encoder.setTexture(12, m_gbufferSamplers[4], gbuffer[4],
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    } else if (directionalShadow.valid()) {
         encoder.setTexture(12, m_shadowPointSampler, directionalShadow,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
@@ -4820,11 +5484,16 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
         encoder.setStencil(gfx::state::kGBufferStencil, gfx::state::kGBufferStencil);
         encoder.setTransform(item.world.data());
         uint32_t objectLayerMask = kRenderingLayersMask;
-        if (m_deferredLightLayersActive && item.objectIndex < scene.objects.size()) {
-            objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+        uint32_t objectDecalMask = 0x7fu;
+        if (item.objectIndex < scene.objects.size()) {
+            objectDecalMask = scene.objects[item.objectIndex].decalLayerMask;
+            if (m_deferredLightLayersActive) {
+                objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+            }
         }
         m_objectUniforms.lightLayerMask =
-            Vec4(static_cast<float>(objectLayerMask), 0.0f, 0.0f, m_deferredLightLayersActive ? 1.0f : 0.0f);
+            Vec4(static_cast<float>(objectLayerMask), static_cast<float>(objectDecalMask), 0.0f,
+                 m_deferredLightLayersActive ? 1.0f : 0.0f);
         m_objectBinder.upload(m_objectUniforms);
         m_materialBinder.upload(gpuMaterial.uniforms);
         encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
@@ -4902,8 +5571,8 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
         m_probeBinder.upload(m_probeUniforms);
         bindProbeTextures(encoder);
         encoder.setTexture(5, m_lightDataSampler, m_lightDataTexture, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
-        if (m_shadowManager.directionalTexture().valid()) {
-            encoder.setTexture(6, m_shadowSampler, m_shadowManager.directionalTexture(),
+        if (m_shadowManager.activeDirectionalTexture().valid()) {
+            encoder.setTexture(6, m_shadowSampler, m_shadowManager.activeDirectionalTexture(),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
         }
         if (m_shadowManager.contextBuffer().valid()) {
@@ -4911,10 +5580,10 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
         }
         if (m_shadowManager.activePunctualTexture().valid()) {
             encoder.setTexture(9, m_shadowPunctualSampler, m_shadowManager.activePunctualTexture(),
-                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT | BGFX_SAMPLER_COMPARE_LEQUAL);
+                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         }
-        if (m_shadowManager.directionalTexture().valid()) {
-            encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.directionalTexture(),
+        if (m_shadowManager.activeDirectionalTexture().valid()) {
+            encoder.setTexture(12, m_shadowPointSampler, m_shadowManager.activeDirectionalTexture(),
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         }
         const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
@@ -5044,7 +5713,7 @@ void ForwardRenderer::renderDebugMaterialPass(gfx::Encoder& encoder, bgfx::ViewI
 
 void ForwardRenderer::renderDebugGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view,
                                                 gfx::FrameBufferHandle frameBuffer,
-                                                const std::array<gfx::TextureHandle, 4>& gbuffer,
+                                                const std::array<gfx::TextureHandle, 5>& gbuffer,
                                                 gfx::TextureHandle depth, DebugDisplayMode debugMode) {
     if (!isGbufferDebug(debugMode) || !depth.valid() || !m_fullscreenVertexBuffer.valid() ||
         !std::all_of(gbuffer.begin(), gbuffer.end(), [](gfx::TextureHandle texture) { return texture.valid(); })) {
@@ -5065,7 +5734,7 @@ void ForwardRenderer::renderDebugGBufferPass(gfx::Encoder& encoder, bgfx::ViewId
     m_debugBinder.upload(m_debugUniforms);
     m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
     m_objectBinder.upload(m_objectUniforms);
-    for (std::size_t index = 0; index < gbuffer.size(); ++index) {
+    for (std::size_t index = 0; index < 4; ++index) {
         encoder.setTexture(static_cast<uint8_t>(index), m_gbufferSamplers[index], gbuffer[index],
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     }
@@ -5086,6 +5755,7 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
                                          gfx::TextureHandle exposureValue, gfx::TextureHandle exposureHistogram,
                                          gfx::TextureHandle colorGradingLut, gfx::TextureHandle bloom,
                                          gfx::TextureHandle taaHistory, gfx::TextureHandle dofCoc) {
+    (void)lightList;
     gfx::ProgramHandle presentation = m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Tonemap, 0, 0});
     switch (debugMode) {
     case DebugDisplayMode::LightData: {
@@ -5179,7 +5849,9 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         }
         break;
     }
-    case DebugDisplayMode::SSAO: {
+    case DebugDisplayMode::SSAO:
+    case DebugDisplayMode::SSAORaw:
+    case DebugDisplayMode::SSAOHistory: {
         const gfx::ProgramHandle debugProgram =
             m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DebugSSAO, 0, 0});
         if (debugProgram.valid() && ssao.valid()) {
@@ -5187,7 +5859,9 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         }
         break;
     }
-    case DebugDisplayMode::SSR: {
+    case DebugDisplayMode::SSR:
+    case DebugDisplayMode::SSRRaw:
+    case DebugDisplayMode::SSRHistory: {
         const gfx::ProgramHandle debugProgram =
             m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DebugSSR, 0, 0});
         if (debugProgram.valid() && ssr.valid()) {
@@ -5199,6 +5873,15 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         const gfx::ProgramHandle debugProgram =
             m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DebugSSGI, 0, 0});
         if (debugProgram.valid() && ssgi.valid() && depthPyramid.valid()) {
+            presentation = debugProgram;
+        }
+        break;
+    }
+    case DebugDisplayMode::SSGIRaw:
+    case DebugDisplayMode::SSGIHistory: {
+        const gfx::ProgramHandle debugProgram =
+            m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DebugSSGIRaw, 0, 0});
+        if (debugProgram.valid() && ssgi.valid()) {
             presentation = debugProgram;
         }
         break;
@@ -5351,15 +6034,23 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         encoder.setTexture(0, m_hdrSampler, color, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::SSAO:
+    case DebugDisplayMode::SSAORaw:
+    case DebugDisplayMode::SSAOHistory:
         encoder.setTexture(0, m_ssaoInputSampler, ssao, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::SSR:
+    case DebugDisplayMode::SSRRaw:
+    case DebugDisplayMode::SSRHistory:
         encoder.setTexture(0, m_ssrSampler, ssr, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::SSGI:
         encoder.setTexture(0, m_ssgiSampler, ssgi, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         encoder.setTexture(4, m_depthPyramidSampler, depthPyramid,
                            BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        break;
+    case DebugDisplayMode::SSGIRaw:
+    case DebugDisplayMode::SSGIHistory:
+        encoder.setTexture(0, m_ssgiSampler, ssgi, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::ContactShadows:
         encoder.setTexture(0, m_contactShadowSampler,
@@ -5568,7 +6259,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         lightIndirectArgs = m_renderGraph.importBuffer(m_lightIndirectArgsBuffer, "Light Indirect Args");
     }
     const RenderGraphTextureHandle directionalShadow =
-        m_renderGraph.importTexture(m_shadowManager.directionalTexture(), "Directional Shadow Atlas");
+        m_renderGraph.importTexture(m_shadowManager.activeDirectionalTexture(), "Directional Shadow Atlas");
     const gfx::TextureHandle activePunctualShadow = m_shadowManager.activePunctualTexture();
     const RenderGraphTextureHandle punctualShadow =
         m_renderGraph.importTexture(activePunctualShadow, "Punctual Shadow Atlas");
@@ -5630,11 +6321,12 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     resources.skyEnvironment = skyEnvironment;
     resources.fullscreen = fullscreen;
     if (deferred) {
-        constexpr std::array<const char*, 4> kGBufferNames = {
+        constexpr std::array<const char*, 5> kGBufferNames = {
             "GBuffer Base Color",
             "GBuffer Material",
             "GBuffer Normal",
             "GBuffer Emissive",
+            "GBuffer Advanced",
         };
         for (std::size_t index = 0; index < resources.gbuffer.size(); ++index) {
             resources.gbuffer[index] = m_renderGraph.importTexture(m_gbufferTextures[index], kGBufferNames[index]);
@@ -5651,16 +6343,17 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Decal, 0, 0}).valid() &&
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DecalClear, 0, 0}).valid();
     if (decalsAvailable) {
-        constexpr std::array<const char*, 3> kDBufferNames = {
+        constexpr std::array<const char*, 4> kDBufferNames = {
             "DBuffer Albedo",
             "DBuffer Normal",
             "DBuffer Material",
+            "DBuffer Blend",
         };
         for (std::size_t index = 0; index < resources.decal.size(); ++index) {
             resources.decal[index] = m_renderGraph.importTexture(m_decalTextures[index], kDBufferNames[index]);
         }
         if (m_frameIndex == 0) {
-            HBG_LOGI("decals: {} static box decals, DBuffer {}x{} (3RT)", scene.decals.size(), renderWidth,
+            HBG_LOGI("decals: {} static box decals, DBuffer {}x{} (4RT)", scene.decals.size(), renderWidth,
                      renderHeight);
         }
     } else if (decalsRequested) {
@@ -5700,6 +6393,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSGIDenoise, 0, 0}).valid() &&
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSGIComposite, 0, 0}).valid();
     updateSsgiUniforms(ssgiAvailable);
+    m_ssgiTemporalActive = false;
     if (ssgiAvailable) {
         const std::array<uint16_t, 2> resolution =
             ssgiResolution(renderWidth, renderHeight, m_ssgiSettings.halfResolution);
@@ -5714,31 +6408,69 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         gfx::TextureDesc denoiseDesc = ssgiDesc;
         denoiseDesc.name = "ssgi.denoise";
         resources.ssgi = m_renderGraph.createTexture(denoiseDesc, "SSGI Denoise");
+
+        if (m_ssgiSettings.temporalAccumulation && resources.motionVector.valid() &&
+            m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSGITemporal, 0, 0}).valid()) {
+            m_ssgiTemporalActive = ensureSsgiHistory(resolution[0], resolution[1]);
+        }
+        if (!m_ssgiTemporalActive) {
+            m_ssgiHistoryValid = false;
+        } else if (m_frameIndex == 0) {
+            HBG_LOGI("ssgi: temporal enabled, history={}x{}", resolution[0], resolution[1]);
+        }
         if (m_frameIndex == 0) {
             HBG_LOGI("ssgi: trace {}x{}, rays={}, steps={}, maxDistance={}, falloff={}, thickness={}",
                      resolution[0], resolution[1], m_ssgiSettings.rayCount, m_ssgiSettings.maxSteps,
                      m_ssgiSettings.maxDistance, m_ssgiSettings.falloff, m_ssgiSettings.thickness);
         }
+    } else {
+        m_ssgiHistoryValid = false;
+    }
+    m_ssrTemporalActive = false;
+    if (ssrAvailable && m_ssrSettings.temporalAccumulation && resources.motionVector.valid() &&
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSRTemporal, 0, 0}).valid()) {
+        m_ssrTemporalActive = ensureSsrHistory(renderWidth, renderHeight);
+    }
+    if (!m_ssrTemporalActive) {
+        m_ssrHistoryValid = false;
+    } else if (m_frameIndex == 0) {
+        HBG_LOGI("ssr: temporal enabled, weight={}, history={}x{}",
+                 m_ssrSettings.temporalWeight, m_ssrHistoryWidth, m_ssrHistoryHeight);
     }
     if (ssrAvailable) {
         gfx::TextureDesc ssrDesc;
         ssrDesc.width = renderWidth;
         ssrDesc.height = renderHeight;
-        ssrDesc.format = selectHdrFormat();
+        ssrDesc.format = m_ssrTemporalActive ? gfx::TextureFormat::RGBA16F : selectHdrFormat();
         ssrDesc.renderTarget = true;
         ssrDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
         ssrDesc.name = "ssr.trace";
         resources.ssr = m_renderGraph.createTexture(ssrDesc, "SSR Trace");
         if (m_frameIndex == 0) {
-            HBG_LOGI("ssr: {}x{}, steps={}, maxDistance={}, thickness={}, roughnessFade={}, edgeFade={}",
+            HBG_LOGI("ssr: {}x{}, steps={}, maxDistance={}, thickness={}, roughnessFade={}, edgeFade={}, "
+                     "format={}",
                      renderWidth, renderHeight, m_ssrSettings.maxSteps, m_ssrSettings.maxDistance,
-                     m_ssrSettings.thickness, m_ssrSettings.roughnessFade, m_ssrSettings.edgeFade);
+                     m_ssrSettings.thickness, m_ssrSettings.roughnessFade, m_ssrSettings.edgeFade,
+                     gfx::textureFormatName(ssrDesc.format));
         }
     }
+    m_ssaoTemporalActive = false;
     if (ssaoAvailable) {
         const std::array<uint16_t, 2> resolution =
             ssaoResolution(renderWidth, renderHeight, m_ssaoSettings.halfResolution);
         const gfx::TextureFormat format = selectSsaoFormat();
+
+        const bool ssaoTemporalRequested =
+            m_ssaoSettings.temporalAccumulation && resources.motionVector.valid() &&
+            m_shaderLibrary.program(shader::ProgramKey{shader::PassId::SSAOTemporal, 0, 0}).valid();
+        if (ssaoTemporalRequested) {
+            if (ensureSsaoHistory(resolution[0], resolution[1])) {
+                m_ssaoTemporalActive = true;
+            } else if (!m_ssaoTemporalFallbackLogged) {
+                HBG_LOGW("ssao: temporal history is unavailable; falling back to spatial SSAO");
+                m_ssaoTemporalFallbackLogged = true;
+            }
+        }
 
         gfx::TextureDesc rawDesc;
         rawDesc.width = resolution[0];
@@ -5762,10 +6494,14 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         fullDesc.name = "ssao.full";
         resources.ssao = m_renderGraph.createTexture(fullDesc, "SSAO");
         if (m_frameIndex == 0) {
-            HBG_LOGI("ssao: trace {}x{}, upsample {}x{}, steps={}, radius={}, intensity={}", resolution[0],
-                     resolution[1], renderWidth, renderHeight, m_ssaoSettings.stepCount, m_ssaoSettings.radius,
-                     m_ssaoSettings.intensity);
+            HBG_LOGI("ssao: trace {}x{}, upsample {}x{}, steps={}, radius={}, intensity={}, temporal={}",
+                     resolution[0], resolution[1], renderWidth, renderHeight, m_ssaoSettings.stepCount,
+                     m_ssaoSettings.radius, m_ssaoSettings.intensity,
+                     m_ssaoTemporalActive ? "true" : "false");
         }
+    }
+    if (!m_ssaoTemporalActive) {
+        m_ssaoHistoryValid = false;
     }
 
     DebugDisplayMode debugMode = m_debugDisplayMode;
@@ -5873,14 +6609,47 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
             debugMode = DebugDisplayMode::None;
         }
         break;
+    case DebugDisplayMode::SSAORaw:
+        if (!resources.ssaoRaw.valid() || !hasProgram(shader::PassId::DebugSSAO)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
+    case DebugDisplayMode::SSAOHistory:
+        if (!m_ssaoTemporalActive || m_ssaoHistoryFrame == 0 ||
+            !hasProgram(shader::PassId::DebugSSAO)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
     case DebugDisplayMode::SSR:
         if (!resources.ssr.valid() || !hasProgram(shader::PassId::DebugSSR)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
+    case DebugDisplayMode::SSRRaw:
+        if (!resources.ssr.valid() || !hasProgram(shader::PassId::DebugSSR)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
+    case DebugDisplayMode::SSRHistory:
+        if (!m_ssrTemporalActive || m_ssrHistoryFrame == 0 ||
+            !hasProgram(shader::PassId::DebugSSR)) {
             debugMode = DebugDisplayMode::None;
         }
         break;
     case DebugDisplayMode::SSGI:
         if (!resources.ssgi.valid() || !resources.depthPyramid.valid() || !resources.gbuffer[2].valid() ||
             !hasProgram(shader::PassId::DebugSSGI)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
+    case DebugDisplayMode::SSGIRaw:
+        if (!resources.ssgiRaw.valid() || !hasProgram(shader::PassId::DebugSSGIRaw)) {
+            debugMode = DebugDisplayMode::None;
+        }
+        break;
+    case DebugDisplayMode::SSGIHistory:
+        if (!m_ssgiTemporalActive || m_ssgiHistoryFrame == 0 ||
+            !hasProgram(shader::PassId::DebugSSGIRaw)) {
             debugMode = DebugDisplayMode::None;
         }
         break;
@@ -5920,11 +6689,17 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     }
 
     m_deferredActive = deferred;
+    m_advancedLightingActive = false;
     const bool materialDebug = !deferred && isMaterialDebug(debugMode);
     if (debugMode == DebugDisplayMode::ShadowAtlasDirectional) {
         addShadowAtlasClearPass(m_renderGraph, directionalShadow, m_shadowManager.directionalAtlasSize());
     } else if (debugMode == DebugDisplayMode::ShadowAtlasPunctual) {
         addShadowAtlasClearPass(m_renderGraph, punctualShadow, m_shadowManager.punctualAtlasSize());
+    }
+    if (m_frameIndex == 0) {
+        addShadowAtlasClearPass(m_renderGraph, directionalShadow, m_shadowManager.directionalAtlasSize());
+        addShadowAtlasClearPass(m_renderGraph, punctualShadow, m_shadowManager.punctualAtlasSize());
+        addShadowAtlasClearPass(m_renderGraph, areaShadow, m_shadowManager.areaAtlasSize());
     }
     addGpuShadowCullPass(m_renderGraph, resources);
     addShadowPass(m_renderGraph, directionalShadow, punctualShadow, areaShadow, scene);
@@ -5938,6 +6713,13 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
         recordDeferredFrame(m_renderGraph, resources, scene, debugMode, materialDebug);
     } else {
         recordForwardFrame(m_renderGraph, resources, scene, debugMode, materialDebug);
+    }
+    if ((debugMode == DebugDisplayMode::SSAOHistory && !resources.ssaoHistoryPrevious.valid()) ||
+        (debugMode == DebugDisplayMode::SSRHistory && !resources.ssrHistoryPrevious.valid()) ||
+        (debugMode == DebugDisplayMode::SSGIHistory && !resources.ssgiHistoryPrevious.valid()) ||
+        (debugMode == DebugDisplayMode::SSRRaw && !resources.ssrRaw.valid()) ||
+        (debugMode == DebugDisplayMode::SSGIRaw && !resources.ssgiRaw.valid())) {
+        debugMode = DebugDisplayMode::None;
     }
 
     RenderGraphTextureHandle fogColor;
@@ -6075,7 +6857,9 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
                      LightListBuilder::textureHeightFor(renderHeight));
             HBG_LOGI("postprocess diagnostics: active={} compute={} history={} passes={} profile='{}' exposure={} "
                      "exposure_active={} exposure_applied={} exposure_history={} taa_active={} taa_history={} "
-                     "taa_frames={} dof_active={} dof_coc={}x{} dof_taps={} fxaa_active={}",
+                     "taa_frames={} dof_active={} dof_coc={}x{} dof_taps={} fxaa_active={} "
+                     "ssao_temporal={} ssao_history={} ssao_frames={} ssr_temporal={} ssr_history={} "
+                     "ssr_frames={} ssgi_temporal={} ssgi_history={} ssgi_frames={}",
                      (m_postProcessChain.effectsActive() || m_postProcessChain.exposureActive()) ? "true" : "false",
                      m_postProcessChain.computeSupported() ? "true" : "false",
                      m_postProcessChain.historyValid() ? "true" : "false",
@@ -6087,8 +6871,14 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
                      m_postProcessChain.taaActive() ? "true" : "false",
                      m_postProcessChain.taaHistoryValid() ? "true" : "false",
                      m_postProcessChain.taaHistoryFrameCount(), m_postProcessChain.dofActive() ? "true" : "false",
-                     m_postProcessChain.dofCocWidth(), m_postProcessChain.dofCocHeight(),
-                     m_postProcessChain.dofTapCount(), m_postProcessChain.fxaaActive() ? "true" : "false");
+                      m_postProcessChain.dofCocWidth(), m_postProcessChain.dofCocHeight(),
+                      m_postProcessChain.dofTapCount(), m_postProcessChain.fxaaActive() ? "true" : "false",
+                      m_ssaoTemporalActive ? "true" : "false",
+                      m_ssaoHistoryValid ? "true" : "false", m_ssaoHistoryFrame,
+                      m_ssrTemporalActive ? "true" : "false",
+                      m_ssrHistoryValid ? "true" : "false", m_ssrHistoryFrame,
+                      m_ssgiTemporalActive ? "true" : "false",
+                      m_ssgiHistoryValid ? "true" : "false", m_ssgiHistoryFrame);
             if (deferred) {
                 const char* separator = "";
                 std::string order;
@@ -6098,8 +6888,9 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
                     separator = " -> ";
                 }
                 HBG_LOGI("deferred pass order: {}", order);
-                HBG_LOGI("deferred diagnostics: GBuffer MRT=4, depth={}, stencil={}, color={}; SSAO={} SSR={} "
+                HBG_LOGI("deferred diagnostics: GBuffer MRT=5, advanced={}, depth={}, stencil={}, color={}; SSAO={} SSR={} "
                          "SSGI={} Decals={} Probes={} ({} selected/{} loaded); live passes={}, culled={}",
+                         m_advancedLightingActive ? "true" : "false",
                          gfx::textureFormatName(selectDepthFormat()),
                          selectDepthFormat() == gfx::TextureFormat::D24S8 ? "true" : "false",
                          gfx::textureFormatName(selectHdrFormat()),
@@ -6151,12 +6942,30 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
         resources.destroyUniform(m_environmentSampler);
         m_environmentSampler = {};
     }
-    for (gfx::UniformHandle& sampler : m_probeSamplers) {
-        if (sampler.valid()) {
-            resources.destroyUniform(sampler);
-        }
-        sampler = {};
+    if (m_probeArraySampler.valid()) {
+        resources.destroyUniform(m_probeArraySampler);
+        m_probeArraySampler = {};
     }
+    if (m_cookieAtlasSampler.valid()) {
+        resources.destroyUniform(m_cookieAtlasSampler);
+        m_cookieAtlasSampler = {};
+    }
+    if (m_probeArrayFallback.valid()) {
+        resources.destroyTexture(m_probeArrayFallback);
+        m_probeArrayFallback = {};
+    }
+    if (m_cookieAtlasTexture.valid()) {
+        resources.destroyTexture(m_cookieAtlasTexture);
+        m_cookieAtlasTexture = {};
+    }
+    m_cookieAtlasUploaded = false;
+    if (m_cookieAtlasFallback.valid()) {
+        resources.destroyTexture(m_cookieAtlasFallback);
+        m_cookieAtlasFallback = {};
+    }
+    releaseSsaoHistory();
+    releaseSsrHistory();
+    releaseSsgiHistory();
     if (m_ssaoFallback.valid()) {
         resources.destroyTexture(m_ssaoFallback);
         m_ssaoFallback = {};
@@ -6177,9 +6986,17 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
         resources.destroyUniform(m_ssaoInputSampler);
         m_ssaoInputSampler = {};
     }
+    if (m_ssaoHistorySampler.valid()) {
+        resources.destroyUniform(m_ssaoHistorySampler);
+        m_ssaoHistorySampler = {};
+    }
     if (m_ssrSampler.valid()) {
         resources.destroyUniform(m_ssrSampler);
         m_ssrSampler = {};
+    }
+    if (m_ssrHistorySampler.valid()) {
+        resources.destroyUniform(m_ssrHistorySampler);
+        m_ssrHistorySampler = {};
     }
     if (m_ssgiSampler.valid()) {
         resources.destroyUniform(m_ssgiSampler);
@@ -6188,6 +7005,18 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     if (m_ssgiRawSampler.valid()) {
         resources.destroyUniform(m_ssgiRawSampler);
         m_ssgiRawSampler = {};
+    }
+    if (m_ssgiHistorySampler.valid()) {
+        resources.destroyUniform(m_ssgiHistorySampler);
+        m_ssgiHistorySampler = {};
+    }
+    if (m_ssgiHistoryDepthSampler.valid()) {
+        resources.destroyUniform(m_ssgiHistoryDepthSampler);
+        m_ssgiHistoryDepthSampler = {};
+    }
+    if (m_ssgiHistoryNormalSampler.valid()) {
+        resources.destroyUniform(m_ssgiHistoryNormalSampler);
+        m_ssgiHistoryNormalSampler = {};
     }
     if (m_lightDataTexture.valid()) {
         resources.destroyTexture(m_lightDataTexture);

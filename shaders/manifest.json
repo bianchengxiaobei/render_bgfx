@@ -355,6 +355,11 @@
         "fragment": "build/dxbc/deferred_lighting.fs.bin",
         "bufferFragment": "build/dxbc/deferred_lighting_buffer.fs.bin"
       },
+      "deferredLightingAdvanced": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/deferred_lighting_advanced.fs.bin",
+        "bufferFragment": "build/dxbc/deferred_lighting_advanced_buffer.fs.bin"
+      },
       "ssao": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/ssao.fs.bin"
@@ -363,6 +368,10 @@
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/ssao_blur.fs.bin"
       },
+      "ssaoTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssao_temporal.fs.bin"
+      },
       "ssaoUpsample": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/ssao_upsample.fs.bin"
@@ -370,6 +379,10 @@
       "ssrTrace": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/ssr_trace.fs.bin"
+      },
+      "ssrTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssr_temporal.fs.bin"
       },
       "ssrComposite": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
@@ -382,6 +395,10 @@
       "ssgiDenoise": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/ssgi_denoise.fs.bin"
+      },
+      "ssgiTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssgi_temporal.fs.bin"
       },
       "ssgiComposite": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
@@ -464,6 +481,10 @@
       "debugSsgi": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/debug_ssgi.fs.bin"
+      },
+      "debugSsgiRaw": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_ssgi_raw.fs.bin"
       },
       "debugGbuffer": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
@@ -915,6 +936,11 @@
         "fragment": "build/spirv/deferred_lighting.fs.bin",
         "bufferFragment": "build/spirv/deferred_lighting_buffer.fs.bin"
       },
+      "deferredLightingAdvanced": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/deferred_lighting_advanced.fs.bin",
+        "bufferFragment": "build/spirv/deferred_lighting_advanced_buffer.fs.bin"
+      },
       "ssao": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/ssao.fs.bin"
@@ -923,6 +949,10 @@
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/ssao_blur.fs.bin"
       },
+      "ssaoTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssao_temporal.fs.bin"
+      },
       "ssaoUpsample": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/ssao_upsample.fs.bin"
@@ -930,6 +960,10 @@
       "ssrTrace": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/ssr_trace.fs.bin"
+      },
+      "ssrTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssr_temporal.fs.bin"
       },
       "ssrComposite": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
@@ -942,6 +976,10 @@
       "ssgiDenoise": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/ssgi_denoise.fs.bin"
+      },
+      "ssgiTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssgi_temporal.fs.bin"
       },
       "ssgiComposite": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
@@ -1024,6 +1062,10 @@
       "debugSsgi": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/debug_ssgi.fs.bin"
+      },
+      "debugSsgiRaw": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_ssgi_raw.fs.bin"
       },
       "debugGbuffer": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",

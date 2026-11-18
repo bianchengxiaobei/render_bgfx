@@ -408,6 +408,7 @@ bool parseShadowSettings(std::string_view json, ShadowSettings& settings, std::s
         !readFloat(root, "shadowDimmer", settings.shadowDimmer, error) ||
         !readFloat(root, "shadowFadeDistance", settings.shadowFadeDistance, error) ||
         !readVec3(root, "shadowTint", settings.shadowTint, error) ||
+        !readBool(root, "cachedDirectionalShadows", settings.cachedDirectionalShadows, error) ||
         !readBool(root, "cachedPunctualShadows", settings.cachedPunctualShadows, error) ||
         !readBool(root, "cachedAreaShadows", settings.cachedAreaShadows, error)) {
         return false;
@@ -469,6 +470,7 @@ std::string shadowSettingsToJson(const ShadowSettings& settings) {
     root["shadowDimmer"] = settings.shadowDimmer;
     root["shadowFadeDistance"] = settings.shadowFadeDistance;
     root["shadowTint"] = {settings.shadowTint.x, settings.shadowTint.y, settings.shadowTint.z};
+    root["cachedDirectionalShadows"] = settings.cachedDirectionalShadows;
     root["cachedPunctualShadows"] = settings.cachedPunctualShadows;
     root["cachedAreaShadows"] = settings.cachedAreaShadows;
     return root.dump(2);

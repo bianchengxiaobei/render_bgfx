@@ -18,7 +18,7 @@ TEST_CASE("debug display settings default to lit rendering") {
 }
 
 TEST_CASE("debug display mode table is stable") {
-    REQUIRE(debugDisplayModeCount() == 27);
+    REQUIRE(debugDisplayModeCount() == 33);
     CHECK(debugDisplayModeAt(0) == DebugDisplayMode::None);
     CHECK(debugDisplayModeAt(1) == DebugDisplayMode::LightData);
     CHECK(debugDisplayModeAt(2) == DebugDisplayMode::Normal);
@@ -34,18 +34,24 @@ TEST_CASE("debug display mode table is stable") {
     CHECK(debugDisplayModeAt(12) == DebugDisplayMode::AmbientOcclusion);
     CHECK(debugDisplayModeAt(13) == DebugDisplayMode::Emissive);
     CHECK(debugDisplayModeAt(14) == DebugDisplayMode::SSAO);
-    CHECK(debugDisplayModeAt(15) == DebugDisplayMode::SSR);
-    CHECK(debugDisplayModeAt(16) == DebugDisplayMode::SSGI);
-    CHECK(debugDisplayModeAt(17) == DebugDisplayMode::Decals);
-    CHECK(debugDisplayModeAt(18) == DebugDisplayMode::Exposure);
-    CHECK(debugDisplayModeAt(19) == DebugDisplayMode::ColorGrading);
-    CHECK(debugDisplayModeAt(20) == DebugDisplayMode::Bloom);
-    CHECK(debugDisplayModeAt(21) == DebugDisplayMode::TaaHistory);
-    CHECK(debugDisplayModeAt(22) == DebugDisplayMode::Dof);
-    CHECK(debugDisplayModeAt(23) == DebugDisplayMode::Fxaa);
-    CHECK(debugDisplayModeAt(24) == DebugDisplayMode::ContactShadows);
-    CHECK(debugDisplayModeAt(25) == DebugDisplayMode::ShadowCascade);
-    CHECK(debugDisplayModeAt(26) == DebugDisplayMode::ShadowFilter);
+    CHECK(debugDisplayModeAt(15) == DebugDisplayMode::SSAORaw);
+    CHECK(debugDisplayModeAt(16) == DebugDisplayMode::SSAOHistory);
+    CHECK(debugDisplayModeAt(17) == DebugDisplayMode::SSR);
+    CHECK(debugDisplayModeAt(18) == DebugDisplayMode::SSRRaw);
+    CHECK(debugDisplayModeAt(19) == DebugDisplayMode::SSRHistory);
+    CHECK(debugDisplayModeAt(20) == DebugDisplayMode::SSGI);
+    CHECK(debugDisplayModeAt(21) == DebugDisplayMode::SSGIRaw);
+    CHECK(debugDisplayModeAt(22) == DebugDisplayMode::SSGIHistory);
+    CHECK(debugDisplayModeAt(23) == DebugDisplayMode::Decals);
+    CHECK(debugDisplayModeAt(24) == DebugDisplayMode::Exposure);
+    CHECK(debugDisplayModeAt(25) == DebugDisplayMode::ColorGrading);
+    CHECK(debugDisplayModeAt(26) == DebugDisplayMode::Bloom);
+    CHECK(debugDisplayModeAt(27) == DebugDisplayMode::TaaHistory);
+    CHECK(debugDisplayModeAt(28) == DebugDisplayMode::Dof);
+    CHECK(debugDisplayModeAt(29) == DebugDisplayMode::Fxaa);
+    CHECK(debugDisplayModeAt(30) == DebugDisplayMode::ContactShadows);
+    CHECK(debugDisplayModeAt(31) == DebugDisplayMode::ShadowCascade);
+    CHECK(debugDisplayModeAt(32) == DebugDisplayMode::ShadowFilter);
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::None)) == "Off");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::LightData)) == "Light Data Texture");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Normal)) == "Normal Buffer");
@@ -60,10 +66,22 @@ TEST_CASE("debug display mode table is stable") {
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Metallic)) == "Metallic");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::AmbientOcclusion)) == "Ambient Occlusion");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Emissive)) == "Emissive");
-    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSAO)) == "Screen Space Ambient Occlusion");
-    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSR)) == "Screen Space Reflections");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSAO)) ==
+          "Screen Space Ambient Occlusion (Denoised)");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSAORaw)) ==
+          "Screen Space Ambient Occlusion Raw");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSAOHistory)) ==
+          "Screen Space Ambient Occlusion History");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSR)) ==
+          "Screen Space Reflections (Denoised)");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSRRaw)) == "Screen Space Reflections Raw");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSRHistory)) == "Screen Space Reflections History");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSGI)) ==
-          "Screen Space Global Illumination");
+          "Screen Space Global Illumination (Denoised)");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSGIRaw)) ==
+          "Screen Space Global Illumination Raw");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::SSGIHistory)) ==
+          "Screen Space Global Illumination History");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Decals)) == "Decals");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Exposure)) == "Exposure");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::ColorGrading)) == "Color Grading LUT");

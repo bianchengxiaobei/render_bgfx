@@ -10,6 +10,7 @@ TEST_CASE("SSAO settings sanitize values and step count") {
     CHECK(settings.intensity == doctest::Approx(2.0f));
     CHECK(settings.stepCount == 6);
     CHECK(settings.halfResolution);
+    CHECK_FALSE(settings.temporalAccumulation);
 
     settings.radius = -1.0f;
     settings.intensity = 10.0f;

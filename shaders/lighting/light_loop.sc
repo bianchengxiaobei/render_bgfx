@@ -114,7 +114,7 @@ vec3 hbgEvaluateAreaLightData(int index, HbgLightData light, SurfaceData surface
     if (cookieMode != HBG_LIGHT_COOKIE_MODE_NONE)
     {
         cookie = hbgLtcRectCookie(v0, v1, v2, v3, formFactorDiffuse, index, cookieMode, cookieScale,
-                                  cookieOffset);
+                                  cookieOffset, perceptualRoughness);
     }
 
     const vec3 radiance = light.colorIntensity.rgb * rangeAttenuation * cookie;

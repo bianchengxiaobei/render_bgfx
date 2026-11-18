@@ -11,6 +11,7 @@ void sanitizeSsrSettings(SsrSettings& settings) {
     settings.roughnessFade = std::clamp(settings.roughnessFade, 0.0f, 1.0f);
     settings.edgeFade = std::clamp(settings.edgeFade, 0.0f, 0.5f);
     settings.intensity = std::clamp(settings.intensity, 0.0f, 10.0f);
+    settings.temporalWeight = std::clamp(settings.temporalWeight, 0.0f, 1.0f);
 }
 
 } // namespace hbg::render

@@ -9,6 +9,8 @@ struct SsrSettings {
     float roughnessFade = 0.25f;
     float edgeFade = 0.1f;
     float intensity = 1.0f;
+    float temporalWeight = 0.1f;
+    bool temporalAccumulation = false;
     bool enabled = true;
 };
 

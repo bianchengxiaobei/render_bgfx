@@ -380,7 +380,7 @@ Presentation / Tonemap / Debug
 - fallback：有 sky 时用 SH9；无 sky 时用 `u_pass_ambientColor`。trace 输出 `max(averageRadiance - ambient * ambientBias, 0)`，默认 ambientBias=0.5，避免完全双计 ambient，同时开放区域仍有半幅 fallback、不产生黑块。
 - 顺序：`Deferred Lighting -> SSGI Trace -> SSGI Denoise -> SSGI Composite -> SSR Trace -> SSR Composite -> Forward Only Opaque -> Transparent`；SSGI 只加 deferred 像素，forward-only/transparent/sky 不加。
 - 支持 `pipeline.json supportSSGI`、`FrameSettingsField::SSGI`、`--ssgi`/`--no-ssgi`；关闭时跳过三个 pass 和 raw/denoise 纹理分配。
-- Debug view `SSGI`（`--debug-view=ssgi` 自动开启）；M2.9 已统一接入 Debug 模式表。
+- Debug view `SSGI`（`--debug-view=ssgi` 自动开启）已在 M2.6 实现；当前 debug 模式表见 `src/render/debug/debug_display.h`。
 
 ### 验收
 
@@ -481,7 +481,7 @@ Presentation / Tonemap / Debug
 - probe 纹理 stage 14/15；最多两个 probe 按权重归一化混合，剩余权重回退 stage 10 sky IBL；probe 的 maxMip/intensity 独立上传。天空反射关闭时仍可使用 probe，probe 关闭/无 probe 时逐像素回到 M1 sky IBL。
 - `FrameSettings::ReflectionProbe` + `--reflection-probes`/`--no-reflection-probes` 门控；forward 与 deferred 共用 `hbgEvaluateAmbient` 的 probe 路径。
 - 修正 forward instanced 路径缺失 environment/probe/cluster uniform 与 probe 纹理绑定，避免同材质多实例金属物体丢失 IBL/probe。
-- Debug view `ReflectionProbe` 为可选，未实现；M2.9 仍决定不补，Probe 状态改由 `deferred diagnostics` 日志记录。
+- Debug view `ReflectionProbe` 仍未实现；登记为 [m12-checklist.md](m12-checklist.md) B07。Probe 状态由 `deferred diagnostics` 日志记录。
 
 ### 验收
 

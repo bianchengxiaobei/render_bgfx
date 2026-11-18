@@ -211,7 +211,7 @@
 
 ### 简化边界
 
-- LightList 是 CPU 屏幕空间 AABB v1，不是 HDRP GPU compute/cluster；无 depth min/max fine pruning、per-voxel clusters、light layers/categories/decals/probes。
+- LightList 的 CPU 屏幕空间 AABB v1 已由 M6/M7 的 GPU light-list/cluster 关闭；剩余 256 lights、async light-list 等见 [m12-checklist.md](m12-checklist.md) A/B 类。
 - 每 tile 最多 32 灯；spot 用 range 包围球保守裁剪，未做 cone 精确测试。
 - `LightBuilder` 仍只选 1 个方向光 + 31 punctual；M1.7 已为 point/spot 回填 ShadowContext 请求索引。
 
@@ -335,7 +335,7 @@
 
 ### 简化边界
 
-- LightCluster 是 16×16 屏幕空间 LightList tile 占用图，不是 HDRP 的 ray tracing 3D light cluster；无逐 voxel cluster、灯数文本或 depth 剔除视图。
+- LightCluster 已由 M2.3/M6 升级为 64×64×32 CPU cluster + GPU cluster；剩余 debug 限制（无逐 voxel/灯数文本/depth 剔除视图）见 [m12-checklist.md](m12-checklist.md) B07。
 - 阴影图集为 debug 模式下整图清空后的 raw depth 对比度显示；无单阴影 overlay、atlas 缩放渐变、cached/area atlas。
 - Material debug 只显示 opaque；依赖 depth prepass；透明/alphaMask 外部场景仍受资产边界限制；一次只显示 Albedo 或 Roughness，不含 Metal/AO/Specular/Alpha 等 HDRP 全材料属性。
 - Motion Vectors 为 hue wheel + speed intensity，不包含 HDRP 的箭头网格和独立 Motion Vectors Intensity 模式；DepthPyramid 固定 mip0，无 UI mip 选择。
@@ -352,8 +352,8 @@
 ## 已知限制
 
 - 最终输出 v1：固定 EV100 默认 -1.263（等价旧 2× exposure），自动曝光为最终 pass 内 4×4 center-weighted 瞬时测光；ACES approximate/Neutral/None、无 Bloom/ColorGrading/Custom LUT、无 HDR output/Progressive adaptation。Sky/IBL v1（equirect/6:1 + SH9 + GGX mip，无 SSAO/SSR/反射探针）；透明/alphaMask 外部场景未完成。
-- Debug v1：LightCluster 是 CPU 16×16 tile 占用图而非 HDRP ray cluster；阴影图集为 raw depth 对比度视图；Material debug 仅 opaque/depth prepass、一次一个属性；Motion 无箭头网格/Intensity 子模式；DepthPyramid 固定 mip0，无全屏 debug overlay/color picker。
-- LightList 当前为 CPU 屏幕空间 AABB + 16×16/64×64 tile 的 v1，不是 HDRP GPU compute/cluster；无 depth min/max fine pruning、per-voxel clusters、light layers/categories/probes/decals。每 tile 最多 32 灯，spot 用 range 包围球保守裁剪。
+- Debug v1：LightCluster 已升级为 CPU 64×64×32 + GPU cluster（M2.3/M6）；阴影图集为 raw depth 对比度视图；Material debug 仅 opaque/depth prepass、一次一个属性；Motion 无箭头网格/Intensity 子模式；DepthPyramid 固定 mip0，无全屏 debug overlay/color picker。剩余项见 [m12-checklist.md](m12-checklist.md) B07。
+- LightList 已由 M6/M7 升级为 GPU screen AABB/big-tile/FPTL/cluster；M8/M9 已补 64/128 capacity、16-bit packing、layered offset、category/feature flags、light layers。剩余 256 lights/async 见 [m12-checklist.md](m12-checklist.md) A/B 类。
 - M1.7 阴影为固定 atlas/4 级联 v1：无 cached/mixed shadow、per-request shadow caster cull、alphaMask caster、area light shadow、volume shadow distance/border/fade、shadow mask、screen-space/contact shadow；PCSS/EVSM/VSM 与动态 atlas resize 未接，PCF 默认 3×3，point face/cascade 边界无混合。
 - Transparent depth prepass/MotionVectors、distortion、TAA/motion blur、moving object prevWorld authoring 未完成；当前 glTF 物体为静态。
 - Depth pyramid 采用 RG32F min/max + scratch 栅格路径，不是 HDRP R32F min-only compute/atlas。

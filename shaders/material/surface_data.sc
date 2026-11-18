@@ -84,6 +84,20 @@ SurfaceData hbgMakeSurfaceData(vec3 worldPos, vec3 geometricNormalWS, vec3 tange
     surfaceData.emissive = max(emissive, vec3(0.0, 0.0, 0.0));
     surfaceData.contactShadowMask = 0.0;
     surfaceData.contactShadowFade = 0.0;
+#ifdef HBG_ADVANCED_MATERIAL
+    surfaceData.tangentWS = vec3(0.0, 0.0, 0.0);
+    surfaceData.clearCoatMask = 0.0;
+    surfaceData.clearCoatRoughness = 0.0;
+    surfaceData.clearCoatNormalScale = 1.0;
+    surfaceData.transmissionMask = 0.0;
+    surfaceData.thickness = 0.0;
+    surfaceData.ior = 1.5;
+    surfaceData.anisotropy = 0.0;
+    surfaceData.anisotropyRotation = 0.0;
+    surfaceData.iridescenceMask = 0.0;
+    surfaceData.iridescenceThickness = 0.0;
+    surfaceData.subsurfaceMask = 0.0;
+#endif
 
     return surfaceData;
 }

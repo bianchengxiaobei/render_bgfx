@@ -4,8 +4,7 @@
 #include "common/common.sc"
 
 SAMPLER2D(s_environmentMap, 10);
-SAMPLER2D(s_probeMap0, 14);
-SAMPLER2D(s_probeMap1, 15);
+SAMPLER2DARRAY(s_probeMaps, 14);
 
 vec2 hbgEquirectUV(vec3 direction)
 {
@@ -69,11 +68,7 @@ float hbgProbeIntersectionDistance(vec3 localPosition, vec3 localDirection, vec3
 
 vec3 hbgSampleProbeTexture(int index, vec3 direction, float lod)
 {
-    if (index == 0)
-    {
-        return texture2DLod(s_probeMap0, hbgEquirectUV(direction), lod).rgb;
-    }
-    return texture2DLod(s_probeMap1, hbgEquirectUV(direction), lod).rgb;
+    return texture2DArrayLod(s_probeMaps, vec3(hbgEquirectUV(direction), float(index)), lod).rgb;
 }
 
 vec3 hbgSampleProbe(int index, vec3 worldPosition, vec3 reflectionDirection, float perceptualRoughness,

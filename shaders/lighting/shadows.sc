@@ -4,11 +4,21 @@
 #include "common/common.sc"
 
 SAMPLER2DSHADOW(s_shadowMap, 6);
-SAMPLER2DSHADOW(s_shadowMapPunctual, 9);
+SAMPLER2D(s_shadowMapPunctual, 9);
+#ifdef HBG_SHADOW_POINT_SAMPLER
+#define HBG_SHADOW_AREA_SAMPLER
+#endif
 #ifdef HBG_SHADOW_POINT_SAMPLER
 SAMPLER2D(s_shadowMapPoint, 12);
+#endif
+#ifdef HBG_SHADOW_AREA_SAMPLER
 SAMPLER2D(s_shadowMapPointPunctual, 13);
 #endif
+
+float hbgShadowPunctualCompare(vec2 uv, float depth)
+{
+    return texture2DLod(s_shadowMapPunctual, uv, 0.0).x >= depth ? 1.0 : 0.0;
+}
 
 // HDRP keeps HDShadowData in StructuredBuffer<HDShadowData>; stage 8 uses the
 // same 10 float4 texels per request, loaded as one vector per fetch.
@@ -255,7 +265,7 @@ float hbgSampleTent3(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvM
     for (int i = 0; i < 4; ++i)
     {
         const vec2 uv = clamp(uvs[i], uvMin, uvMax);
-        visibility += weights[i] * (punctual ? shadow2D(s_shadowMapPunctual, vec3(uv, depth))
+        visibility += weights[i] * (punctual ? hbgShadowPunctualCompare(uv, depth)
                                              : shadow2D(s_shadowMap, vec3(uv, depth)));
     }
     return visibility;
@@ -270,7 +280,7 @@ float hbgSampleTent5(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvM
     for (int i = 0; i < 9; ++i)
     {
         const vec2 uv = clamp(uvs[i], uvMin, uvMax);
-        visibility += weights[i] * (punctual ? shadow2D(s_shadowMapPunctual, vec3(uv, depth))
+        visibility += weights[i] * (punctual ? hbgShadowPunctualCompare(uv, depth)
                                              : shadow2D(s_shadowMap, vec3(uv, depth)));
     }
     return visibility;
@@ -285,13 +295,13 @@ float hbgSampleTent7(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvM
     for (int i = 0; i < 16; ++i)
     {
         const vec2 uv = clamp(uvs[i], uvMin, uvMax);
-        visibility += weights[i] * (punctual ? shadow2D(s_shadowMapPunctual, vec3(uv, depth))
+        visibility += weights[i] * (punctual ? hbgShadowPunctualCompare(uv, depth)
                                              : shadow2D(s_shadowMap, vec3(uv, depth)));
     }
     return visibility;
 }
 
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_AREA_SAMPLER)
 float hbgPcssNoise(vec2 pixel)
 {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
@@ -304,12 +314,14 @@ vec2 hbgPcssDiskSample(int index, int count, float radius, float jitter)
     const float angle = sampleIndex * 2.39996323 + jitter;
     return vec2(cos(angle), sin(angle)) * sampleRadius;
 }
+#endif
 
+#ifdef HBG_SHADOW_POINT_SAMPLER
 float hbgPcssRawDepth(vec2 uv, bool punctual)
 {
     if (punctual)
     {
-        return texture2DLod(s_shadowMapPointPunctual, uv, 0.0).x;
+        return texture2DLod(s_shadowMapPunctual, uv, 0.0).x;
     }
     return texture2DLod(s_shadowMapPoint, uv, 0.0).x;
 }
@@ -378,7 +390,7 @@ float hbgSamplePcss(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMa
         {
             if (punctual)
             {
-                visibility += shadow2D(s_shadowMapPunctual, vec3(uv, depth));
+                visibility += hbgShadowPunctualCompare(uv, depth);
             }
             else
             {
@@ -432,7 +444,7 @@ float hbgSampleDirectionalRequest(int request, vec3 worldPosition, vec3 normalWS
         return 1.0;
     }
 
-    const vec2 texel = requestParams.zw;
+    const vec2 texel = atlasRect.xy * requestParams.zw;
     const vec2 uvMin = atlasRect.zw + texel * 0.5;
     const vec2 uvMax = atlasRect.zw + atlasRect.xy - texel * 0.5;
     const int filterMode = int(requestInfo.z + 0.5);
@@ -505,24 +517,20 @@ float hbgSamplePunctualRequest(int request, vec3 worldPosition, vec3 normalWS)
         return 1.0;
     }
 
-    const vec2 texel = requestParams.zw;
+    const vec2 texel = atlasRect.xy * requestParams.zw;
     const vec2 uvMin = atlasRect.zw + texel * 0.5;
     const vec2 uvMax = atlasRect.zw + atlasRect.xy - texel * 0.5;
     const int filterMode = int(requestInfo.z + 0.5);
     if (filterMode == 4)
     {
 #ifdef HBG_SHADOW_POINT_SAMPLER
-        // Stage 13 is repurposed as the area depth atlas while area shadows
-        // are active; keep the punctual path on tent filtering in that case.
-        if (u_pass_lightListParams2.w < 0.5)
-        {
-            const vec4 pcssParams = hbgLoadShadowPcssParams(request);
-            return hbgSamplePcss(atlasUV, depth, texel, uvMin, uvMax, punctual, filterParams.x, pcssParams.z,
-                                 int(pcssParams.x + 0.5), int(pcssParams.y + 0.5), filterParams.z,
-                                 filterParams.y, pcssParams.w);
-        }
-#endif
+        const vec4 pcssParams = hbgLoadShadowPcssParams(request);
+        return hbgSamplePcss(atlasUV, depth, texel, uvMin, uvMax, punctual, filterParams.x, pcssParams.z,
+                             int(pcssParams.x + 0.5), int(pcssParams.y + 0.5), filterParams.z,
+                             filterParams.y, pcssParams.w);
+#else
         return hbgSampleTent5(atlasUV, depth, texel, uvMin, uvMax, punctual);
+#endif
     }
     if (filterMode == 3)
     {
@@ -536,12 +544,12 @@ float hbgSamplePunctualRequest(int request, vec3 worldPosition, vec3 normalWS)
     {
         return hbgSampleTent3(atlasUV, depth, texel, uvMin, uvMax, punctual);
     }
-    return shadow2D(s_shadowMapPunctual, vec3(atlasUV, depth));
+    return hbgShadowPunctualCompare(atlasUV, depth);
 }
 
 float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
 {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_AREA_SAMPLER
     const vec4 requestParams = hbgLoadShadowRequestParams(request);
     const vec4 requestInfo = hbgLoadShadowRequestInfo(request);
     const vec4 filterParams = hbgLoadShadowFilterParams(request);
@@ -582,7 +590,7 @@ float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
         return 1.0;
     }
 
-    const vec2 texel = requestParams.zw;
+    const vec2 texel = atlasRect.xy * requestParams.zw;
     const vec2 uvMin = atlasRect.zw + texel * 0.5;
     const vec2 uvMax = atlasRect.zw + atlasRect.xy - texel * 0.5;
     const int filterMode = int(requestInfo.z + 0.5);

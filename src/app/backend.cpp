@@ -241,14 +241,36 @@ std::optional<render::DebugDisplayMode> parseDebugDisplayMode(std::string_view t
     if (key == "emissive" || key == "emission") {
         return render::DebugDisplayMode::Emissive;
     }
-    if (key == "ssao" || key == "ambient-occlusion" || key == "ambientocclusion") {
+    if (key == "ssao" || key == "ambient-occlusion" || key == "ambientocclusion" ||
+        key == "ssao-denoised") {
         return render::DebugDisplayMode::SSAO;
     }
-    if (key == "ssr" || key == "reflections" || key == "screen-space-reflections") {
+    if (key == "ssao-raw" || key == "ambient-occlusion-raw" || key == "ambientocclusionraw") {
+        return render::DebugDisplayMode::SSAORaw;
+    }
+    if (key == "ssao-history" || key == "ambient-occlusion-history" || key == "ambientocclusionhistory") {
+        return render::DebugDisplayMode::SSAOHistory;
+    }
+    if (key == "ssr" || key == "reflections" || key == "screen-space-reflections" ||
+        key == "ssr-denoised") {
         return render::DebugDisplayMode::SSR;
     }
-    if (key == "ssgi" || key == "global-illumination" || key == "screen-space-global-illumination") {
+    if (key == "ssr-raw" || key == "reflections-raw" || key == "screen-space-reflections-raw") {
+        return render::DebugDisplayMode::SSRRaw;
+    }
+    if (key == "ssr-history" || key == "reflections-history" || key == "screen-space-reflections-history") {
+        return render::DebugDisplayMode::SSRHistory;
+    }
+    if (key == "ssgi" || key == "global-illumination" || key == "screen-space-global-illumination" ||
+        key == "ssgi-denoised") {
         return render::DebugDisplayMode::SSGI;
+    }
+    if (key == "ssgi-raw" || key == "global-illumination-raw" || key == "screen-space-global-illumination-raw") {
+        return render::DebugDisplayMode::SSGIRaw;
+    }
+    if (key == "ssgi-history" || key == "global-illumination-history" ||
+        key == "screen-space-global-illumination-history") {
+        return render::DebugDisplayMode::SSGIHistory;
     }
     if (key == "decals" || key == "dbuffer") {
         return render::DebugDisplayMode::Decals;
@@ -583,6 +605,9 @@ void applyShadowOverrides(const ShadowOverrides& overrides, render::ShadowSettin
     if (overrides.shadowTint) {
         settings.shadowTint = *overrides.shadowTint;
     }
+    if (overrides.cachedDirectionalShadows) {
+        settings.cachedDirectionalShadows = *overrides.cachedDirectionalShadows;
+    }
     if (overrides.cachedPunctualShadows) {
         settings.cachedPunctualShadows = *overrides.cachedPunctualShadows;
     }
@@ -636,21 +661,37 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             if (!mode) {
                 HBG_LOGE("unknown debug view '{}' (expected off, light-data, normal, motion-vectors, depth, "
                          "depth-pyramid, light-cluster, directional-shadow-atlas, punctual-shadow-atlas, "
-                         "shadow-cascade, shadow-filter, albedo, roughness, metallic, ao, emissive, ssao, ssr, "
-                         "ssgi, decals, exposure, color-grading, bloom, taa-history, dof or fxaa)",
+                         "shadow-cascade, shadow-filter, albedo, roughness, metallic, ao, emissive, ssao, "
+                         "ssao-raw, ssao-history, ssr, ssr-raw, ssr-history, ssgi, ssgi-raw, ssgi-history, "
+                         "decals, exposure, color-grading, bloom, taa-history, dof or fxaa)",
                          *value);
                 result.ok = false;
             } else {
                 result.options.debugDisplayMode = *mode;
                 result.options.debugLightData = *mode == render::DebugDisplayMode::LightData;
-                if (*mode == render::DebugDisplayMode::SSAO) {
+                if (*mode == render::DebugDisplayMode::SSAO ||
+                    *mode == render::DebugDisplayMode::SSAORaw ||
+                    *mode == render::DebugDisplayMode::SSAOHistory) {
                     result.options.ssao = true;
                 }
-                if (*mode == render::DebugDisplayMode::SSR) {
+                if (*mode == render::DebugDisplayMode::SSAOHistory) {
+                    result.options.ssaoTemporal = true;
+                }
+                if (*mode == render::DebugDisplayMode::SSR ||
+                    *mode == render::DebugDisplayMode::SSRRaw ||
+                    *mode == render::DebugDisplayMode::SSRHistory) {
                     result.options.ssr = true;
                 }
-                if (*mode == render::DebugDisplayMode::SSGI) {
+                if (*mode == render::DebugDisplayMode::SSRHistory) {
+                    result.options.ssrTemporal = true;
+                }
+                if (*mode == render::DebugDisplayMode::SSGI ||
+                    *mode == render::DebugDisplayMode::SSGIRaw ||
+                    *mode == render::DebugDisplayMode::SSGIHistory) {
                     result.options.ssgi = true;
+                }
+                if (*mode == render::DebugDisplayMode::SSGIHistory) {
+                    result.options.ssgiTemporal = true;
                 }
                 if (*mode == render::DebugDisplayMode::Decals) {
                     result.options.decals = true;
@@ -696,6 +737,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.ssao = false;
             continue;
         }
+        if (arg == "--ssao-temporal") {
+            result.options.ssaoTemporal = true;
+            continue;
+        }
+        if (arg == "--no-ssao-temporal") {
+            result.options.ssaoTemporal = false;
+            continue;
+        }
         if (arg == "--ssr") {
             result.options.ssr = true;
             continue;
@@ -704,12 +753,28 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.ssr = false;
             continue;
         }
+        if (arg == "--ssr-temporal") {
+            result.options.ssrTemporal = true;
+            continue;
+        }
+        if (arg == "--no-ssr-temporal") {
+            result.options.ssrTemporal = false;
+            continue;
+        }
         if (arg == "--ssgi") {
             result.options.ssgi = true;
             continue;
         }
         if (arg == "--no-ssgi") {
             result.options.ssgi = false;
+            continue;
+        }
+        if (arg == "--ssgi-temporal") {
+            result.options.ssgiTemporal = true;
+            continue;
+        }
+        if (arg == "--no-ssgi-temporal") {
+            result.options.ssgiTemporal = false;
             continue;
         }
         if (arg == "--decals") {
@@ -1225,6 +1290,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.disableShadows = true;
             continue;
         }
+        if (arg == "--directional-shadow-cache") {
+            result.options.shadowOverrides.cachedDirectionalShadows = true;
+            continue;
+        }
+        if (arg == "--no-directional-shadow-cache") {
+            result.options.shadowOverrides.cachedDirectionalShadows = false;
+            continue;
+        }
         if (arg == "--shadow-cache") {
             result.options.shadowOverrides.cachedPunctualShadows = true;
             continue;
@@ -1610,6 +1683,24 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.lightListFeatureFlags = false;
             continue;
         }
+        if (arg == "--cookie-atlas") {
+            result.options.cookieAtlas = true;
+            continue;
+        }
+        if (arg == "--no-cookie-atlas") {
+            result.options.cookieAtlas = false;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--cookie-atlas-size")) {
+            int size = 0;
+            if (!parseInt(*value, size) || (size != 512 && size != 1024 && size != 2048)) {
+                HBG_LOGE("invalid --cookie-atlas-size value '{}' (expected 512, 1024 or 2048)", *value);
+                result.ok = false;
+            } else {
+                result.options.cookieAtlasSize = static_cast<uint32_t>(size);
+            }
+            continue;
+        }
         if (arg == "--gpu-shadow-culling") {
             result.options.gpuShadowCulling = true;
             continue;
@@ -1902,7 +1993,8 @@ const char* usage() {
            "  --debug-view=<off|light-data|normal|motion-vectors|depth|depth-pyramid|light-cluster|\n"
            "                directional-shadow-atlas|punctual-shadow-atlas|shadow-cascade|shadow-filter|\n"
            "                contact-shadows|albedo|roughness|metallic|ao|\n"
-           "                emissive|ssao|ssr|ssgi|decals|exposure|color-grading|bloom|taa-history|dof|fxaa>\n"
+           "                emissive|ssao|ssao-raw|ssao-history|ssr|ssr-raw|ssr-history|\n"
+           "                ssgi|ssgi-raw|ssgi-history|decals|exposure|color-grading|bloom|taa-history|dof|fxaa>\n"
            "                                                    Select a fullscreen debug view\n"
            "  --debug-light-cluster-slice=<n>                   Light-cluster debug slice (-2 = FPTL legacy, "
            "-1 = depth slice, 0..31 = fixed)\n"
@@ -1910,6 +2002,7 @@ const char* usage() {
            "  --camera-orbit                                   Orbit the render-test camera to exercise motion "
            "vectors\n"
            "  --no-shadows                                      Start with shadow sampling disabled\n"
+           "  --directional-shadow-cache / --no-directional-shadow-cache  Enable/disable cached static directional shadows\n"
            "  --shadow-cache / --no-shadow-cache                Enable/disable cached static punctual shadows\n"
            "  --area-shadow-cache / --no-area-shadow-cache      Enable/disable cached static rectangle area shadows\n"
            "  --shadow-dimmer=<0..1>                            Global default shadow dimmer (per-light wins)\n"
@@ -1948,6 +2041,8 @@ const char* usage() {
             "  --gpu-light-list-buffers / --no-gpu-light-list-buffers  Enable/disable buffer storage (default: enabled)\n"
             "  --gpu-light-list-indirect / --no-gpu-light-list-indirect  Enable/disable indirect light-list dispatch\n"
            "  --light-list-feature-flags / --no-light-list-feature-flags  Enable/disable tile feature-flag category gating (default: enabled)\n"
+           "  --cookie-atlas / --no-cookie-atlas                Enable native cookie atlas / use legacy 8x8 tiles (default: enabled)\n"
+           "  --cookie-atlas-size <512|1024|2048>               Cookie atlas resolution (default: 1024)\n"
            "  --light-capacity=<32|64|128>                      Maximum light slots including directional (default: 64)\n"
            "  --light-layers / --no-light-layers                Enable/disable per-light/per-object light layers\n"
            "  --cluster-stats-readback                           Read back GPU cluster overflow and feature-flag stats after rendering\n"
@@ -1963,8 +2058,10 @@ const char* usage() {
            "  --render-scale=<0.1..1.0>                         Dynamic-resolution render scale (default: 1.0)\n"
            "  --lit-shader-mode=<forward|deferred>              Override the lit shader mode\n"
            "  --deferred                                        Alias for --lit-shader-mode=deferred\n"
-           "  --ssao / --no-ssao                                Enable/disable deferred SSAO\n"
-           "  --ssr / --no-ssr                                  Enable/disable deferred SSR\n"
+            "  --ssao / --no-ssao                                Enable/disable deferred SSAO\n"
+            "  --ssao-temporal / --no-ssao-temporal              Enable/disable SSAO history reprojection\n"
+            "  --ssr / --no-ssr                                  Enable/disable deferred SSR\n"
+            "  --ssr-temporal / --no-ssr-temporal                Enable/disable SSR history reprojection\n"
            "  --ssgi / --no-ssgi                                Enable/disable deferred SSGI\n"
            "  --decals / --no-decals                            Enable/disable deferred DBuffer decals\n"
            "  --reflection-probes / --no-reflection-probes      Enable/disable static reflection probes\n"

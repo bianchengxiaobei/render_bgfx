@@ -101,13 +101,21 @@ class ShadowManager {
     uint32_t punctualRequestCount() const { return m_punctualRequestCount; }
     uint32_t areaRequestCount() const { return m_areaRequestCount; }
     uint32_t shadowedLightCount() const { return m_shadowedLightCount; }
+    bool directionalCacheActive() const { return m_directionalCacheEligible; }
+    bool directionalCacheDirty() const { return m_directionalCacheDirty; }
     bool areaCacheActive() const { return m_areaCacheEligible; }
     bool areaCacheMixed() const { return m_areaCacheMixed; }
     bool areaCacheDirty() const { return m_areaCacheDirty; }
     bool areaCacheUsesDynamicAtlas() const { return m_areaUsesDynamicAtlas; }
+    uint32_t cachedDirectionalRequestCount() const { return m_cachedDirectionalRequestCount; }
     uint32_t cachedAreaRequestCount() const { return m_cachedAreaRequestCount; }
 
     gfx::TextureHandle directionalTexture() const { return m_directionalTexture; }
+    gfx::TextureHandle activeDirectionalTexture() const {
+        return m_directionalCacheEligible && m_cachedDirectionalTexture.valid()
+                   ? m_cachedDirectionalTexture
+                   : m_directionalTexture;
+    }
     gfx::TextureHandle punctualTexture() const { return m_punctualTexture; }
     gfx::TextureHandle cachedPunctualTexture() const { return m_cachedPunctualTexture; }
     gfx::TextureHandle areaTexture() const { return m_areaTexture; }
@@ -138,6 +146,8 @@ class ShadowManager {
             m_cacheSuppressed = suppressed;
             m_cacheValid = false;
             m_cacheHash = 0;
+            m_directionalCacheValid = false;
+            m_directionalCacheHash = 0;
             m_areaCacheValid = false;
             m_areaCacheHash = 0;
         }
@@ -173,6 +183,7 @@ class ShadowManager {
 
     gfx::ResourceManager* m_resources = nullptr;
     gfx::TextureHandle m_directionalTexture;
+    gfx::TextureHandle m_cachedDirectionalTexture;
     gfx::TextureHandle m_punctualTexture;
     gfx::TextureHandle m_cachedPunctualTexture;
     gfx::TextureHandle m_areaTexture;
@@ -183,10 +194,15 @@ class ShadowManager {
     GpuShadowContextData m_contextData;
     ShadowSettings m_settings;
     Vec4 m_cascadeSplits{};
+    uint64_t m_directionalCacheHash = 0;
     uint64_t m_cacheHash = 0;
     uint64_t m_areaCacheHash = 0;
+    uint32_t m_cachedDirectionalRequestCount = 0;
     uint32_t m_cachedRequestCount = 0;
     uint32_t m_cachedAreaRequestCount = 0;
+    bool m_directionalCacheEligible = false;
+    bool m_directionalCacheValid = false;
+    bool m_directionalCacheDirty = false;
     bool m_cacheEligible = false;
     bool m_cacheValid = false;
     bool m_areaCacheEligible = false;

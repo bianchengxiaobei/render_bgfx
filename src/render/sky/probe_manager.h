@@ -30,19 +30,18 @@ class ProbeManager {
     bool valid() const { return !m_probes.empty(); }
     std::size_t loadedCount() const { return m_probes.size(); }
     std::size_t selectedCount() const;
-    gfx::TextureHandle texture(std::size_t index) const;
+    gfx::TextureHandle textureArray() const { return m_textureArray; }
     const gfx::generated::ProbeUniforms& uniforms() const { return m_uniforms; }
 
   private:
     struct GpuProbe {
         ReflectionProbe descriptor;
-        gfx::TextureHandle texture;
         float maxMip = 0.0f;
     };
 
     std::vector<GpuProbe> m_probes;
     std::array<int, kMaxActiveReflectionProbes> m_selected{-1, -1};
-    std::array<gfx::TextureHandle, kMaxActiveReflectionProbes> m_textures{};
+    gfx::TextureHandle m_textureArray;
     gfx::generated::ProbeUniforms m_uniforms{};
 };
 

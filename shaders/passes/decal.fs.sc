@@ -82,7 +82,15 @@ void main()
         maos = texture2D(s_decalMask, decalUV).rgb;
     }
 
-    gl_FragData[0] = vec4(albedo.rgb, coverage);
-    gl_FragData[1] = vec4(vec3(0.5, 0.5, 0.5) + normalWS * 0.5, coverage);
-    gl_FragData[2] = vec4(hbgSaturate(maos), coverage);
+    const int channelMask = int(u_decal_params3.y + 0.5);
+    const float albedoCoverage = (channelMask & 1) != 0 ? coverage : 0.0;
+    const float normalCoverage = (channelMask & 2) != 0 ? coverage : 0.0;
+    const float maosCoverage = (channelMask & 4) != 0 ? coverage : 0.0;
+    const float aoCoverage = (channelMask & 8) != 0 ? coverage : 0.0;
+    const float roughnessCoverage = (channelMask & 16) != 0 ? coverage : 0.0;
+
+    gl_FragData[0] = vec4((channelMask & 1) != 0 ? albedo.rgb : vec3(0.0, 0.0, 0.0), albedoCoverage);
+    gl_FragData[1] = vec4(vec3(0.5, 0.5, 0.5) + normalWS * 0.5, normalCoverage);
+    gl_FragData[2] = vec4(hbgSaturate(maos), aoCoverage);
+    gl_FragData[3] = vec4(maosCoverage, roughnessCoverage, u_decal_params3.x / 255.0, 0.0);
 }

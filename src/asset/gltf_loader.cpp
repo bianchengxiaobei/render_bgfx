@@ -1,4 +1,4 @@
-﻿#include "asset/gltf_loader.h"
+#include "asset/gltf_loader.h"
 
 #include "asset/material.h"
 #include "asset/mesh.h"
@@ -259,6 +259,31 @@ uint32_t addMaterial(Context& context, const cgltf_material* source) {
     }
     if (source->has_emissive_strength) {
         material.features |= MaterialFeatureEmissiveStrength;
+    }
+    if (source->has_clearcoat) {
+        material.clearCoat = source->clearcoat.clearcoat_factor;
+        material.clearCoatRoughness = source->clearcoat.clearcoat_roughness_factor;
+        material.clearCoatNormalScale = source->clearcoat.clearcoat_normal_texture.scale;
+    }
+    if (source->has_transmission) {
+        material.transmission = source->transmission.transmission_factor;
+    }
+    if (source->has_ior) {
+        material.ior = source->ior.ior;
+    }
+    if (source->has_iridescence) {
+        material.iridescence = source->iridescence.iridescence_factor;
+        material.iridescenceIor = source->iridescence.iridescence_ior;
+        material.iridescenceThickness = source->iridescence.iridescence_thickness_max;
+    }
+    if (source->has_anisotropy) {
+        material.anisotropy = source->anisotropy.anisotropy_strength;
+        material.anisotropyRotation = source->anisotropy.anisotropy_rotation;
+    }
+    if (source->has_diffuse_transmission) {
+        material.features |= MaterialFeatureSubsurface;
+        material.subsurfaceMask = source->diffuse_transmission.diffuse_transmission_factor;
+        material.thickness = 1.0f;
     }
 
     material.baseColorTexture = makeTextureRef(context, source->pbr_metallic_roughness.base_color_texture);

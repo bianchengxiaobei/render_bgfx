@@ -132,8 +132,12 @@ TEST_CASE("light builder writes cookie and IES samples") {
     CHECK(data.texels[7].w == doctest::Approx(8.0f));
     CHECK(data.texels[kLightIesBaseTexel].x == doctest::Approx(0.5f));
 
-    builder.setCookieAtlas(0, 5);
+    builder.setCookieAtlas(0, 5, Vec4(0.25f, 0.5f, 0.125f, 0.25f));
     CHECK(builder.data().texels[7].z == doctest::Approx(6.0f));
+    CHECK(builder.data().texels[11].x == doctest::Approx(0.25f));
+    CHECK(builder.data().texels[11].y == doctest::Approx(0.5f));
+    CHECK(builder.data().texels[11].z == doctest::Approx(0.125f));
+    CHECK(builder.data().texels[11].w == doctest::Approx(0.25f));
 }
 TEST_CASE("light builder writes rectangle area data and cookies") {
     RenderScene scene;

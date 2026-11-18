@@ -12,6 +12,8 @@ TEST_CASE("SSR settings defaults and sanitize") {
     CHECK(settings.roughnessFade == doctest::Approx(0.25f));
     CHECK(settings.edgeFade == doctest::Approx(0.1f));
     CHECK(settings.intensity == doctest::Approx(1.0f));
+    CHECK(settings.temporalWeight == doctest::Approx(0.1f));
+    CHECK_FALSE(settings.temporalAccumulation);
     CHECK(settings.enabled);
 
     settings.maxDistance = 0.0f;
@@ -20,6 +22,7 @@ TEST_CASE("SSR settings defaults and sanitize") {
     settings.roughnessFade = 2.0f;
     settings.edgeFade = 1.0f;
     settings.intensity = 20.0f;
+    settings.temporalWeight = 2.0f;
     sanitizeSsrSettings(settings);
 
     CHECK(settings.maxDistance == doctest::Approx(0.1f));
@@ -28,6 +31,7 @@ TEST_CASE("SSR settings defaults and sanitize") {
     CHECK(settings.roughnessFade == doctest::Approx(1.0f));
     CHECK(settings.edgeFade == doctest::Approx(0.5f));
     CHECK(settings.intensity == doctest::Approx(10.0f));
+    CHECK(settings.temporalWeight == doctest::Approx(1.0f));
 
     settings.maxDistance = 2000.0f;
     settings.maxSteps = 99;
@@ -35,6 +39,7 @@ TEST_CASE("SSR settings defaults and sanitize") {
     settings.roughnessFade = -1.0f;
     settings.edgeFade = -1.0f;
     settings.intensity = -1.0f;
+    settings.temporalWeight = -1.0f;
     sanitizeSsrSettings(settings);
 
     CHECK(settings.maxDistance == doctest::Approx(1000.0f));
@@ -43,4 +48,5 @@ TEST_CASE("SSR settings defaults and sanitize") {
     CHECK(settings.roughnessFade == doctest::Approx(0.0f));
     CHECK(settings.edgeFade == doctest::Approx(0.0f));
     CHECK(settings.intensity == doctest::Approx(0.0f));
+    CHECK(settings.temporalWeight == doctest::Approx(0.0f));
 }

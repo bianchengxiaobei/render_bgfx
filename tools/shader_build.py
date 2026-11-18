@@ -193,8 +193,8 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=max(1, min(8, os.cpu_count() or 1)))
     parser.add_argument("--optimization", type=int, choices=range(4), default=3,
                         help="shaderc optimization level (default: 3; lower levels are not release builds)")
-    parser.add_argument("--timeout", type=float, default=600.0,
-                        help="per-variant timeout in seconds; 0 disables (default: 600)")
+    parser.add_argument("--timeout", type=float, default=1800.0,
+                        help="per-variant timeout in seconds; 0 disables (default: 1800)")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--only", default="",
                         help="diagnostic: build only outputs whose path contains this text")
@@ -333,35 +333,52 @@ def main() -> int:
 
         deferred_lighting_fragment = backend_root / "deferred_lighting.fs.bin"
         deferred_lighting_buffer_fragment = backend_root / "deferred_lighting_buffer.fs.bin"
+        deferred_lighting_advanced_fragment = backend_root / "deferred_lighting_advanced.fs.bin"
+        deferred_lighting_advanced_buffer_fragment = backend_root / "deferred_lighting_advanced_buffer.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting.fs.sc",
                        deferred_lighting_fragment, "fragment", backend, ["HBG_SHADOW_POINT_SAMPLER=1"],
                        args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting.fs.sc",
                        deferred_lighting_buffer_fragment, "fragment", backend,
                        ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
+                       deferred_lighting_advanced_fragment, "fragment", backend,
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1"], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
+                       deferred_lighting_advanced_buffer_fragment, "fragment", backend,
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input)
 
         ssao_fragment = backend_root / "ssao.fs.bin"
         ssao_blur_fragment = backend_root / "ssao_blur.fs.bin"
+        ssao_temporal_fragment = backend_root / "ssao_temporal.fs.bin"
         ssao_upsample_fragment = backend_root / "ssao_upsample.fs.bin"
         ssr_trace_fragment = backend_root / "ssr_trace.fs.bin"
+        ssr_temporal_fragment = backend_root / "ssr_temporal.fs.bin"
         ssr_composite_fragment = backend_root / "ssr_composite.fs.bin"
         ssgi_trace_fragment = backend_root / "ssgi_trace.fs.bin"
         ssgi_denoise_fragment = backend_root / "ssgi_denoise.fs.bin"
+        ssgi_temporal_fragment = backend_root / "ssgi_temporal.fs.bin"
         ssgi_composite_fragment = backend_root / "ssgi_composite.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssao.fs.sc",
                        ssao_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssao_blur.fs.sc",
                        ssao_blur_fragment, "fragment", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssao_temporal.fs.sc",
+                       ssao_temporal_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssao_upsample.fs.sc",
                        ssao_upsample_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssr_trace.fs.sc",
                        ssr_trace_fragment, "fragment", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssr_temporal.fs.sc",
+                       ssr_temporal_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssr_composite.fs.sc",
                        ssr_composite_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssgi_trace.fs.sc",
                        ssgi_trace_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssgi_denoise.fs.sc",
                        ssgi_denoise_fragment, "fragment", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssgi_temporal.fs.sc",
+                       ssgi_temporal_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/ssgi_composite.fs.sc",
                        ssgi_composite_fragment, "fragment", backend, [], args.force, newest_input)
 
@@ -420,6 +437,7 @@ def main() -> int:
         debug_ssr_fragment = backend_root / "debug_ssr.fs.bin"
         debug_decals_fragment = backend_root / "debug_decals.fs.bin"
         debug_ssgi_fragment = backend_root / "debug_ssgi.fs.bin"
+        debug_ssgi_raw_fragment = backend_root / "debug_ssgi_raw.fs.bin"
         debug_gbuffer_fragment = backend_root / "debug_gbuffer.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_normal.fs.sc",
                        debug_normal_fragment, "fragment", backend, [], args.force, newest_input)
@@ -446,6 +464,8 @@ def main() -> int:
                        debug_decals_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_ssgi.fs.sc",
                        debug_ssgi_fragment, "fragment", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_ssgi_raw.fs.sc",
+                       debug_ssgi_raw_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_gbuffer.fs.sc",
                        debug_gbuffer_fragment, "fragment", backend, [], args.force, newest_input)
         debug_contact_shadows_fragment = backend_root / "debug_contact_shadows.fs.bin"
@@ -817,6 +837,11 @@ def main() -> int:
                 "fragment": deferred_lighting_fragment.relative_to(root / "shaders").as_posix(),
                 "bufferFragment": deferred_lighting_buffer_fragment.relative_to(root / "shaders").as_posix(),
             },
+            "deferredLightingAdvanced": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": deferred_lighting_advanced_fragment.relative_to(root / "shaders").as_posix(),
+                "bufferFragment": deferred_lighting_advanced_buffer_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "ssao": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": ssao_fragment.relative_to(root / "shaders").as_posix(),
@@ -825,6 +850,10 @@ def main() -> int:
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": ssao_blur_fragment.relative_to(root / "shaders").as_posix(),
             },
+            "ssaoTemporal": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": ssao_temporal_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "ssaoUpsample": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": ssao_upsample_fragment.relative_to(root / "shaders").as_posix(),
@@ -832,6 +861,10 @@ def main() -> int:
             "ssrTrace": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": ssr_trace_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "ssrTemporal": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": ssr_temporal_fragment.relative_to(root / "shaders").as_posix(),
             },
             "ssrComposite": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
@@ -844,6 +877,10 @@ def main() -> int:
             "ssgiDenoise": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": ssgi_denoise_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "ssgiTemporal": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": ssgi_temporal_fragment.relative_to(root / "shaders").as_posix(),
             },
             "ssgiComposite": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
@@ -926,6 +963,10 @@ def main() -> int:
             "debugSsgi": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": debug_ssgi_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "debugSsgiRaw": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": debug_ssgi_raw_fragment.relative_to(root / "shaders").as_posix(),
             },
             "debugGbuffer": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),

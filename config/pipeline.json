@@ -9,6 +9,8 @@
   "supportGpuLightListBuffers": true,
   "supportGpuLightListIndirect": false,
   "lightListCapacity": 64,
+  "supportCookieAtlas": true,
+  "cookieAtlasSize": 1024,
   "supportGpuShadowCulling": false,
   "supportGpuShadowIndirect": false,
   "supportAsyncGpuLightList": false,

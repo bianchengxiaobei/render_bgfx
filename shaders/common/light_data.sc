@@ -2,8 +2,8 @@
 #define HBG_LIGHT_DATA_SC
 
 
-// LightData texture layout: RGBA32F, 19 texels per light (11 base + 8 IES).
-// Cookies live in a 64x128 atlas region at x=19..82, y=0..127. The LTC GGX table
+// LightData texture layout: RGBA32F, 20 texels per light (12 base + 8 IES).
+// Cookie data lives in a separate RGBA8 atlas at stage 15. The LTC GGX table
 // is appended after the light rows and fetched through the same texture.
 // texel0: position.xyz, range
 // texel1: color.rgb, intensity
@@ -16,7 +16,9 @@
 // texel8: right.xyz, halfWidth
 // texel9: up.xyz, halfHeight
 // texel10: cookieScale.xy, cookieOffset.xy
+// texel11: cookieAtlasScale.xy, cookieAtlasOffset.zw
 SAMPLER2D(s_lightData, 5);
+SAMPLER2D(s_cookieAtlas, 15);
 #ifdef HBG_LIGHT_LIST_BUFFER
 #if BGFX_SHADER_LANGUAGE_GLSL
 layout(std430, binding = 7) readonly buffer HbgLightListBuffer
@@ -43,16 +45,9 @@ USAMPLER2D(s_lightList, 7);
 #define HBG_LIGHT_CLUSTER_TEXTURE_WIDTH 4096
 #define HBG_LIGHT_CLUSTER_TEXTURE_SHIFT 12
 #define HBG_LIGHT_CLUSTER_SLICE_COUNT 32.0
-#define HBG_LIGHT_TEXELS 19
-#define HBG_LIGHT_IES_BASE 11
+#define HBG_LIGHT_TEXELS 20
+#define HBG_LIGHT_IES_BASE 12
 #define HBG_LIGHT_IES_SAMPLES 8
-#define HBG_COOKIE_ATLAS_ORIGIN_X 19
-#define HBG_COOKIE_ATLAS_WIDTH 64
-#define HBG_COOKIE_ATLAS_HEIGHT 128
-#define HBG_COOKIE_TILE_SIZE 8
-#define HBG_COOKIE_TILES_X 8
-#define HBG_COOKIE_TILES_X_SHIFT 3
-#define HBG_COOKIE_TILES_Y 16
 #define HBG_LTC_LUT_SIZE 64
 #define HBG_LTC_TEXEL_ROWS 64
 #define HBG_LTC_BASE_ROW 128
@@ -256,7 +251,13 @@ bool hbgLightHasIes(vec4 cookieInfo)
     return (int(cookieInfo.w + 0.5) & 8) != 0;
 }
 
-float hbgSampleLightCookieScaled(int lightIndex, vec2 uv, int mode, vec2 scale, vec2 offset)
+vec4 hbgLightCookieAtlasTransform(int lightIndex)
+{
+    return texelFetch(s_lightData, ivec2(11, lightIndex), 0);
+}
+
+float hbgSampleLightCookieScaledLod(int lightIndex, vec2 uv, int mode, vec2 scale, vec2 offset,
+                                   float lod)
 {
     if (mode == HBG_LIGHT_COOKIE_MODE_NONE)
     {
@@ -272,21 +273,38 @@ float hbgSampleLightCookieScaled(int lightIndex, vec2 uv, int mode, vec2 scale, 
         uv = clamp(uv, vec2(0.0, 0.0), vec2(1.0, 1.0));
     }
 
-    const int tileIndex =
-        int(texelFetch(s_lightData, ivec2(7, lightIndex), 0).z + 0.5) - 1;
-    if (tileIndex < 0)
+    const vec4 atlasTransform = hbgLightCookieAtlasTransform(lightIndex);
+    if (atlasTransform.x <= 0.0 || u_pass_cookieAtlasParams.x <= 0.0)
     {
         return 1.0;
     }
 
-    const int tileX = tileIndex & (HBG_COOKIE_TILES_X - 1);
-    const int tileY = tileIndex >> HBG_COOKIE_TILES_X_SHIFT;
-    const int x = min(int(uv.x * float(HBG_COOKIE_TILE_SIZE)), HBG_COOKIE_TILE_SIZE - 1);
-    const int y = min(int(uv.y * float(HBG_COOKIE_TILE_SIZE)), HBG_COOKIE_TILE_SIZE - 1);
-    return texelFetch(s_lightData,
-                      ivec2(HBG_COOKIE_ATLAS_ORIGIN_X + tileX * HBG_COOKIE_TILE_SIZE + x,
-                            tileY * HBG_COOKIE_TILE_SIZE + y),
-                      0).x;
+    const float atlasSize = u_pass_cookieAtlasParams.x;
+    const float lastValidMip = u_pass_cookieAtlasParams.z;
+    if (u_pass_cookieAtlasParams.y <= 0.0)
+    {
+        const ivec2 origin = ivec2(round(atlasTransform.zw * atlasSize));
+        const int x = min(int(uv.x * 8.0), 7);
+        const int y = min(int(uv.y * 8.0), 7);
+        return texelFetch(s_cookieAtlas, origin + ivec2(x, y), 0).x;
+    }
+
+    const float clampedLod = clamp(lod, 0.0, lastValidMip);
+    const vec2 remapScale = atlasTransform.xy / (atlasTransform.xy + u_pass_cookieAtlasParams.y);
+    const vec2 remapOffset = 0.5 * (vec2(1.0, 1.0) - remapScale);
+    const float mipScale = exp2(ceil(clampedLod));
+    const float mipClampAmount =
+        u_pass_cookieAtlasParams.y > 0.0 ? mipScale / (atlasTransform.x * atlasSize * 2.0) : 0.0;
+    const vec2 mipClamp = vec2(mipClampAmount, mipClampAmount);
+    const vec2 atlasUV = clamp(uv * remapScale + remapOffset, mipClamp, vec2(1.0, 1.0) - mipClamp) *
+                             atlasTransform.xy +
+                         atlasTransform.zw;
+    return texture2DLod(s_cookieAtlas, atlasUV, clampedLod).x;
+}
+
+float hbgSampleLightCookieScaled(int lightIndex, vec2 uv, int mode, vec2 scale, vec2 offset)
+{
+    return hbgSampleLightCookieScaledLod(lightIndex, uv, mode, scale, offset, 0.0);
 }
 
 float hbgSampleLightCookie(int lightIndex, vec2 uv, int mode)

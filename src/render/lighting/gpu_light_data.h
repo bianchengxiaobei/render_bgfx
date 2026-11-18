@@ -9,20 +9,18 @@
 namespace hbg::render {
 
 constexpr uint32_t kMaxGpuLights = 128;
-constexpr uint32_t kLightBaseTexelCount = 11;
+constexpr uint32_t kLightBaseTexelCount = 12;
 constexpr uint32_t kLightIesBaseTexel = kLightBaseTexelCount;
 constexpr uint32_t kLightIesSampleCount = 8;
 constexpr uint32_t kGpuLightTexels = kLightIesBaseTexel + kLightIesSampleCount;
-constexpr uint32_t kLightCookieSize = 8;
-constexpr uint32_t kCookieTileSize = kLightCookieSize;
-constexpr uint32_t kCookieAtlasWidth = 64;
-constexpr uint32_t kCookieAtlasHeight = 128;
-constexpr uint32_t kCookieAtlasTilesX = kCookieAtlasWidth / kCookieTileSize;
-constexpr uint32_t kCookieAtlasTilesY = kCookieAtlasHeight / kCookieTileSize;
-constexpr uint32_t kCookieAtlasTileCapacity = kCookieAtlasTilesX * kCookieAtlasTilesY;
-constexpr uint32_t kCookieAtlasOriginX = kGpuLightTexels;
-constexpr uint32_t kLightDataTextureWidth = kGpuLightTexels + kCookieAtlasWidth;
-static_assert(kCookieAtlasOriginX + kCookieAtlasWidth == kLightDataTextureWidth);
+constexpr uint32_t kCookieLegacySize = 8;
+constexpr uint32_t kCookieAtlasDefaultSize = 1024;
+constexpr uint32_t kCookieAtlasMaxSize = 2048;
+constexpr uint32_t kCookieAtlasMaxNativeSize = 256;
+constexpr uint32_t kCookieAtlasPadding = 2;
+constexpr uint32_t kCookieAtlasTileCapacity = kMaxGpuLights;
+constexpr uint32_t kLightDataTextureWidth = 64;
+static_assert(kGpuLightTexels <= kLightDataTextureWidth);
 static_assert(kCookieAtlasTileCapacity == kMaxGpuLights);
 constexpr uint32_t kLtcLutSize = 64;
 constexpr uint32_t kLtcLutTexelCount = kLtcLutSize * kLtcLutSize;

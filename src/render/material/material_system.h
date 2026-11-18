@@ -28,6 +28,7 @@ struct GpuMaterial {
     gfx::TextureHandle emissiveTexture;
     gfx::generated::MaterialUniforms uniforms;
     uint64_t variantKey = 0;
+    uint32_t features = 0;
 };
 
 struct GpuDecalTextures {

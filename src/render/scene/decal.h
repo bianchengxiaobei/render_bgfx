@@ -2,6 +2,7 @@
 
 #include "core/math.h"
 
+#include <cstdint>
 #include <string>
 
 namespace hbg::render {
@@ -21,6 +22,8 @@ struct Decal {
     float metallic = 0.0f;
     float ambientOcclusion = 1.0f;
     float roughness = 0.5f;
+    uint32_t layerMask = 0x7fu;
+    uint32_t channelMask = 0x1fu;
     bool enabled = true;
 };
 

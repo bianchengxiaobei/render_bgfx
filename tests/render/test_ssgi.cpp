@@ -14,6 +14,7 @@ TEST_CASE("SSGI settings defaults and sanitize") {
     CHECK(settings.thickness == doctest::Approx(0.5f));
     CHECK(settings.ambientBias == doctest::Approx(0.5f));
     CHECK(settings.halfResolution);
+    CHECK_FALSE(settings.temporalAccumulation);
     CHECK(settings.enabled);
 
     settings.intensity = -1.0f;

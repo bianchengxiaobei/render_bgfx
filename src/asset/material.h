@@ -24,6 +24,7 @@ enum MaterialFeature : uint32_t {
     MaterialFeatureIridescence = 1u << 3,
     MaterialFeatureAnisotropy = 1u << 4,
     MaterialFeatureEmissiveStrength = 1u << 5,
+    MaterialFeatureSubsurface = 1u << 6,
 };
 
 struct TextureRef {
@@ -58,6 +59,19 @@ struct Material {
 
     std::string diffusionProfile;
     bool maskMapPacked = true;
+
+    float clearCoat = 0.0f;
+    float clearCoatRoughness = 0.03f;
+    float clearCoatNormalScale = 1.0f;
+    float transmission = 0.0f;
+    float thickness = 0.0f;
+    float ior = 1.5f;
+    float iridescence = 0.0f;
+    float iridescenceIor = 1.3f;
+    float iridescenceThickness = 0.0f;
+    float anisotropy = 0.0f;
+    float anisotropyRotation = 0.0f;
+    float subsurfaceMask = 0.0f;
 };
 
 struct MaterialKey {
@@ -74,6 +88,18 @@ struct MaterialKey {
     float normalScale = 0.0f;
     float occlusionStrength = 0.0f;
     float alphaCutoff = 0.0f;
+    float clearCoat = 0.0f;
+    float clearCoatRoughness = 0.0f;
+    float clearCoatNormalScale = 0.0f;
+    float transmission = 0.0f;
+    float thickness = 0.0f;
+    float ior = 0.0f;
+    float iridescence = 0.0f;
+    float iridescenceIor = 0.0f;
+    float iridescenceThickness = 0.0f;
+    float anisotropy = 0.0f;
+    float anisotropyRotation = 0.0f;
+    float subsurfaceMask = 0.0f;
     int baseColorImage = -1;
     int baseColorUv = 0;
     int metallicRoughnessImage = -1;

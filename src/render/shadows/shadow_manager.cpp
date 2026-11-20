@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "gfx/encoder.h"
+#include "render/culling/frustum.h"
 
 #include <algorithm>
 #include <array>
@@ -43,6 +44,20 @@ float computeWorldTexelSize(const Mat4& projection, uint16_t viewportWidth) {
         return 0.0f;
     }
     return (2.0f / projectionX / static_cast<float>(viewportWidth)) * kWorldTexelScale;
+}
+
+Vec4 computeImsParams(const ShadowRequest& request) {
+    const float width = std::abs(request.projection.values[0]) > 1.0e-8f
+                            ? 2.0f / std::abs(request.projection.values[0])
+                            : 0.0f;
+    const float height = std::abs(request.projection.values[5]) > 1.0e-8f
+                             ? 2.0f / std::abs(request.projection.values[5])
+                             : 0.0f;
+    const float depth = std::max(request.farPlane - request.nearPlane, 1.0e-4f);
+    const float scale = 0.5f * std::tan(0.5f * request.lightAngle) * depth;
+    const float lightX = width > 1.0e-8f ? scale / width : 0.0f;
+    const float lightY = height > 1.0e-8f ? scale / height : 0.0f;
+    return Vec4(static_cast<float>(request.imsKernelSize), lightX, lightY, request.maxDepthBias);
 }
 
 Mat4 biasCrop(bool originBottomLeft, bool homogeneousDepth) {
@@ -340,6 +355,40 @@ bool ShadowManager::createTextures() {
         }
     }
 
+    m_imsActive = false;
+    if (m_settings.directionalFilter == ShadowFilter::Ims) {
+        gfx::TextureDesc momentDesc;
+        momentDesc.width = m_directionalAtlasSize;
+        momentDesc.height = m_directionalAtlasSize;
+        momentDesc.format = gfx::TextureFormat::RGBA32F;
+        momentDesc.computeWrite = true;
+        momentDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+        momentDesc.name = "shadow.directionalMoments";
+        m_directionalMomentTexture = m_resources->createTexture(momentDesc);
+        gfx::TextureDesc satDesc = momentDesc;
+        satDesc.format = gfx::TextureFormat::RGBA32U;
+        satDesc.name = "shadow.directionalMomentSat";
+        m_directionalMomentSatTexture = m_resources->createTexture(satDesc);
+        m_imsActive = m_directionalMomentTexture.valid() && m_directionalMomentSatTexture.valid();
+        if (!m_imsActive) {
+            HBG_LOGW("shadow manager: IMS textures unavailable at {}x{}; falling back to PCF7x7",
+                     m_directionalAtlasSize, m_directionalAtlasSize);
+            if (m_directionalMomentTexture.valid()) {
+                m_resources->destroyTexture(m_directionalMomentTexture);
+                m_directionalMomentTexture = {};
+            }
+            if (m_directionalMomentSatTexture.valid()) {
+                m_resources->destroyTexture(m_directionalMomentSatTexture);
+                m_directionalMomentSatTexture = {};
+            }
+        } else {
+            HBG_LOGI("shadow IMS: {}x{} RGBA32F moments + RGBA32U SAT (~{:.1f} MB)", m_directionalAtlasSize,
+                     m_directionalAtlasSize,
+                     static_cast<double>(m_directionalAtlasSize) * m_directionalAtlasSize * 32.0 /
+                         (1024.0 * 1024.0));
+        }
+    }
+
     gfx::TextureDesc punctualDesc = directionalDesc;
     punctualDesc.name = "shadow.punctualAtlas";
     m_punctualTexture = m_resources->createTexture(punctualDesc);
@@ -431,6 +480,15 @@ void ShadowManager::destroyTextures() {
         m_resources->destroyTexture(m_cachedDirectionalTexture);
         m_cachedDirectionalTexture = {};
     }
+    if (m_directionalMomentTexture.valid()) {
+        m_resources->destroyTexture(m_directionalMomentTexture);
+        m_directionalMomentTexture = {};
+    }
+    if (m_directionalMomentSatTexture.valid()) {
+        m_resources->destroyTexture(m_directionalMomentSatTexture);
+        m_directionalMomentSatTexture = {};
+    }
+    m_imsActive = false;
     if (m_punctualTexture.valid()) {
         m_resources->destroyTexture(m_punctualTexture);
         m_punctualTexture = {};
@@ -466,7 +524,8 @@ void ShadowManager::shutdown(gfx::ResourceManager& resources) {
 
 void ShadowManager::invalidate() {
     resetFrameRequests();
-    m_directionalCacheHash = 0;
+    m_directionalRequestCacheValid.fill(false);
+    m_directionalRequestHashes.fill(0);
     m_cacheHash = 0;
     m_areaCacheHash = 0;
     m_cachedDirectionalRequestCount = 0;
@@ -475,6 +534,7 @@ void ShadowManager::invalidate() {
     m_directionalCacheEligible = false;
     m_directionalCacheValid = false;
     m_directionalCacheDirty = false;
+    m_directionalCacheMixed = false;
     m_cacheEligible = false;
     m_cacheValid = false;
     m_areaCacheEligible = false;
@@ -579,23 +639,36 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
     const bool directionalCacheEligible =
         m_settings.cachedDirectionalShadows && !m_cacheSuppressed && m_directionalRequestCount > 0;
     m_directionalCacheEligible = directionalCacheEligible;
-    const uint64_t directionalCacheHash =
-        directionalCacheEligible ? buildCacheHash(scene, lightBuilder, ShadowAtlasType::Directional) : 0;
-    const bool directionalCacheHit =
-        directionalCacheEligible && m_directionalCacheValid && m_directionalCacheHash == directionalCacheHash;
-    m_directionalCacheDirty = directionalCacheEligible && !directionalCacheHit;
-    if (directionalCacheHit) {
+    m_directionalCacheDirty = false;
+    m_directionalCacheMixed = false;
+    if (directionalCacheEligible) {
+        bool anyCached = false;
+        bool anyDynamic = false;
         for (ShadowRequest& request : m_requests) {
-            if (request.atlas == ShadowAtlasType::Directional) {
+            if (request.atlas != ShadowAtlasType::Directional) {
+                continue;
+            }
+            const uint64_t hash = buildDirectionalRequestHash(scene, request);
+            const std::size_t cacheIndex = request.requestIndex;
+            if (cacheIndex < m_directionalRequestCacheValid.size() &&
+                m_directionalRequestCacheValid[cacheIndex] && m_directionalRequestHashes[cacheIndex] == hash) {
                 request.isCached = true;
                 ++m_cachedDirectionalRequestCount;
+                anyCached = true;
+            } else {
+                if (cacheIndex < m_directionalRequestCacheValid.size()) {
+                    m_directionalRequestHashes[cacheIndex] = hash;
+                    m_directionalRequestCacheValid[cacheIndex] = true;
+                }
+                anyDynamic = true;
             }
         }
-    } else if (directionalCacheEligible) {
-        m_directionalCacheHash = directionalCacheHash;
         m_directionalCacheValid = true;
+        m_directionalCacheDirty = anyDynamic;
+        m_directionalCacheMixed = anyCached && anyDynamic;
     } else {
-        m_directionalCacheHash = 0;
+        m_directionalRequestCacheValid.fill(false);
+        m_directionalRequestHashes.fill(0);
         m_directionalCacheValid = false;
     }
     const uint64_t cacheHash =
@@ -710,6 +783,9 @@ bool ShadowManager::buildDirectionalRequests(const RenderScene& scene, const Vie
         request.softness = shadow.softness;
         request.nearPlane = lightNearPlane;
         request.farPlane = lightFarPlane;
+        request.lightAngle = m_settings.directionalLightAngle * kPi / 180.0f;
+        request.maxDepthBias = m_settings.directionalMaxDepthBias;
+        request.imsKernelSize = m_settings.imsKernelSize;
         request.worldTexelSize = computeWorldTexelSize(request.projection, request.viewportWidth);
         request.slopeBias = m_settings.slopeBias * kReferenceSlopeBias;
         request.fadeScale = fadeScale;
@@ -718,6 +794,13 @@ bool ShadowManager::buildDirectionalRequests(const RenderScene& scene, const Vie
         request.filterSamples = shadow.filterSamples;
         request.minFilterSize = m_settings.minFilterSize;
         request.filter = m_settings.directionalFilter;
+        if (request.filter == ShadowFilter::Ims && !m_imsActive) {
+            if (!m_imsWarningLogged) {
+                HBG_LOGW("shadow manager: IMS is unavailable; directional shadows fall back to PCF7x7");
+                m_imsWarningLogged = true;
+            }
+            request.filter = ShadowFilter::Pcf7x7;
+        }
         updateFrustumPlanes(request, homogeneousDepth);
         splits[cascade] = farZ;
         previousFar = farZ;
@@ -1133,6 +1216,78 @@ bool ShadowManager::packPunctualSorted() {
     return true;
 }
 
+uint64_t ShadowManager::buildDirectionalRequestHash(const RenderScene& scene,
+                                                      const ShadowRequest& request) const {
+    uint64_t hash = 1469598103934665603ull;
+    hashUint(hash, request.requestIndex);
+    hashUint(hash, request.lightIndex);
+    hashUint(hash, request.cascadeIndex);
+    hashUint(hash, request.atlasSize);
+    hashUint(hash, request.viewportX);
+    hashUint(hash, request.viewportY);
+    hashUint(hash, request.viewportWidth);
+    hashUint(hash, request.viewportHeight);
+    hashMat4(hash, request.viewProj);
+    hashMat4(hash, request.worldToShadow);
+    hashVec3(hash, request.lightDirection);
+    hashFloat(hash, request.depthBias);
+    hashFloat(hash, request.normalBias);
+    hashFloat(hash, request.softness);
+    hashFloat(hash, request.nearPlane);
+    hashFloat(hash, request.farPlane);
+    hashFloat(hash, request.worldTexelSize);
+    hashFloat(hash, request.slopeBias);
+    hashFloat(hash, request.fadeScale);
+    hashFloat(hash, request.fadeBias);
+    hashFloat(hash, request.lightAngle);
+    hashFloat(hash, request.maxDepthBias);
+    hashUint(hash, request.imsKernelSize);
+    hashUint(hash, request.blockerSamples);
+    hashUint(hash, request.filterSamples);
+    hashFloat(hash, request.minFilterSize);
+    hashUint(hash, static_cast<uint32_t>(request.filter));
+
+    uint32_t intersectingObjects = 0;
+    for (const RenderObject& object : scene.objects) {
+        if (intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
+            ++intersectingObjects;
+        }
+    }
+    hashUint(hash, intersectingObjects);
+    for (const RenderObject& object : scene.objects) {
+        if (!intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
+            continue;
+        }
+        hashMat4(hash, object.world);
+        hashUint(hash, object.meshIndex);
+        hashUint(hash, object.lightLayerMask);
+    }
+
+    hashUint(hash, static_cast<uint32_t>(scene.meshes.size()));
+    for (const asset::Mesh& mesh : scene.meshes) {
+        hashUint(hash, static_cast<uint32_t>(mesh.submeshes.size()));
+        for (const asset::SubMesh& submesh : mesh.submeshes) {
+            hashUint(hash, submesh.materialIndex);
+            hashUint(hash, submesh.indexCount);
+        }
+    }
+    hashUint(hash, static_cast<uint32_t>(scene.materials.size()));
+    for (const asset::Material& material : scene.materials) {
+        hashUint(hash, static_cast<uint32_t>(material.alphaMode));
+        hashFloat(hash, material.alphaCutoff);
+        hashFloat(hash, material.baseColorFactor.x);
+        hashFloat(hash, material.baseColorFactor.y);
+        hashFloat(hash, material.baseColorFactor.z);
+        hashFloat(hash, material.baseColorFactor.w);
+        hashUint(hash, static_cast<uint32_t>(material.renderQueue));
+        hashUint(hash, material.doubleSided ? 1u : 0u);
+        hashUint(hash, material.features);
+        hashUint(hash, static_cast<uint32_t>(material.baseColorTexture.imageIndex));
+        hashUint(hash, static_cast<uint32_t>(material.baseColorTexture.uvSet));
+    }
+    return hash;
+}
+
 uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuilder& lightBuilder,
                                        ShadowAtlasType atlas, bool staticAreaOnly) const {
     uint64_t hash = 1469598103934665603ull;
@@ -1302,9 +1457,13 @@ void ShadowManager::buildContextData() {
         m_contextData.texels[base + 8] =
             Vec4(request.fadeScale, request.fadeBias, static_cast<float>(request.cascadeIndex),
                  request.isCached ? 1.0f : 0.0f);
+        // IMS uses the PCSS parameter texel for per-cascade soft-shadow
+        // parameters; HDRP carries these in HDShadowData per request.
         m_contextData.texels[base + 9] =
-            Vec4(static_cast<float>(request.blockerSamples), static_cast<float>(request.filterSamples),
-                 request.minFilterSize, request.farPlane);
+            request.filter == ShadowFilter::Ims
+                ? computeImsParams(request)
+                : Vec4(static_cast<float>(request.blockerSamples), static_cast<float>(request.filterSamples),
+                       request.minFilterSize, request.farPlane);
     }
     m_contextData.requestCount = static_cast<uint32_t>(std::min<std::size_t>(m_requests.size(), kMaxShadowRequests));
 }

@@ -75,7 +75,7 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 | ID | 边界 | 现状 | 关闭条件 | 依赖 | 目标 | 状态 |
 |---|---|---|---|---|---|---|
 | **A01** | Temporal SSAO/SSR/SSGI：history、reprojection、depth/normal rejection、temporal denoise | SSAO/SSR/SSGI temporal 与 raw/history/denoised debug 均已落地；真实窗口 resize、DebugUI render scale、setter toggle reset 已验证；修正 SSR/SSGI temporal 取样 Y 翻转，orbit ghost 消失；M11.5 64-light 1080p full-post 3 次 median：D3D11 off/SSAO/SSR/SSGI **55.1/51.6/50.8/44.3**，Vulkan **47.0/45.4/47.1/38.8** fps | temporal off 对当前基线 0 diff；temporal on 收敛、无 ghost；显式 resize/scale/开关 reset；1080p >60 fps | M3.4 TAA、M3.6 motion vectors | M12.1 | in-progress（仅性能门禁未过） |
-| **A02** | 材质特性 + 29 Lit variants：clear coat / SSS / transmission / anisotropy / iridescence | 材质字段/glTF/sidecar/Uniforms/GBuffer4 打包、deferred advanced lighting v1 已完成；forward advanced 与 29 per-tile variants 未接 | 材质模型 + GBuffer 数据 + feature flags 落地；29 variants 只在材质存在后生成 | A03、sampler/RT 预算 | M12.3 | in-progress（数据层完成） |
+| **A02** | 材质特性 + 29 Lit variants：clear coat / SSS / transmission / anisotropy / iridescence | 材质字段/glTF/sidecar/Uniforms/GBuffer4 打包、deferred/forward/area advanced lighting、29 Lit variants v1 已完成（per-pixel stencil + value 分派）；D3D11 58 raster dxbc + 29 compute dxbc 已完成，tile 路径在 D3D11/Vulkan 均验证（D3D11 advanced 材质因 no-opt compute 性能回退 raster） | 材质模型 + GBuffer 数据 + feature flags 落地；29 variants 真实分派，非 view-wide 同代码变体 | A03、sampler/RT 预算 | M12.3 | done v1 |
 | **A03** | GBuffer/DBuffer 布局扩展：4RT DBuffer per-channel mask、decal layers、额外 MRT | 5RT GBuffer advanced、4RT DBuffer、per-channel mask、receiver/decal layer mask v1 已落 | 显式 RT/sampler 预算；`maxFBAttachments`/格式 fallback；M10/M11 基线 off 0 diff | A02、设备 caps | M12.3 | done v1 |
 | **A04** | Reflection Probe v2：realtime capture、cubemap atlas、GPU convert/convolve、planar、probe volume/APV、hierarchy/streaming | 最多 4 个静态 equirect probe、CPU 选最近 2 个、stage 14 array | capture/atlas/卷积路径 + fallback；APV 单独立项 | A02?、compute、资产管线 | M13 | open |
 | **A05** | Volumetric Fog v2：3D VBuffer/froxel、local VFX/clouds、area/box volumetrics、PBR atmosphere | 2D screen-space raymarch + low-res history；无 3D VBuffer | VBuffer/voxelization + lighting/filtering；local VFX 资产 | compute、资产管线 | M13 | open |
@@ -89,7 +89,7 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 
 | ID | 边界 | 现状 | 关闭条件 | 目标 | 状态 |
 |---|---|---|---|---|---|
-| **B01** | 阴影质量 v2：EVSM/VSM/IMS、cached directional/mixed、area+point PCSS 共存、transparent/SSS/cloud shadow | P0 banding 已修；area+point PCSS 共存、cached directional static 已完成；EVSM/VSM/IMS、mixed、transparent/SSS/cloud 未完成 | 见 `docs/m12.2-checklist.md`；EVSM/VSM/IMS 需 moment atlas，mixed 需 partial cache | M12.2 | in progress |
+| **B01** | 阴影质量 v2：EVSM/VSM/MSM/IMS、cached directional per-cascade/HDRP mixed、area+point PCSS 共存、transparent/SSS/cloud shadow | P0 banding 已修；area+point PCSS 共存、cached directional per-cascade partial 已完成（v1）；EVSM v1、VSM v1、MSM v1（local raw-depth moments）与 directional IMS v1（RGBA32F moment atlas + SAT，integer blocker search + bilinear filter + light-angle penumbra + per-cascade request 参数）已实现；HDRP 完整 static/dynamic mixed、transparent/SSS/cloud、fixed-precision 已完成；advanced stage 未完成 | 见 `docs/m12.2-checklist.md`；完整 mixed 需 caster static flag；IMS 剩余 advanced stage | M12.2 | in progress |
 | **B02** | Cookie atlas v2：native >256、二叉树 allocator、streaming/async upload/defrag、HDR/彩色 cookie、动态 cookie revision | M11.1c 已做 1024/512/2048 RGBA8、2px padding、mip、largest-first shelf | 每项独立；atlas 满不再只白 fallback；动态编辑可失效 | M13 | open |
 | **B03** | Cached area shadow v2：defrag/persistent slot、2048 opt-in、EVSM area、screen-space area | M11.2 all-static + mixed static-first persistent slots | defrag 不破坏 0 diff；2048 opt-in；EVSM/screen-space 单独立项 | M13 | open |
 | **B04** | Decals v2：4RT per-channel mask、decal layers、VFX/transparent/forward decals、normal buffer patch、cube mesh/scissor/排序 | 3RT DBuffer、全屏 quad、sidecar box decal | 4RT/layers 依赖 A03；其余每项 off 0 diff | M13 | open |
@@ -114,7 +114,7 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 | **C05** | bindless / descriptor indexing / mesh shader / VRS / D3D12 | bgfx 抽象不提供；D3D11 为当前后端 | 冻结 |
 | **C06** | Disc real-time LTC | HDRP jobs 中 disc 亦标注 real-time unsupported | 冻结；sidecar 标 unsupported/近似 |
 | **C07** | GPU shadow atlas packing | HDRP 本身没有 GPU atlas packing；本项目 CPU atlas 已对齐语义 | 冻结，不作为差距 |
-| **C08** | 无条件 29 Lit variants | 材质与 deferred advanced 已落；但当前 full-screen pass 无 per-tile variant 选择，29 个同代码变体仍是死变体 | 依赖 per-tile classification；在 HDRP 式 variant dispatch 落地前冻结 |
+| **C08** | 无条件 29 Lit variants | 29 variants v1 已接 `--lit-variants`，并新增 `--lit-variants-tile` 的 material flags + indirect compute v1（D3D11/Vulkan 均已验证；tile 现支持 SSAO 与 forward-only opaque，D3D11 advanced 材质因 no-opt compute 性能回退 raster）；默认 `supportLitVariants=false`、`supportLitVariantTiles=false` | 默认不改变 M2–M12 基线；D3D11 advanced tile 保持 raster fallback |
 
 ### 3.4 D 类：已关闭项（只做文档回填）
 
@@ -181,7 +181,7 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 
 - 只有 Lit standard 材质；16 个 opaque material mask；normal/mask/alpha clip/double-sided/light layers。
 - GBuffer 4RT（RGBA8×3 + RGBA16F）+ D24S8；DBuffer 3RT；没有 SSS/transmission/anisotropy/clearcoat/iridescence 数据通道。
-- M11.3 已否决“先做 29 个变体”；结论是变体必须跟着材质特性走。
+- M11.3 已否决“先做 29 个变体”；材质落地后仍需 HDRP 式 per-tile classification，不能把 29 个同代码 view-wide 变体当完成。
 
 **HDRP 参考**
 
@@ -257,7 +257,7 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 |---|---|---|---|
 | **M12.0** | 边界台账 + 构建/CI/基线 | A10、D08；冻结 C 类 | 台账评审通过；全量 O3 可重复；fixtures/perf 入仓；M11.5 基线复核 |
 | **M12.1** | Temporal screen-space | A01 | temporal off 0 diff；on 双后端收敛；resize/scale reset；性能记录 |
-| **M12.2** | 阴影质量 v2 | B01（+B03 可并入） | EVSM/VSM、cached directional、area+point PCSS 共存；每项 off 0 diff |
+| **M12.2** | 阴影质量 v2 | B01（+B03 可并入） | EVSM v1、VSM v1、MSM v1 已落地；directional IMS v1（moment atlas + SAT + bilinear filter/light-angle penumbra + per-cascade request 参数）已落地；HDRP 完整 static/dynamic mixed cached directional、transparent/SSS/cloud、fixed-precision 已完成；advanced stage 仍开放；旧 PCF/PCSS 路径 off 不变 |
 | **M12.3** | 材质 + GBuffer/DBuffer | A02、A03 | 至少 1–2 个新材质；GBuffer 预算明确；旧基线 off 0 diff；29 variants 有前提 |
 | **M12.4** | 资产管线 | A06 | skin/morph/anim/压缩纹理/sampler 至少完成一组；真实场景 |
 | **M12.5** | GPU-driven / Hi-Z / Depth Pyramid | A07、A09 | D3D11 固定 draw + GPU instanceCount；Vulkan indirectCount；Hi-Z/depth pyramid 语义一致 |
@@ -348,4 +348,8 @@ M12 的第一个任务不是新功能，而是 **M12.0：把构建、fixtures、
 - 2026-11-17：M12.1 temporal SSGI 落地：RGBA16F RGB+sample-count history、R32F depth、RGBA8 normal、MRT、surface motion、depth/normal 拒绝、`--ssgi-temporal` opt-in；1080p TAA+DOF+MB 双后端 >100 fps；全量 O3 516/0 zero-byte；详见 `docs/m12.1-checklist.md`。
 - 2026-11-17：M12.1 raw/history debug 落地：SSAO/SSR/SSGI 增加 `-raw` / `-history` / `-denoised`；history 显示上一帧 temporal buffer；D3D11/Vulkan 1280x720 `--no-shadows` 验证；SSGI 新增 `debug_ssgi_raw.fs.sc`；Shader 518/0 zero-byte。
 - 2026-11-17：A01 补验收：真实窗口 resize 1280x720→1008x537→1264x681、DebugUI render scale 1.0→0.52→1.0、setter temporal toggle 均重建 history；修正 SSR/SSGI temporal 取样 Y 翻转，SSR orbit ghost 从 237 px/max176 降至 18 px/max1；M11.5 64-light full-post 3 次中位数 D3D11 55.1/51.6/50.8/44.3、Vulkan 47.0/45.4/47.1/38.8 fps，>60 门禁仍未过。
-- 2026-11-18：M12.2 进度：area+point PCSS 共存（point depth 移到 stage 9，area 保持 stage 13），cached directional static（draw 75→63，shadow_drawn 31→15），P0 跨后端 0 diff；EVSM/VSM/IMS、mixed、transparent/SSS/cloud 未完成，见 `docs/m12.2-checklist.md`。\n- 2026-11-17：P0 阴影分叉定位并修复：`shadow.context` 从 Storage index（D3D R32_UINT SRV）改为 StorageVertex RGBA32F typed context，修复 D3D 读取全 0；atlas PCF texel 从 `1/viewport` 改为 `atlasRect.xy * 1/viewport = 1/atlasSize`，消除 point 256/2048 的 8× tap 间距；point face 加 6° guard。`m26_ssgi_corner` forward D3D/VK **102.13 dB**、deferred **101.76 dB**，point-only **109.54 dB**；M12.2 可恢复带 shadows 的跨后端对比。已知残余 point face 边界约 1 px 细线。
+- 2026-11-20：M12.2 IMS v1：`ShadowFilter::Ims`/mode 8，directional-only；RGBA32F moment atlas + per-slot SAT，`ShadowMoments`/`ShadowSatHorizontal`/`ShadowSatVertical` compute；stage 12 在 IMS 下切 SAT；后续补 integer blocker search、bilinear filter、light-angle/maxDepthBias/kernel 参数、退化 guard 与 per-request（cascade）shadow context texel9 参数；`m26_ssgi_corner` frames=1 IMS vs MSM 53.14 dB、vs PCF 45.75 dB，D3D/VK 67.08 dB；`m10_dir_shadow` no-contact 单 cascade IMS vs PCF 46.79 dB，4 cascade 28.69 dB（640），4 cascade D3D/VK 36.93 dB。
+- 2026-11-19：M12.2 MSM v1：`ShadowFilter::Msm`/mode 7，HDRP `SolveMSM` + Delta3/Delta4 + 4 个 raw-depth moments + local 3x3 gather；area 60.48 dB vs PCSS、89.06 dB vs VSM；双后端 87.43/87.59 dB；IMS（SAT/moment atlas）等仍开放。
+- 2026-11-19：M12.2 VSM v1：`ShadowFilter::Vsm`/mode 6，HDRP Chebyshev + 原始 depth moments + local 3x3 gather；area 60.49 dB vs PCSS、vs EVSM 78.57 dB；双后端 100.24/102.55 dB；MSM/IMS 等仍开放。
+- 2026-11-19：M12.2 EVSM v1：`ShadowFilter::Evsm`/mode 5，HDRP EVSM 公式 + local 3x3 raw-depth moment gather；area 60.63 dB vs PCSS、双后端 100.24/103.01 dB；VSM/IMS 等仍开放。
+- 2026-11-18：M12.2 进度：area+point PCSS 共存（point depth 移到 stage 9，area 保持 stage 13），cached directional per-cascade partial（draw 75→63，shadow_drawn 31→15），P0 跨后端 0 diff；EVSM/VSM/IMS、mixed、transparent/SSS/cloud 未完成，见 `docs/m12.2-checklist.md`。\n- 2026-11-17：P0 阴影分叉定位并修复：`shadow.context` 从 Storage index（D3D R32_UINT SRV）改为 StorageVertex RGBA32F typed context，修复 D3D 读取全 0；atlas PCF texel 从 `1/viewport` 改为 `atlasRect.xy * 1/viewport = 1/atlasSize`，消除 point 256/2048 的 8× tap 间距；point face 加 6° guard。`m26_ssgi_corner` forward D3D/VK **102.13 dB**、deferred **101.76 dB**，point-only **109.54 dB**；M12.2 可恢复带 shadows 的跨后端对比。已知残余 point face 边界约 1 px 细线。

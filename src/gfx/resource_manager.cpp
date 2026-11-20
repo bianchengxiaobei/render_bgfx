@@ -170,6 +170,11 @@ UniformHandle ResourceManager::createUniform(const UniformDesc& desc) {
     return handle;
 }
 
+UniformHandle ResourceManager::uniformHandle(std::string_view name) const {
+    const auto iterator = m_uniformsByName.find(std::string(name));
+    return iterator != m_uniformsByName.end() ? iterator->second : UniformHandle{};
+}
+
 void ResourceManager::destroyUniform(UniformHandle handle) {
     Uniform* uniform = m_uniforms.get(handle);
     if (uniform == nullptr) {

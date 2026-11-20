@@ -83,7 +83,7 @@ bool readFilter(const Json& object, const char* key, ShadowFilter& value, std::s
         return true;
     }
     if (!it->is_string() || !parseShadowFilter(it->get<std::string>(), value)) {
-        error = std::string(key) + " must be off, pcf3x3, pcf5x5, pcf7x7 or pcss";
+        error = std::string(key) + " must be off, pcf3x3, pcf5x5, pcf7x7, pcss, evsm, vsm or msm";
         return false;
     }
     return true;
@@ -184,6 +184,14 @@ const char* shadowFilterName(ShadowFilter filter) {
         return "pcf7x7";
     case ShadowFilter::Pcss:
         return "pcss";
+    case ShadowFilter::Evsm:
+        return "evsm";
+    case ShadowFilter::Vsm:
+        return "vsm";
+    case ShadowFilter::Msm:
+        return "msm";
+    case ShadowFilter::Ims:
+        return "ims";
     }
     return "pcf3x3";
 }
@@ -210,6 +218,22 @@ bool parseShadowFilter(std::string_view text, ShadowFilter& filter) {
         filter = ShadowFilter::Pcss;
         return true;
     }
+    if (key == "evsm") {
+        filter = ShadowFilter::Evsm;
+        return true;
+    }
+    if (key == "vsm") {
+        filter = ShadowFilter::Vsm;
+        return true;
+    }
+    if (key == "msm") {
+        filter = ShadowFilter::Msm;
+        return true;
+    }
+    if (key == "ims") {
+        filter = ShadowFilter::Ims;
+        return true;
+    }
     return false;
 }
 
@@ -225,6 +249,14 @@ uint32_t shadowFilterTapMode(ShadowFilter filter) {
         return 3;
     case ShadowFilter::Pcss:
         return 4;
+    case ShadowFilter::Evsm:
+        return 5;
+    case ShadowFilter::Vsm:
+        return 6;
+    case ShadowFilter::Msm:
+        return 7;
+    case ShadowFilter::Ims:
+        return 8;
     }
     return 1;
 }
@@ -339,7 +371,18 @@ void sanitizeShadowSettings(ShadowSettings& settings) {
     settings.normalBias = std::clamp(finiteOr(settings.normalBias, 0.2f), 0.0f, 2.0f);
     settings.slopeBias = std::clamp(finiteOr(settings.slopeBias, 0.5f), 0.0f, 10.0f);
     settings.shadowNearPlane = std::clamp(finiteOr(settings.shadowNearPlane, 0.1f), 0.01f, 100.0f);
+    settings.directionalLightAngle =
+        std::clamp(finiteOr(settings.directionalLightAngle, 1.0f), 0.0f, 9.0f);
+    settings.directionalMaxDepthBias =
+        std::clamp(finiteOr(settings.directionalMaxDepthBias, 0.001f), 0.0001f, 0.01f);
+    settings.imsKernelSize = std::clamp(settings.imsKernelSize, 1u, 32u);
     settings.softness = std::clamp(finiteOr(settings.softness, 0.5f), 0.0f, 4.0f);
+    if (settings.punctualFilter == ShadowFilter::Ims) {
+        settings.punctualFilter = ShadowFilter::Pcf5x5;
+    }
+    if (settings.areaFilter == ShadowFilter::Ims) {
+        settings.areaFilter = ShadowFilter::Pcf5x5;
+    }
     settings.blockerSamples = std::clamp(settings.blockerSamples, 1u, 64u);
     settings.filterSamples = std::clamp(settings.filterSamples, 1u, 64u);
     settings.minFilterSize = std::clamp(finiteOr(settings.minFilterSize, 0.01f), 0.0f, 1.0f);
@@ -399,6 +442,9 @@ bool parseShadowSettings(std::string_view json, ShadowSettings& settings, std::s
         !readFloat(root, "normalBias", settings.normalBias, error) ||
         !readFloat(root, "slopeBias", settings.slopeBias, error) ||
         !readFloat(root, "shadowNearPlane", settings.shadowNearPlane, error) ||
+        !readFloat(root, "directionalLightAngle", settings.directionalLightAngle, error) ||
+        !readFloat(root, "directionalMaxDepthBias", settings.directionalMaxDepthBias, error) ||
+        !readUint(root, "imsKernelSize", settings.imsKernelSize, error) ||
         !readFloat(root, "softness", settings.softness, error) ||
         !readUint(root, "blockerSamples", settings.blockerSamples, error) ||
         !readUint(root, "filterSamples", settings.filterSamples, error) ||
@@ -447,6 +493,9 @@ std::string shadowSettingsToJson(const ShadowSettings& settings) {
     root["normalBias"] = settings.normalBias;
     root["slopeBias"] = settings.slopeBias;
     root["shadowNearPlane"] = settings.shadowNearPlane;
+    root["directionalLightAngle"] = settings.directionalLightAngle;
+    root["directionalMaxDepthBias"] = settings.directionalMaxDepthBias;
+    root["imsKernelSize"] = settings.imsKernelSize;
     root["softness"] = settings.softness;
     root["blockerSamples"] = settings.blockerSamples;
     root["filterSamples"] = settings.filterSamples;

@@ -1,4 +1,4 @@
-$input v_texcoord0, v_worldPos, v_normal, v_tangent, v_bitangent
+$input v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
 
 #define HBG_ADVANCED_MATERIAL 1
 
@@ -34,5 +34,8 @@ void main()
     gl_FragData[1] = vec4(hbgSaturate(surfaceData.metallic), hbgSaturate(surfaceData.ambientOcclusion), 0.0, 0.0);
     gl_FragData[2] = hbgEncodeNormalBuffer(surfaceData.normalWS, surfaceData.perceptualRoughness);
     gl_FragData[3] = emissiveOut;
-    gl_FragData[4] = hbgEncodeMaterialAdvanced(surfaceData);
+    vec4 advancedOut = hbgEncodeMaterialAdvanced(surfaceData);
+    const float featureFlags = floor(u_material_advanced2.z + 0.5);
+    advancedOut.w = featureFlags > 0.0 ? featureFlags * 65536.0 : 1.0;
+    gl_FragData[4] = advancedOut;
 }

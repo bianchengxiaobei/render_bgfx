@@ -36,6 +36,8 @@ uniform vec4 u_pass_lightListParams;
 uniform vec4 u_pass_lightListParams2;
 uniform vec4 u_pass_lightScreenSize;
 uniform vec4 u_pass_cookieAtlasParams;
+uniform vec4 u_pass_litVariantParams;
+uniform vec4 u_pass_lightmapParams2;
 
 // Cluster
 uniform vec4 u_cluster_params;
@@ -87,6 +89,7 @@ uniform vec4 u_contact_params4;
 // Debug
 uniform vec4 u_debug_depthParams;
 uniform vec4 u_debug_clusterParams;
+uniform vec4 u_debug_lightmapParams;
 
 // Decal
 uniform mat4 u_decal_worldToDecal;
@@ -128,6 +131,8 @@ uniform vec4 u_fog_localMaskScroll[8];
 // Object
 uniform mat4 u_object_prevModel;
 uniform vec4 u_object_lightLayerMask;
+uniform vec4 u_object_lightmapST;
+uniform vec4 u_object_lightmapParams;
 
 // PostProcess
 uniform vec4 u_postprocess_exposureParams;

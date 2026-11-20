@@ -101,13 +101,15 @@ struct PassUniforms {
     Vec4 lightListParams2;
     Vec4 lightScreenSize;
     Vec4 cookieAtlasParams;
+    Vec4 litVariantParams;
+    Vec4 lightmapParams2;
 };
 
 class PassUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_pass_";
 
-    inline static const std::array<UniformDesc, 12> kDescriptors = {
+    inline static const std::array<UniformDesc, 14> kDescriptors = {
         UniformDesc{"u_pass_shadowMatrix", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowViewProj", UniformType::Mat4, 1},
         UniformDesc{"u_pass_shadowParams", UniformType::Vec4, 1},
@@ -120,6 +122,8 @@ class PassUniformBinder {
         UniformDesc{"u_pass_lightListParams2", UniformType::Vec4, 1},
         UniformDesc{"u_pass_lightScreenSize", UniformType::Vec4, 1},
         UniformDesc{"u_pass_cookieAtlasParams", UniformType::Vec4, 1},
+        UniformDesc{"u_pass_litVariantParams", UniformType::Vec4, 1},
+        UniformDesc{"u_pass_lightmapParams2", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -140,6 +144,8 @@ class PassUniformBinder {
         m_block.set(9, uniforms.lightListParams2);
         m_block.set(10, uniforms.lightScreenSize);
         m_block.set(11, uniforms.cookieAtlasParams);
+        m_block.set(12, uniforms.litVariantParams);
+        m_block.set(13, uniforms.lightmapParams2);
     }
 
   private:
@@ -402,15 +408,17 @@ class ContactUniformBinder {
 struct DebugUniforms {
     Vec4 depthParams;
     Vec4 clusterParams;
+    Vec4 lightmapParams;
 };
 
 class DebugUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_debug_";
 
-    inline static const std::array<UniformDesc, 2> kDescriptors = {
+    inline static const std::array<UniformDesc, 3> kDescriptors = {
         UniformDesc{"u_debug_depthParams", UniformType::Vec4, 1},
         UniformDesc{"u_debug_clusterParams", UniformType::Vec4, 1},
+        UniformDesc{"u_debug_lightmapParams", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -421,6 +429,7 @@ class DebugUniformBinder {
     void upload(const DebugUniforms& uniforms) const {
         m_block.set(0, uniforms.depthParams);
         m_block.set(1, uniforms.clusterParams);
+        m_block.set(2, uniforms.lightmapParams);
     }
 
   private:
@@ -589,15 +598,19 @@ class FogUniformBinder {
 struct ObjectUniforms {
     Mat4 prevModel;
     Vec4 lightLayerMask;
+    Vec4 lightmapST;
+    Vec4 lightmapParams;
 };
 
 class ObjectUniformBinder {
   public:
     static constexpr std::string_view kPrefix = "u_object_";
 
-    inline static const std::array<UniformDesc, 2> kDescriptors = {
+    inline static const std::array<UniformDesc, 4> kDescriptors = {
         UniformDesc{"u_object_prevModel", UniformType::Mat4, 1},
         UniformDesc{"u_object_lightLayerMask", UniformType::Vec4, 1},
+        UniformDesc{"u_object_lightmapST", UniformType::Vec4, 1},
+        UniformDesc{"u_object_lightmapParams", UniformType::Vec4, 1},
     };
 
     bool init(ResourceManager& resources) { return m_block.init(resources, kDescriptors, kPrefix); }
@@ -608,6 +621,8 @@ class ObjectUniformBinder {
     void upload(const ObjectUniforms& uniforms) const {
         m_block.set(0, uniforms.prevModel);
         m_block.set(1, uniforms.lightLayerMask);
+        m_block.set(2, uniforms.lightmapST);
+        m_block.set(3, uniforms.lightmapParams);
     }
 
   private:

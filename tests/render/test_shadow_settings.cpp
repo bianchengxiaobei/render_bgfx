@@ -29,6 +29,9 @@ TEST_CASE("shadow settings defaults and filter mapping") {
     CHECK(settings.normalBias == doctest::Approx(0.2f));
     CHECK(settings.slopeBias == doctest::Approx(0.5f));
     CHECK(settings.shadowNearPlane == doctest::Approx(0.1f));
+    CHECK(settings.directionalLightAngle == doctest::Approx(1.0f));
+    CHECK(settings.directionalMaxDepthBias == doctest::Approx(0.001f));
+    CHECK(settings.imsKernelSize == 5);
     CHECK(settings.softness == doctest::Approx(0.5f));
     CHECK(settings.blockerSamples == 16);
     CHECK(settings.filterSamples == 24);
@@ -43,6 +46,26 @@ TEST_CASE("shadow settings defaults and filter mapping") {
     CHECK(shadowFilterTapMode(ShadowFilter::Pcf5x5) == 2);
     CHECK(shadowFilterTapMode(ShadowFilter::Pcf7x7) == 3);
     CHECK(shadowFilterTapMode(ShadowFilter::Pcss) == 4);
+    CHECK(shadowFilterTapMode(ShadowFilter::Evsm) == 5);
+    CHECK(shadowFilterTapMode(ShadowFilter::Vsm) == 6);
+    CHECK(shadowFilterTapMode(ShadowFilter::Msm) == 7);
+    CHECK(shadowFilterTapMode(ShadowFilter::Ims) == 8);
+    CHECK(std::string(shadowFilterName(ShadowFilter::Evsm)) == "evsm");
+    CHECK(std::string(shadowFilterName(ShadowFilter::Vsm)) == "vsm");
+    CHECK(std::string(shadowFilterName(ShadowFilter::Msm)) == "msm");
+    CHECK(std::string(shadowFilterName(ShadowFilter::Ims)) == "ims");
+    ShadowFilter evsmFilter = ShadowFilter::Off;
+    CHECK(parseShadowFilter("evsm", evsmFilter));
+    CHECK(evsmFilter == ShadowFilter::Evsm);
+    ShadowFilter vsmFilter = ShadowFilter::Off;
+    CHECK(parseShadowFilter("vsm", vsmFilter));
+    CHECK(vsmFilter == ShadowFilter::Vsm);
+    ShadowFilter msmFilter = ShadowFilter::Off;
+    CHECK(parseShadowFilter("msm", msmFilter));
+    CHECK(msmFilter == ShadowFilter::Msm);
+    ShadowFilter imsFilter = ShadowFilter::Off;
+    CHECK(parseShadowFilter("ims", imsFilter));
+    CHECK(imsFilter == ShadowFilter::Ims);
 }
 
 TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
@@ -64,6 +87,9 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
         "normalBias": 0.4,
         "slopeBias": 1.5,
         "shadowNearPlane": 0.25,
+        "directionalLightAngle": 3.5,
+        "directionalMaxDepthBias": 0.004,
+        "imsKernelSize": 9,
         "softness": 0.75,
         "blockerSamples": 20,
         "filterSamples": 32,
@@ -95,6 +121,9 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
     CHECK(settings.maxRequests == 48);
     CHECK(settings.slopeBias == doctest::Approx(1.5f));
     CHECK(settings.shadowNearPlane == doctest::Approx(0.25f));
+    CHECK(settings.directionalLightAngle == doctest::Approx(3.5f));
+    CHECK(settings.directionalMaxDepthBias == doctest::Approx(0.004f));
+    CHECK(settings.imsKernelSize == 9);
     CHECK(settings.softness == doctest::Approx(0.75f));
     CHECK(settings.blockerSamples == 20);
     CHECK(settings.filterSamples == 32);
@@ -107,6 +136,12 @@ TEST_CASE("shadow settings parse JSON and sanitize cascade splits") {
     CHECK(settings.shadowDimmer == doctest::Approx(0.65f));
     CHECK(settings.shadowFadeDistance == doctest::Approx(55.0f));
     CHECK(settings.shadowTint == Vec3(0.2f, 0.3f, 0.4f));
+
+    REQUIRE(parseShadowSettings(
+        R"({"directionalFilter": "ims", "punctualFilter": "ims", "areaFilter": "ims"})", settings, error));
+    CHECK(settings.directionalFilter == ShadowFilter::Ims);
+    CHECK(settings.punctualFilter == ShadowFilter::Pcf5x5);
+    CHECK(settings.areaFilter == ShadowFilter::Pcf5x5);
 }
 
 TEST_CASE("shadow settings reject malformed values and sanitize ranges") {
@@ -124,6 +159,7 @@ TEST_CASE("shadow settings reject malformed values and sanitize ranges") {
         R"({"cascadeCount": 9, "directionalResolution": 16, "pointResolution": 0,
             "spotResolution": 8192, "areaResolution": 128, "atlasSize": 12, "areaAtlasSize": 12,
             "maxRequests": 500, "normalBias": -1, "slopeBias": 99, "shadowNearPlane": 0,
+            "directionalLightAngle": 99, "directionalMaxDepthBias": 1, "imsKernelSize": 0,
             "softness": 9, "blockerSamples": 0, "filterSamples": 100, "minFilterSize": 2,
             "cascadeFade": -1, "microShadows": {"enabled": true, "opacity": 2}})",
         settings, error));
@@ -138,6 +174,9 @@ TEST_CASE("shadow settings reject malformed values and sanitize ranges") {
     CHECK(settings.normalBias == doctest::Approx(0.0f));
     CHECK(settings.slopeBias == doctest::Approx(10.0f));
     CHECK(settings.shadowNearPlane == doctest::Approx(0.01f));
+    CHECK(settings.directionalLightAngle == doctest::Approx(9.0f));
+    CHECK(settings.directionalMaxDepthBias == doctest::Approx(0.01f));
+    CHECK(settings.imsKernelSize == 1);
     CHECK(settings.softness == doctest::Approx(4.0f));
     CHECK(settings.blockerSamples == 1);
     CHECK(settings.filterSamples == 64);
@@ -168,7 +207,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.cascadeSplits = {0.1f, 0.4f, 1.0f, 1.0f};
     source.directionalFilter = ShadowFilter::Pcf7x7;
     source.punctualFilter = ShadowFilter::Off;
-    source.areaFilter = ShadowFilter::Pcf5x5;
+    source.areaFilter = ShadowFilter::Evsm;
     source.pointResolution = 256;
     source.spotResolution = 2048;
     source.areaResolution = 1024;
@@ -178,6 +217,9 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.cascadeFade = 0.25f;
     source.slopeBias = 1.25f;
     source.shadowNearPlane = 0.2f;
+    source.directionalLightAngle = 2.5f;
+    source.directionalMaxDepthBias = 0.003f;
+    source.imsKernelSize = 7;
     source.softness = 0.8f;
     source.blockerSamples = 12;
     source.filterSamples = 20;
@@ -208,6 +250,9 @@ TEST_CASE("shadow settings round trip through JSON") {
     CHECK(parsed.maxRequests == source.maxRequests);
     CHECK(parsed.slopeBias == doctest::Approx(source.slopeBias));
     CHECK(parsed.shadowNearPlane == doctest::Approx(source.shadowNearPlane));
+    CHECK(parsed.directionalLightAngle == doctest::Approx(source.directionalLightAngle));
+    CHECK(parsed.directionalMaxDepthBias == doctest::Approx(source.directionalMaxDepthBias));
+    CHECK(parsed.imsKernelSize == source.imsKernelSize);
     CHECK(parsed.softness == doctest::Approx(source.softness));
     CHECK(parsed.blockerSamples == source.blockerSamples);
     CHECK(parsed.filterSamples == source.filterSamples);

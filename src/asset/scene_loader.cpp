@@ -607,6 +607,185 @@ bool applyLightShadow(render::RenderScene& scene, const nlohmann::json& object, 
     return true;
 }
 
+bool readVfxPropertyValue(const nlohmann::json& item, render::VfxPropertyValue& property, std::string* error) {
+    const auto name = item.find("name");
+    if (name != item.end()) {
+        if (!name->is_string() || name->get<std::string>().empty()) {
+            if (error != nullptr) {
+                *error = "vfx property name must be a non-empty string";
+            }
+            return false;
+        }
+        property.name = name->get<std::string>();
+    }
+    if (property.name.empty()) {
+        if (error != nullptr) {
+            *error = "vfx property requires a name";
+        }
+        return false;
+    }
+
+    std::string type = "float";
+    const auto typeIt = item.find("type");
+    if (typeIt != item.end()) {
+        if (!typeIt->is_string()) {
+            if (error != nullptr) {
+                *error = "vfx property type must be a string";
+            }
+            return false;
+        }
+        type = lower(typeIt->get<std::string>());
+    }
+
+    const auto value = item.find("value");
+    if (value == item.end()) {
+        if (error != nullptr) {
+            *error = "vfx property value is required";
+        }
+        return false;
+    }
+
+    if (type == "float") {
+        if (!value->is_number()) {
+            if (error != nullptr) {
+                *error = "vfx float property value must be a number";
+            }
+            return false;
+        }
+        property.kind = render::VfxPropertyKind::Float;
+        property.values[0] = value->get<float>();
+        return true;
+    }
+
+    std::size_t components = 0;
+    if (type == "vector2") {
+        property.kind = render::VfxPropertyKind::Vector2;
+        components = 2;
+    } else if (type == "vector3") {
+        property.kind = render::VfxPropertyKind::Vector3;
+        components = 3;
+    } else if (type == "vector4") {
+        property.kind = render::VfxPropertyKind::Vector4;
+        components = 4;
+    } else if (type == "color") {
+        property.kind = render::VfxPropertyKind::Color;
+        components = 4;
+    } else {
+        if (error != nullptr) {
+            *error = "unknown vfx property type '" + type + "'";
+        }
+        return false;
+    }
+    if (!value->is_array() || value->size() != components) {
+        if (error != nullptr) {
+            *error = "vfx " + type + " property value is invalid";
+        }
+        return false;
+    }
+    for (std::size_t component = 0; component < components; ++component) {
+        if (!(*value)[component].is_number()) {
+            if (error != nullptr) {
+                *error = "vfx " + type + " property value must contain numbers";
+            }
+            return false;
+        }
+        property.values[component] = (*value)[component].get<float>();
+    }
+    return true;
+}
+
+bool applyVfxInstance(render::RenderScene& scene, const nlohmann::json& object,
+                      const std::filesystem::path& baseDirectory, std::size_t index, std::string* error) {
+    if (!object.is_object()) {
+        if (error != nullptr) {
+            *error = "vfx[" + std::to_string(index) + "] must be an object";
+        }
+        return false;
+    }
+
+    render::VfxInstance instance;
+    instance.name = "VFX " + std::to_string(index);
+    const auto name = object.find("name");
+    if (name != object.end()) {
+        if (!name->is_string()) {
+            if (error != nullptr) {
+                *error = "vfx[" + std::to_string(index) + "].name must be a string";
+            }
+            return false;
+        }
+        instance.name = name->get<std::string>();
+    }
+
+    const auto asset = object.find("asset");
+    if (asset == object.end() || !asset->is_string() || asset->get<std::string>().empty()) {
+        if (error != nullptr) {
+            *error = "vfx[" + std::to_string(index) + "].asset must be a non-empty string";
+        }
+        return false;
+    }
+    instance.asset = baseDirectory / asset->get<std::string>();
+
+    if (!readVec3(object, "position", instance.position, error) ||
+        !readVec3(object, "rotation", instance.rotation, error) ||
+        !readVec3(object, "scale", instance.scale, error) ||
+        !readBool(object, "enabled", instance.enabled, error) ||
+        !readBool(object, "playOnAwake", instance.playOnAwake, error) ||
+        !readNumber(object, "playRate", instance.playRate, error) ||
+        !readUint(object, "seed", instance.randomSeed, error)) {
+        return false;
+    }
+    const auto play = object.find("play");
+    if (play != object.end()) {
+        if (!play->is_boolean()) {
+            if (error != nullptr) {
+                *error = "vfx[" + std::to_string(index) + "].play must be a boolean";
+            }
+            return false;
+        }
+        instance.playOnAwake = play->get<bool>();
+    }
+    instance.playRate = std::max(instance.playRate, 0.0f);
+    instance.scale = Vec3(instance.scale.x != 0.0f ? instance.scale.x : 1.0f,
+                          instance.scale.y != 0.0f ? instance.scale.y : 1.0f,
+                          instance.scale.z != 0.0f ? instance.scale.z : 1.0f);
+
+    const auto properties = object.find("properties");
+    if (properties != object.end()) {
+        if (properties->is_array()) {
+            std::size_t propertyIndex = 0;
+            for (const auto& item : *properties) {
+                render::VfxPropertyValue property;
+                if (!item.is_object() || !readVfxPropertyValue(item, property, error)) {
+                    if (error != nullptr && error->empty()) {
+                        *error = "vfx[" + std::to_string(index) + "].properties[" +
+                                 std::to_string(propertyIndex) + "] is invalid";
+                    }
+                    return false;
+                }
+                instance.properties.push_back(std::move(property));
+                ++propertyIndex;
+            }
+        } else if (properties->is_object()) {
+            for (const auto& [propertyName, value] : properties->items()) {
+                render::VfxPropertyValue property;
+                property.name = propertyName;
+                if (!readVfxPropertyValue(value, property, error)) {
+                    return false;
+                }
+                instance.properties.push_back(std::move(property));
+            }
+        } else {
+            if (error != nullptr) {
+                *error = "vfx[" + std::to_string(index) + "].properties must be an array or object";
+            }
+            return false;
+        }
+    }
+
+    scene.vfxInstances.push_back(std::move(instance));
+    return true;
+}
+
 bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, std::size_t index,
                       std::string* error) {
     if (!object.is_object()) {
@@ -655,6 +834,164 @@ bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, 
     target->decalLayerMask = static_cast<uint8_t>(std::min<uint32_t>(decalMask, 0x7fu));
     return true;
 }
+
+bool applyLightmap(render::RenderScene& scene, const nlohmann::json& lightmap,
+                   const std::filesystem::path& baseDirectory, std::string* error) {
+    const auto fail = [error](std::string message) {
+        if (error != nullptr) {
+            *error = std::move(message);
+        }
+        return false;
+    };
+    const auto readValueUint = [](const nlohmann::json& value, uint32_t& target) {
+        if (value.is_number_unsigned()) {
+            const uint64_t number = value.get<uint64_t>();
+            if (number <= UINT32_MAX) {
+                target = static_cast<uint32_t>(number);
+                return true;
+            }
+        } else if (value.is_number_integer()) {
+            const int64_t number = value.get<int64_t>();
+            if (number >= 0 && number <= UINT32_MAX) {
+                target = static_cast<uint32_t>(number);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (!lightmap.is_object()) {
+        return fail("lightmap must be an object");
+    }
+
+    const auto atlases = lightmap.find("atlases");
+    if (atlases == lightmap.end() || !atlases->is_array() || atlases->empty()) {
+        return fail("lightmap.atlases must be a non-empty array");
+    }
+
+    scene.lightmapAtlases.clear();
+    scene.lightmapBaseDirectory = baseDirectory;
+    scene.lightmapAtlases.reserve(atlases->size());
+    for (std::size_t index = 0; index < atlases->size(); ++index) {
+        const nlohmann::json& atlas = atlases->at(index);
+        if (!atlas.is_object()) {
+            return fail("lightmap.atlases[" + std::to_string(index) + "] must be an object");
+        }
+
+        render::LightmapAtlasSource source;
+        const auto file = atlas.find("file");
+        if (file == atlas.end() || !file->is_string() || file->get<std::string>().empty()) {
+            return fail("lightmap.atlases[" + std::to_string(index) + "].file must be a non-empty string");
+        }
+        source.file = file->get<std::string>();
+
+        const auto size = atlas.find("size");
+        if (size == atlas.end() || !readValueUint(*size, source.size) || source.size == 0) {
+            return fail("lightmap.atlases[" + std::to_string(index) + "].size must be a positive integer");
+        }
+
+        const auto layers = atlas.find("layers");
+        if (layers != atlas.end() && (!readValueUint(*layers, source.layers) || source.layers == 0)) {
+            return fail("lightmap.atlases[" + std::to_string(index) + "].layers must be a positive integer");
+        }
+
+        const auto format = atlas.find("format");
+        if (format != atlas.end()) {
+            if (!format->is_string()) {
+                return fail("lightmap.atlases[" + std::to_string(index) + "].format must be a string");
+            }
+            source.format = lower(format->get<std::string>());
+        }
+        if (source.format != "rgba16f") {
+            return fail("lightmap.atlases[" + std::to_string(index) + "].format must be rgba16f");
+        }
+        scene.lightmapAtlases.push_back(std::move(source));
+    }
+
+    const auto objects = lightmap.find("objects");
+    if (objects == lightmap.end() || !objects->is_object()) {
+        return fail("lightmap.objects must be an object keyed by render object name");
+    }
+
+    for (const auto& [name, entry] : objects->items()) {
+        if (name.empty() || !entry.is_object()) {
+            return fail("lightmap.objects entries must be named objects");
+        }
+
+        render::RenderObject* target = nullptr;
+        for (render::RenderObject& object : scene.objects) {
+            if (object.name == name) {
+                target = &object;
+                break;
+            }
+        }
+        if (target == nullptr) {
+            return fail("lightmap object '" + name + "' does not match a render object");
+        }
+
+        uint32_t atlasIndex = 0;
+        const auto atlas = entry.find("atlas");
+        if (atlas == entry.end() || !readValueUint(*atlas, atlasIndex) || atlasIndex >= scene.lightmapAtlases.size()) {
+            return fail("lightmap object '" + name + "' references an invalid atlas");
+        }
+
+        const auto rect = entry.find("rect");
+        if (rect == entry.end() || !rect->is_array() || rect->size() != 4) {
+            return fail("lightmap object '" + name + "' rect must contain four integers");
+        }
+        uint32_t values[4] = {};
+        for (std::size_t component = 0; component < 4; ++component) {
+            if (!readValueUint(rect->at(component), values[component])) {
+                return fail("lightmap object '" + name + "' rect must contain four integers");
+            }
+        }
+        const render::LightmapAtlasSource& atlasSource = scene.lightmapAtlases[atlasIndex];
+        if (values[2] == 0 || values[3] == 0 || static_cast<uint64_t>(values[0]) + values[2] > atlasSource.size ||
+            static_cast<uint64_t>(values[1]) + values[3] > atlasSource.size) {
+            return fail("lightmap object '" + name + "' rect is outside its atlas");
+        }
+
+        bool contribute = true;
+        const auto contributeGI = entry.find("contributeGI");
+        if (contributeGI != entry.end()) {
+            if (!contributeGI->is_boolean()) {
+                return fail("lightmap object '" + name + "' contributeGI must be a boolean");
+            }
+            contribute = contributeGI->get<bool>();
+        }
+        if (!contribute) {
+            continue;
+        }
+
+        Vec4 st(static_cast<float>(values[2]) / static_cast<float>(atlasSource.size),
+                static_cast<float>(values[3]) / static_cast<float>(atlasSource.size),
+                static_cast<float>(values[0]) / static_cast<float>(atlasSource.size),
+                static_cast<float>(values[1]) / static_cast<float>(atlasSource.size));
+        const auto stJson = entry.find("st");
+        if (stJson != entry.end()) {
+            if (!stJson->is_array() || stJson->size() != 4) {
+                return fail("lightmap object '" + name + "' st must contain four numbers");
+            }
+            for (std::size_t component = 0; component < 4; ++component) {
+                if (!stJson->at(component).is_number()) {
+                    return fail("lightmap object '" + name + "' st must contain four numbers");
+                }
+            }
+            st = Vec4(stJson->at(0).get<float>(), stJson->at(1).get<float>(), stJson->at(2).get<float>(),
+                      stJson->at(3).get<float>());
+            if (!std::isfinite(st.x) || !std::isfinite(st.y) || !std::isfinite(st.z) || !std::isfinite(st.w)) {
+                return fail("lightmap object '" + name + "' st must be finite");
+            }
+        }
+
+        target->lightmapAtlas = atlasIndex;
+        target->lightmapST = st;
+        target->lightmapSize = Vec2(static_cast<float>(values[2]), static_cast<float>(values[3]));
+    }
+
+    return true;
+}
+
 render::Light* resolveLightTarget(render::RenderScene& scene, const nlohmann::json& object, std::size_t index) {
     const auto name = object.find("name");
     if (name != object.end()) {
@@ -1281,6 +1618,23 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
         }
     }
 
+    const auto vfx = root.find("vfx");
+    if (vfx != root.end()) {
+        if (!vfx->is_array()) {
+            if (error != nullptr) {
+                *error = "vfx must be an array";
+            }
+            return false;
+        }
+        std::size_t index = 0;
+        for (const auto& instance : *vfx) {
+            if (!applyVfxInstance(scene, instance, baseDirectory, index, error)) {
+                return false;
+            }
+            ++index;
+        }
+    }
+
     const auto objects = root.find("objects");
     if (objects != root.end()) {
         if (!objects->is_array()) {
@@ -1296,6 +1650,11 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
             }
             ++index;
         }
+    }
+
+    const auto lightmap = root.find("lightmap");
+    if (lightmap != root.end() && !applyLightmap(scene, *lightmap, baseDirectory, error)) {
+        return false;
     }
 
     return true;

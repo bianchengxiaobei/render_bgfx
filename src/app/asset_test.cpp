@@ -3,6 +3,7 @@
 #include "asset/scene_loader.h"
 #include "asset/texture_loader.h"
 #include "core/log.h"
+#include "render/lightmap/lightmap.h"
 
 #include <cstddef>
 
@@ -44,6 +45,20 @@ bool runAssetTest(gfx::ResourceManager& resources, const std::string& path) {
         HBG_LOGI("uploaded image '{}' ({}x{})", image.name, image.width, image.height);
         resources.destroyTexture(texture);
     }
+
+    if (scene.hasLightmap()) {
+        render::lightmap::LightmapSet lightmaps;
+        std::string lightmapError;
+        if (!lightmaps.load(resources, scene, &lightmapError)) {
+            HBG_LOGE("failed to upload scene lightmaps: {}", lightmapError);
+            return false;
+        }
+        const uint32_t atlasCount = lightmaps.atlasCount();
+        HBG_LOGI("uploaded lightmap SH array: atlases={} layers={} size={}", atlasCount, lightmaps.layerCount(),
+                 atlasCount > 0 ? lightmaps.atlases().front().size : 0u);
+        lightmaps.destroy(resources);
+    }
+
     resources.flushPending(true);
     return true;
 }

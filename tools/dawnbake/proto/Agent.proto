@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package DAWNProto;
+option csharp_namespace = "DAWNProto";
+
+import "DAWNCommon.proto";
+//------------------------ TaskExeEvent ------------------------
+message TaskExeEvent
+{
+	enum TaskExecEventType
+	{
+		TaskResult = 0;	//Task运行结果
+		AppLog = 1;		//Executable的Log
+		Error = 2;			//出错信息
+	}
+
+	TaskExecEventType type = 1;
+	optional TaskResult taskResult = 2;
+	optional AppLog appLog = 3;
+	optional string errorMsg = 4;
+}
+
+message AppLog
+{
+	string logLine = 1;
+}
+//-----------------------------------------------------------------
+
+
+//Agent提供的rpc
+service AgentService {
+	//------------------- ClientAgent => Agent ------------------
+	//请求启动Job
+	rpc BeginJob (ClientAgentBeginJobReq) returns (ClientAgentBeginJobAck);
+
+	//请求开始执行
+	rpc BeginExec(ClientAgentBeginExecReq) returns(GeneralAck);
+
+	//Task收发
+	rpc AddTask(stream ClientAgentAddTaskReq) returns(stream TaskExeEvent);
+
+	//命令Agent自行从云端下载对应的定制程序包
+	rpc CmdLoadCustomizationFromCloud(LoadCustomizationFromCloudReq) returns(GeneralAck);
+
+	//上传定制程序包
+	rpc UploadCustomization(stream UploadFileReq) returns (stream UploadFileAck);
+
+	//上传文件
+	rpc UploadFile(stream UploadFileReq) returns (stream UploadFileAck);
+
+	//批量上传文件, 服务端仅处理在cache中的文件
+	rpc BatchUploadFileInServerCache(BatchUploadFilesInServerCacheReq) returns (BatchUploadFilesInServerCacheAck);
+
+	//上传多个文件, UploadMultiFilesReq里已经包含了每个文件的二进制数据。不宜用来上传大文件，大文件应该用UploadFile
+	rpc UploadMultiFiles(UploadMultiFilesReq) returns (UploadMultiFilesAck);
+
+	//下载文件
+	rpc DownloadFile(DownloadFileReq) returns (stream DownloadFileAck);
+
+	//接受请求，将本地的某个job相关的文件上传到另一个Agent。接收即返回，不等传输完成。
+	rpc UploadJobFilesToAnotherAgent(UploadToAnotherAgentReq) returns (GeneralAck);
+
+	//索要统计数据
+	rpc RequireMissionStatistic(MissionStatisticMsgReq) returns (MissionStatisticMsgArray);
+
+	//索要PerfStats数据
+	rpc RequirePerfStats(PerfStatsMsgReq) returns (PerfStatsMsgArray);
+}
+
+message ClientAgentBeginJobReq
+{
+	JobBasicDesc jobBasicDesc = 1;
+	repeated string InterAgentResultFiles = 3;	//对应JobFullDesc里的相应值
+	string clientName = 2;
+}
+
+message ClientAgentBeginJobAck
+{
+	GeneralAck generalAck = 1;
+	bool requireUploadExecutable = 2;		//是否需要客户端上传可执行程序
+}
+
+message ClientAgentBeginExecReq
+{
+	string jobID = 1;
+}
+
+message ClientAgentAddTaskReq
+{
+	optional string jobID = 1;	//仅steam的第一个消息需要填
+	TaskDesc taskDesc = 2;
+}
+
+message LoadCustomizationFromCloudReq
+{
+	string exeTag = 1;	//目标版本包的名字
+}
+
+message UploadFileReq
+{
+	//stream的第一个含前4项, 第二个message起含第5,6项
+	optional string jobID = 1;
+	optional string filePath = 2;
+	optional uint64 fileSize = 3;
+	optional string hash = 4;
+	optional bytes fileData = 5;
+	optional bool fileDataDone = 6;		//最后一个数据包
+}
+
+message UploadFileAck
+{
+	enum UploadFileAckType
+	{
+		Done = 0;
+		DoneInCache = 1;
+		NotInCache = 2;
+		Fail = 3;
+	}
+
+	UploadFileAckType type = 1;
+	optional string message = 2;			//如果type是Fail的话填出错信息
+}
+
+message UploadFileInfo
+{
+	string hash = 1;	
+	string filePath = 2;					//服务端的放置文件的路径(一般是相对Job工作路径)
+	optional bytes fileData = 3;
+}
+
+message BatchUploadFilesInServerCacheReq
+{
+	string jobID = 1;	
+	repeated UploadFileInfo files = 2;		//UploadFileInfo里的fileData不需要
+}
+
+message BatchUploadFilesInServerCacheAck
+{
+	repeated UploadFileAck acks = 1;		//个数和Req里的一致。每个ack的type可以是DoneInCache、NotInCache、Fail之一
+	optional string message = 2;			//整体出错则填此项。不含单个文件的出错信息。
+}
+
+message UploadMultiFilesReq
+{
+	string jobID = 1;	
+	repeated UploadFileInfo files = 2;		//UploadFileInfo里的fileData必须要，是文件内容
+}
+
+message UploadMultiFilesAck
+{
+	repeated UploadFileAck acks = 1;		//个数和Req里的一致。每个ack的type可以是Done、Fail之一
+	optional string message = 2;			//整体出错则填此项。不含单个文件的出错信息。
+}
+
+message DownloadFileReq
+{
+	string jobID = 1;
+	string filePath = 2;
+}
+
+message DownloadFileAck
+{
+	enum DownloadFileAckType
+	{
+		Data = 0;
+		DataDone = 1;
+		Fail = 2;
+		Fail_FileNotFound = 3;	//服务端告知文件不存在
+	}
+	DownloadFileAckType type = 1;
+	optional string message = 2;
+	optional bytes fileData = 3;
+	optional string fileHash = 4;	//随最后一个DataDone消息发出
+}
+
+message UploadToAnotherAgentReq
+{
+	string jobID = 1;
+	string anotherAgentAddress = 2;
+	repeated string filePaths = 3;
+}

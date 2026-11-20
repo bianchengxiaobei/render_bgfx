@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DawnRoot Condition="'$(DawnRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\dawnlight\com.tencent.dawn</DawnRoot>
+    <DawnDeamonDir>$(DawnRoot)\Runtime\.Dawn\Win64\DotNet\DawnDeamon</DawnDeamonDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="DAWNHiveCore">
+      <HintPath>$(DawnDeamonDir)\DAWNHiveCore.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Google.Protobuf">
+      <HintPath>$(DawnDeamonDir)\Google.Protobuf.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Grpc.AspNetCore.Server">
+      <HintPath>$(DawnDeamonDir)\Grpc.AspNetCore.Server.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Grpc.Core.Api">
+      <HintPath>$(DawnDeamonDir)\Grpc.Core.Api.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Grpc.Net.Common">
+      <HintPath>$(DawnDeamonDir)\Grpc.Net.Common.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

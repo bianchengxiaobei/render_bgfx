@@ -16,6 +16,8 @@ bgfx::TextureFormat::Enum toBgfx(TextureFormat format) {
         return bgfx::TextureFormat::RGBA16F;
     case TextureFormat::RGBA32F:
         return bgfx::TextureFormat::RGBA32F;
+    case TextureFormat::RGBA32U:
+        return bgfx::TextureFormat::RGBA32U;
     case TextureFormat::RG16F:
         return bgfx::TextureFormat::RG16F;
     case TextureFormat::RG32F:
@@ -71,6 +73,8 @@ const char* textureFormatName(TextureFormat format) {
         return "RGBA16F";
     case TextureFormat::RGBA32F:
         return "RGBA32F";
+    case TextureFormat::RGBA32U:
+        return "RGBA32U";
     case TextureFormat::RG16F:
         return "RG16F";
     case TextureFormat::RG32F:

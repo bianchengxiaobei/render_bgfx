@@ -8,11 +8,20 @@
 #include "lighting/shadows.sc"
 #include "lighting/contact_shadow.sc"
 
+#ifndef HBG_VARIANT_LIGHT_FLAGS
+#define HBG_VARIANT_LIGHT_FLAGS 0xffffffffu
+#endif
+#ifndef HBG_VARIANT_MATERIAL_FLAGS
+#define HBG_VARIANT_MATERIAL_FLAGS 1u
+#endif
+#define HBG_VARIANT_HAS_SHADOWS ((HBG_VARIANT_LIGHT_FLAGS & 8u) != 0u)
+
 vec3 hbgApplyAreaShadow(HbgLightData light, vec3 diffuse, vec3 specular, vec3 worldPosition,
                          vec3 normalWS)
 {
     float visibility = 1.0;
     const float shadowDimmer = hbgSaturate(light.shadowTintDimmer.w);
+#if HBG_VARIANT_HAS_SHADOWS
     if (u_pass_lightListParams2.w > 0.5 && hbgLightCastShadow(light.shadowFlags) &&
         light.shadowFlags.x >= 0.0 && shadowDimmer > 0.0)
     {
@@ -20,6 +29,7 @@ vec3 hbgApplyAreaShadow(HbgLightData light, vec3 diffuse, vec3 specular, vec3 wo
                          hbgSampleAreaShadow(int(light.shadowFlags.x + 0.5), worldPosition, normalWS),
                          shadowDimmer);
     }
+#endif
     const vec3 shadowColor = hbgComputeShadowColor(visibility, light.shadowTintDimmer.rgb,
                                                    light.shadowFadeFlags.y);
     return (diffuse + specular) * shadowColor;
@@ -86,10 +96,47 @@ vec3 hbgEvaluateAreaLightData(int index, HbgLightData light, SurfaceData surface
         const float specularIrradiance = hbgLtcLineIrradiance(ltcMatrix, center, right, halfWidth);
         const vec3 radiance = light.colorIntensity.rgb * rangeAttenuation;
         const vec3 diffuseColor = surfaceData.baseColor * (1.0 - surfaceData.metallic);
-        const vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
-        const vec3 fresnel = hbgF_Schlick(f0, ndotV);
-        const vec3 diffuse = diffuseColor * diffuseIrradiance * radiance;
-        const vec3 specular = fresnel * specularIrradiance * radiance;
+        vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
+        vec3 diffuse = diffuseColor * diffuseIrradiance * radiance;
+        vec3 specular = hbgF_Schlick(f0, ndotV) * specularIrradiance * radiance;
+#if (HBG_VARIANT_MATERIAL_FLAGS & 32)
+        if (surfaceData.iridescenceMask > 0.0)
+        {
+            f0 = hbgAdvancedFresnel0(surfaceData, ndotV);
+            specular = hbgF_Schlick(f0, ndotV) * specularIrradiance * radiance;
+        }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 64)
+        const float coatMask = hbgSaturate(surfaceData.clearCoatMask);
+        if (coatMask > 0.0)
+        {
+            const float coatPerceptualRoughness =
+                sqrt(clamp(surfaceData.clearCoatRoughness, 0.002, 1.0));
+            const vec4 coatLtc = hbgSampleLtcGgx(coatPerceptualRoughness, ndotV);
+            const float coatIrradiance = hbgLtcLineIrradiance(coatLtc, center, right, halfWidth);
+            const float coatFresnel = 0.04 + 0.96 * pow(1.0 - ndotV, 5.0);
+            const float coatWeight = coatMask * coatFresnel;
+            diffuse *= 1.0 - coatWeight * 0.5;
+            specular = specular * (1.0 - coatWeight) + radiance * coatIrradiance * coatWeight;
+        }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 8)
+        const float transmissionMask = hbgSaturate(surfaceData.transmissionMask);
+        if (transmissionMask > 0.0)
+        {
+            const float backLight = hbgSaturate(dot(-normalWS, normalize(unL)));
+            const float transmittance = exp(-max(surfaceData.thickness, 0.0) * 0.15);
+            diffuse += surfaceData.baseColor * transmissionMask * backLight * transmittance *
+                       radiance * 0.5;
+        }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 4)
+        const float subsurfaceMask = hbgSaturate(surfaceData.subsurfaceMask);
+        if (subsurfaceMask > 0.0)
+        {
+            diffuse += surfaceData.baseColor * subsurfaceMask * diffuseIrradiance * radiance * 0.25;
+        }
+#endif
         return hbgApplyAreaShadow(light, diffuse, specular, worldPosition, normalWS);
     }
 
@@ -119,10 +166,56 @@ vec3 hbgEvaluateAreaLightData(int index, HbgLightData light, SurfaceData surface
 
     const vec3 radiance = light.colorIntensity.rgb * rangeAttenuation * cookie;
     const vec3 diffuseColor = surfaceData.baseColor * (1.0 - surfaceData.metallic);
-    const vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
-    const vec3 fresnel = hbgF_Schlick(f0, ndotV);
-    const vec3 diffuse = diffuseColor * diffuseIrradiance * radiance * HBG_INV_PI;
-    const vec3 specular = fresnel * specularIrradiance * radiance;
+    vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
+    vec3 diffuse = diffuseColor * diffuseIrradiance * radiance * HBG_INV_PI;
+    vec3 specular = hbgF_Schlick(f0, ndotV) * specularIrradiance * radiance;
+#if (HBG_VARIANT_MATERIAL_FLAGS & 32)
+    if (surfaceData.iridescenceMask > 0.0)
+    {
+        f0 = hbgAdvancedFresnel0(surfaceData, ndotV);
+        specular = hbgF_Schlick(f0, ndotV) * specularIrradiance * radiance;
+    }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 64)
+    const float coatMask = hbgSaturate(surfaceData.clearCoatMask);
+    if (coatMask > 0.0)
+    {
+        const float coatPerceptualRoughness =
+            sqrt(clamp(surfaceData.clearCoatRoughness, 0.002, 1.0));
+        const vec4 coatLtc = hbgSampleLtcGgx(coatPerceptualRoughness, ndotV);
+        const vec3 coatFormFactor =
+            hbgLtcRectFormFactor(coatLtc, center, right, up, halfWidth, halfHeight);
+        const float coatIrradiance = hbgPolygonIrradiance(coatFormFactor);
+        const float coatFresnel = 0.04 + 0.96 * pow(1.0 - ndotV, 5.0);
+        const float coatWeight = coatMask * coatFresnel;
+        diffuse *= 1.0 - coatWeight * 0.5;
+        specular = specular * (1.0 - coatWeight) + radiance * coatIrradiance * coatWeight;
+    }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 8)
+    const float transmissionMask = hbgSaturate(surfaceData.transmissionMask);
+    if (transmissionMask > 0.0)
+    {
+        const vec3 flipCenter = vec3(center.x, -center.y, -center.z);
+        const vec3 flipRight = vec3(right.x, -right.y, -right.z);
+        const vec3 flipUp = vec3(up.x, -up.y, -up.z);
+        const vec3 t0 = flipCenter - halfWidth * flipRight - halfHeight * flipUp;
+        const vec3 t1 = t0 + (2.0 * halfHeight) * flipUp;
+        const vec3 t2 = t1 + (2.0 * halfWidth) * flipRight;
+        const vec3 t3 = t2 - (2.0 * halfHeight) * flipUp;
+        const float transmittance = exp(-max(surfaceData.thickness, 0.0) * 0.15);
+        diffuse += surfaceData.baseColor * transmissionMask * transmittance *
+                   hbgPolygonIrradiance(hbgPolygonFormFactor(t0, t1, t2, t3)) * radiance * 0.5;
+    }
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 4)
+    const float subsurfaceMask = hbgSaturate(surfaceData.subsurfaceMask);
+    if (subsurfaceMask > 0.0)
+    {
+        diffuse += surfaceData.baseColor * subsurfaceMask * diffuseIrradiance * radiance *
+                   HBG_INV_PI * 0.25;
+    }
+#endif
     return hbgApplyAreaShadow(light, diffuse, specular, worldPosition, normalWS);
 }
 
@@ -163,10 +256,12 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
             radiance *= hbgSampleLightCookieScaled(index, cookieUV, cookieMode,
                                                    light.cookieTransform.xy, light.cookieTransform.zw);
         }
+#if HBG_VARIANT_HAS_SHADOWS
         if (light.shadowFlags.x >= 0.0 && shadowDimmer > 0.0)
         {
             visibility = mix(1.0, directionalShadowVisibility, shadowDimmer);
         }
+#endif
         if (u_pass_shadowParams.y > 0.0)
         {
             const float NdotL = dot(normalize(surfaceData.normalWS), lightDirection);
@@ -219,6 +314,7 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
             attenuation *= hbgSampleLightCookieScaled(index, hbgOctahedralEncode(-lightDirection), cookieMode,
                                                       cookieScale, cookieOffset);
         }
+#if HBG_VARIANT_HAS_SHADOWS
         if (hbgLightCastShadow(light.shadowFlags) && light.shadowFlags.x >= 0.0 && shadowDimmer > 0.0)
         {
             visibility = mix(1.0,
@@ -227,6 +323,7 @@ vec3 hbgEvaluateLightData(int index, SurfaceData surfaceData, vec3 viewWS, vec3 
                                                      worldPosition, surfaceData.normalWS),
                              shadowDimmer);
         }
+#endif
         radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
     }
 
@@ -249,6 +346,98 @@ vec3 hbgEvaluateLightLoop(SurfaceData surfaceData, vec3 viewWS, vec3 worldPositi
     const int directionalCount = min(int(u_pass_lightCounts.y + 0.5), lightCount);
     const bool clusterActive = u_cluster_depthParams.w > 0.5;
     const bool tileListActive = u_pass_lightListParams.w > 0.5;
+
+#if defined(HBG_VARIANT_MODE)
+#if (HBG_VARIANT_LIGHT_FLAGS & 4)
+    for (int index = 0; index < directionalCount; ++index)
+    {
+        color += hbgEvaluateLightData(index, surfaceData, viewWS, worldPosition,
+                                      directionalShadowVisibility);
+    }
+#endif
+#if (HBG_VARIANT_LIGHT_FLAGS & 3)
+#if defined(HBG_VARIANT_CATCHALL)
+    const bool featureFlagsValid = u_pass_lightListParams2.z > 0.5;
+    ivec2 featureTile = ivec2(0, 0);
+    uint tileFeatureFlags = 0xffffffffu;
+    if (clusterActive)
+    {
+        featureTile = hbgLightClusterTileCoord(worldPosition);
+        if (featureFlagsValid)
+        {
+            tileFeatureFlags = hbgClusterFeatureFlags(featureTile);
+        }
+    }
+    else if (tileListActive)
+    {
+        featureTile = hbgLightTileCoord(worldPosition);
+        if (featureFlagsValid)
+        {
+            tileFeatureFlags = hbgLightFeatureFlags(featureTile);
+        }
+    }
+#else
+    const ivec2 featureTile =
+        clusterActive ? hbgLightClusterTileCoord(worldPosition) : hbgLightTileCoord(worldPosition);
+    const uint tileFeatureFlags = HBG_VARIANT_LIGHT_FLAGS;
+#endif
+    if (clusterActive)
+    {
+        const ivec2 tile = featureTile;
+        const int slice = hbgClusterSliceForDepth(hbgLinearDepth(worldPosition));
+        for (int category = 0; category < HBG_LIGHT_LIST_CATEGORY_COUNT; ++category)
+        {
+            const uint categoryFlag =
+                category == HBG_LIGHT_CATEGORY_PUNCTUAL ? HBG_LIGHT_FEATURE_PUNCTUAL : HBG_LIGHT_FEATURE_AREA;
+            if ((tileFeatureFlags & categoryFlag) == 0u)
+            {
+                continue;
+            }
+            const int clusterLightCount =
+                min(int(hbgClusterLightListCount(tile, slice, category)), hbgLightListCapacity());
+            for (int offset = 0; offset < clusterLightCount; ++offset)
+            {
+                const int index = int(hbgClusterLightListIndex(tile, slice, offset, category));
+                if (index >= directionalCount && index < lightCount)
+                {
+                    color += hbgEvaluateLightData(index, surfaceData, viewWS, worldPosition, 1.0);
+                }
+            }
+        }
+    }
+    else if (tileListActive)
+    {
+        const ivec2 tile = featureTile;
+        for (int category = 0; category < HBG_LIGHT_LIST_CATEGORY_COUNT; ++category)
+        {
+            const uint categoryFlag =
+                category == HBG_LIGHT_CATEGORY_PUNCTUAL ? HBG_LIGHT_FEATURE_PUNCTUAL : HBG_LIGHT_FEATURE_AREA;
+            if ((tileFeatureFlags & categoryFlag) == 0u)
+            {
+                continue;
+            }
+            const int tileLightCount = min(int(hbgLightListCount(tile, category)), hbgLightListCapacity());
+            for (int offset = 0; offset < tileLightCount; ++offset)
+            {
+                const int index = int(hbgLightListIndex(tile, offset, category));
+                if (index >= directionalCount && index < lightCount)
+                {
+                    color += hbgEvaluateLightData(index, surfaceData, viewWS, worldPosition, 1.0);
+                }
+            }
+        }
+    }
+    else
+    {
+        const int start = directionalCount;
+        const int fallbackCount = min(lightCount - start, hbgLightListCapacity());
+        for (int offset = 0; offset < fallbackCount; ++offset)
+        {
+            color += hbgEvaluateLightData(start + offset, surfaceData, viewWS, worldPosition, 1.0);
+        }
+    }
+#endif
+#else
     const bool featureFlagsValid = u_pass_lightListParams2.z > 0.5;
     ivec2 featureTile = ivec2(0, 0);
     uint tileFeatureFlags = 0xffffffffu;
@@ -333,6 +522,7 @@ vec3 hbgEvaluateLightLoop(SurfaceData surfaceData, vec3 viewWS, vec3 worldPositi
             color += hbgEvaluateLightData(start + offset, surfaceData, viewWS, worldPosition, 1.0);
         }
     }
+#endif
 
     return color;
 }

@@ -43,6 +43,8 @@ struct PipelineSettings {
     bool supportGpuLightListBuffers = true;
     bool supportGpuLightListIndirect = false;
     bool supportLightListFeatureFlags = true;
+    bool supportLitVariants = false;
+    bool supportLitVariantTiles = false;
     bool supportCookieAtlas = true;
     uint32_t cookieAtlasSize = 1024;
     uint32_t lightListCapacity = 64;
@@ -80,6 +82,7 @@ struct PipelineSettings {
     bool supportScreenSpaceLensFlare = false;
     bool supportDataDrivenLensFlare = false;
     bool supportCustomPass = false;
+    bool supportVFX = false;
     bool supportVariableRateShading = false;
     bool supportVirtualTexturing = false;
     bool supportProbeVolume = false;

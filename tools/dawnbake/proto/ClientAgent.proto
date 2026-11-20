@@ -1,0 +1,106 @@
+syntax = "proto3";
+package DAWNProto;
+
+option csharp_namespace = "DAWNProto";
+
+import "DAWNCommon.proto";
+
+//UE导入c++ grpc/protobuf 时使用protobuf 3.8, 不支持optional关键词。可以使用oneof技巧或者wrapper包装。
+
+//ClientAgent提供的rpc
+service ClientAgentService
+{
+	//---------------------- app(plugin, UI) => ClientAgent -----------------------
+
+	//请求启动mission
+	rpc BeginMission (BeginMissionReq) returns (GeneralAck);
+
+	//请求结束mission
+	rpc EndMission (EndMissionReq) returns (GeneralAck);
+
+	//强制结束已有的所有工作
+	rpc AbortMission(AbortMissionReq) returns(GeneralAck);
+
+	//请求启动Job
+	rpc RunJob(RunJobToClientAgentReq) returns (GeneralAck);
+
+	//获得Job结果(task结果)
+	rpc GetJobResult(GetJobResultReq) returns (stream TaskResult);
+
+	//发送一条数据信息, 目前有: 估算的lightmass时间
+	rpc DataReport(DataReportReq) returns (GeneralAck);
+
+	//交互模式的流式通讯
+	rpc InteractiveMode(stream InteractiveModeReq)  returns (stream InteractiveModeAck);
+
+	//报告统计数据
+	rpc ReportMissionStatistic(MissionStatisticMsgArray) returns (GeneralAck);
+}
+
+message RunJobToClientAgentReq
+{
+	string missionID = 1;
+	JobFullDesc jobFullDesc = 2;
+	int32 desiredNumAgents = 3;	//指定想要的Agent个数。2023.6.13 新增。
+}
+
+message GetJobResultReq
+{
+	string jobID = 1;
+}
+
+message DataReportReq
+{
+	string jobID = 1;	
+	int32 reportType = 2;
+	double reportData = 3;
+}
+
+service ClientLogService
+{
+	//报告一条Log
+	rpc ReportLog (ClientLog) returns (GeneralAck);
+
+	//清Log
+	rpc ClearLog (ClientClearLog) returns (GeneralAck);
+
+	//报告进度
+	rpc ReportProgress(ClientProgress) returns (GeneralAck);
+}
+
+message ClientLog
+{
+	int32 logLevel = 1;	//Verbose, Debug, Information, Warning, Error, Fatal = 0,1,2,3,4,5
+	string logText = 2;	
+}						  
+						  
+message ClientClearLog	  
+{						  
+
+}
+
+message ClientProgress
+{
+	int64 total = 1;	//总工作量，比如100
+	int64 finished = 2;	//完成的工作量，比如50
+	int64 failed = 3;	//失败的工作量，比如1
+}
+
+//交互模式的命令枚举
+enum InteractiveModeCmdType {
+	InteractiveMode_AddTask = 0;
+	InteractiveMode_End = 1;
+}
+
+
+message InteractiveModeReq {
+	InteractiveModeCmdType type = 1;
+	TaskDesc TaskDesc = 2;		//新加或提升优先级的task
+}
+
+message InteractiveModeAck {
+	InteractiveModeCmdType type = 1;	//对应的InteractiveModeReq消息的type
+	GeneralAck ack = 2;		//返回码及出错字符串
+	string taskID = 3;		//AddTask命令所对应的taskID
+	bool isNewTask = 4;		//是否是新加的task
+}

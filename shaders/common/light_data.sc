@@ -18,7 +18,10 @@
 // texel10: cookieScale.xy, cookieOffset.xy
 // texel11: cookieAtlasScale.xy, cookieAtlasOffset.zw
 SAMPLER2D(s_lightData, 5);
-SAMPLER2D(s_cookieAtlas, 15);
+#ifndef HBG_COOKIE_SAMPLER_STAGE
+#define HBG_COOKIE_SAMPLER_STAGE 15
+#endif
+SAMPLER2D(s_cookieAtlas, HBG_COOKIE_SAMPLER_STAGE);
 #ifdef HBG_LIGHT_LIST_BUFFER
 #if BGFX_SHADER_LANGUAGE_GLSL
 layout(std430, binding = 7) readonly buffer HbgLightListBuffer

@@ -42,13 +42,15 @@ void DrawList::buildCulled(const DrawList& source, const std::array<Vec4, 6>& pl
     m_batches.reserve(m_items.size());
     for (std::size_t index = 0; index < m_items.size(); ++index) {
         const DrawItem& item = m_items[index];
-        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey) {
+        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey ||
+            m_batches.back().lightmapAtlas != item.lightmapAtlas) {
             DrawBatch batch;
             batch.firstItem = static_cast<uint32_t>(index);
             batch.itemCount = 1;
             batch.stateKey = item.batchKey;
             batch.meshIndex = item.meshIndex;
             batch.materialIndex = item.materialIndex;
+            batch.lightmapAtlas = item.lightmapAtlas;
             m_batches.push_back(batch);
         } else {
             ++m_batches.back().itemCount;
@@ -65,7 +67,8 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
 
     for (uint32_t objectIndex = 0; objectIndex < scene.objects.size(); ++objectIndex) {
         const RenderObject& object = scene.objects[objectIndex];
-        if (object.meshIndex >= scene.meshes.size()) {
+        if (object.meshIndex >= scene.meshes.size() ||
+            (desc.requireLightmap && !object.hasLightmap())) {
             ++m_filteredCount;
             continue;
         }
@@ -114,6 +117,7 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
             item.queueType = queueType;
             item.passMask = passMask;
             item.transparent = isTransparentQueue(queueType);
+            item.lightmapAtlas = object.hasLightmap() ? object.lightmapAtlas : UINT32_MAX;
             item.batchKey = stateKey;
             item.sortKey.sortingLayer = object.sortingLayer;
             item.sortKey.renderQueue = renderQueue;
@@ -122,6 +126,7 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
             item.sortKey.distance = item.distance;
             item.sortKey.quantizedDistance = quantizeDrawDistance(item.distance);
             item.sortKey.stateKey = stateKey;
+            item.sortKey.lightmapAtlas = item.lightmapAtlas;
             item.sortKey.sequence = static_cast<uint32_t>(m_items.size());
             m_items.push_back(item);
         }
@@ -134,13 +139,15 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
     m_batches.reserve(m_items.size());
     for (std::size_t index = 0; index < m_items.size(); ++index) {
         const DrawItem& item = m_items[index];
-        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey) {
+        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey ||
+            m_batches.back().lightmapAtlas != item.lightmapAtlas) {
             DrawBatch batch;
             batch.firstItem = static_cast<uint32_t>(index);
             batch.itemCount = 1;
             batch.stateKey = item.batchKey;
             batch.meshIndex = item.meshIndex;
             batch.materialIndex = item.materialIndex;
+            batch.lightmapAtlas = item.lightmapAtlas;
             m_batches.push_back(batch);
         } else {
             ++m_batches.back().itemCount;

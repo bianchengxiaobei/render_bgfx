@@ -7,7 +7,11 @@ namespace hbg::shader {
 
 enum class PassId : uint8_t {
     Forward,
+    ForwardAdvanced,
     ForwardInstanced,
+    BakedGI,
+    BakedGICompensate,
+    BakedGIForwardComposite,
     Tonemap,
     PostProcessExposure,
     PostProcessExposurePrepass,
@@ -38,6 +42,9 @@ enum class PassId : uint8_t {
     Shadow,
     ShadowInstanced,
     ShadowCull,
+    ShadowMoments,
+    ShadowSatHorizontal,
+    ShadowSatVertical,
     Prepass,
     MotionVectors,
     CameraMotionVectors,
@@ -54,6 +61,7 @@ enum class PassId : uint8_t {
     DebugLightCluster,
     DebugShadowAtlas,
     DebugColor,
+    DebugLightmap,
     DebugAlbedo,
     DebugRoughness,
     DebugGBuffer,
@@ -65,6 +73,11 @@ enum class PassId : uint8_t {
     DecalClear,
     DeferredLighting,
     DeferredLightingAdvanced,
+    DeferredLightingVariant,
+    DeferredLightingVariantCompute,
+    LitMaterialFlags,
+    LitVariantIndirectClear,
+    LitVariantIndirect,
     SSAO,
     SSAOBlur,
     SSAOTemporal,
@@ -109,6 +122,7 @@ enum MaterialVariant : uint32_t {
 constexpr uint32_t kMaterialVariantMask =
     MaterialVariantNormalMap | MaterialVariantMaskMap | MaterialVariantAlphaClip | MaterialVariantDoubleSided;
 
+constexpr uint32_t kDeferredLightingVariantCount = 29;
 constexpr uint64_t kLightListBufferProgramKey = 1ull << 63;
 constexpr uint64_t kLightLayersProgramKey = 1ull << 62;
 constexpr uint32_t kMaterialVariantCount = 16;

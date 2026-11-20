@@ -6,6 +6,7 @@ $input v_texcoord0
 SAMPLER2D(s_gbuffer0, 1);
 SAMPLER2D(s_gbuffer1, 2);
 SAMPLER2D(s_ssao, 11);
+SAMPLER2D(s_bakedIndirect, 13);
 
 void main()
 {
@@ -23,6 +24,8 @@ void main()
     const vec3 diffuseColor = max(gbuffer0.rgb * (1.0 - hbgSaturate(gbuffer1.r)), vec3(0.0, 0.0, 0.0));
     const float ambientOcclusion =
         hbgSaturate(gbuffer1.g) * hbgSaturate(texture2D(s_ssao, v_texcoord0).r);
-    const vec3 indirect = filtered * diffuseColor * ambientOcclusion * max(u_ssgi_params.x, 0.0);
+    const float bakedMask = hbgSaturate(texture2D(s_bakedIndirect, gbufferUV).a);
+    const vec3 indirect = filtered * diffuseColor * ambientOcclusion * max(u_ssgi_params.x, 0.0) *
+                          (1.0 - bakedMask);
     gl_FragColor = vec4(min(max(indirect, vec3(0.0, 0.0, 0.0)), vec3(8.0, 8.0, 8.0)), 0.0);
 }

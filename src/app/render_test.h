@@ -18,7 +18,8 @@ namespace hbg {
 
 bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uint16_t width, uint16_t height,
                    uint32_t frames, const std::string& screenshotPath, render::DebugDisplayMode debugMode,
-                   int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit, bool shadowsEnabled,
+                   bool debugLightmapMask, int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit,
+                   bool shadowsEnabled,
                    bool clusterStatsReadback,
                    const render::PipelineSettings& pipelineSettings,
                    const render::FrameSettings& frameSettings, const render::ShadowSettings& shadowSettings,

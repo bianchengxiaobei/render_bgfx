@@ -12,7 +12,9 @@
 #include "render/lighting/cookie_atlas.h"
 #include "render/lighting/light_builder.h"
 #include "render/lighting/light_list_builder.h"
+#include "render/lightmap/lightmap.h"
 #include "render/material/material_system.h"
+#include "render/passes/deferred_variant.h"
 #include "render/pipeline/frame_settings.h"
 #include "render/pipeline/pipeline_settings.h"
 #include "render/postprocess/post_process_chain.h"
@@ -28,11 +30,23 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace hbg::gfx {
 class Encoder;
 }
+
+namespace hbg::vfxbridge {
+class HbgVfxBackend;
+}
+
+namespace vfx {
+class Runtime;
+class Effect;
+struct FrameContext;
+} // namespace vfx
 
 namespace hbg::render {
 
@@ -44,7 +58,14 @@ class ForwardRenderer {
         uint32_t postProcessPasses = 0;
         bool deferred = false;
         bool deferredAdvanced = false;
+        bool litVariantsRequested = false;
+        bool litVariantsActive = false;
+        bool litVariantTilesRequested = false;
+        bool litVariantTilesActive = false;
+        uint32_t litVariantLightFlags = 0;
         bool stencil = false;
+        bool bakedGIActive = false;
+        uint32_t bakedGIObjects = 0;
         bool postProcessActive = false;
         bool postProcessComputeSupported = false;
         bool postProcessHistoryValid = false;
@@ -118,6 +139,12 @@ class ForwardRenderer {
         uint32_t clusterStatsMaxLights = 0;
         uint32_t clusterStatsFeatureFlagsChecked = 0;
         uint32_t clusterStatsFeatureFlagMismatch = 0;
+        bool vfxActive = false;
+        uint32_t vfxEffects = 0;
+        uint32_t vfxSystems = 0;
+        uint32_t vfxParticles = 0;
+        uint32_t vfxDraws = 0;
+        uint32_t vfxDispatches = 0;
     };
 
     struct ClusterStats {
@@ -133,8 +160,8 @@ class ForwardRenderer {
         uint32_t featureFlagMismatch = 0;
     };
 
-    ForwardRenderer() = default;
-    ~ForwardRenderer() = default;
+    ForwardRenderer();
+    ~ForwardRenderer();
 
     ForwardRenderer(const ForwardRenderer&) = delete;
     ForwardRenderer& operator=(const ForwardRenderer&) = delete;
@@ -154,9 +181,15 @@ class ForwardRenderer {
         m_shadowManager.setCacheSuppressed(mode == DebugDisplayMode::ShadowAtlasPunctual);
     }
     void setDebugLightClusterSlice(int slice) { m_debugLightClusterSlice = slice; }
+    void setDebugLightmapMask(bool enabled) { m_debugLightmapMask = enabled; }
     void setLightClusterEnabled(bool enabled) { m_lightClusterEnabled = enabled; }
     void setGpuLightListEnabled(bool enabled);
     void setGpuLightListBufferEnabled(bool enabled);
+    void setLitVariantsEnabled(bool enabled) {
+        m_litVariantsEnabled = enabled;
+        m_pipelineSettings.supportLitVariants = enabled;
+    }
+    bool litVariantsActive() const { return m_litVariantsActive; }
     bool gpuLightListActive() const { return m_gpuLightListActive; }
     void requestClusterStatsReadback();
     const ClusterStats& clusterStats() const { return m_clusterStats; }
@@ -189,6 +222,11 @@ class ForwardRenderer {
     const shader::ShaderLibrary& shaderLibrary() const { return m_shaderLibrary; }
 
   private:
+    struct VfxInstanceRuntime {
+        const VfxInstance* instance = nullptr;
+        ::vfx::Effect* effect = nullptr;
+    };
+
     struct FramePassResources {
         RenderGraphTextureHandle color;
         RenderGraphTextureHandle depth;
@@ -230,6 +268,9 @@ class ForwardRenderer {
         RenderGraphTextureHandle ssgiRaw;
         RenderGraphTextureHandle ssgi;
         RenderGraphTextureHandle ssgiHistoryPrevious;
+        RenderGraphTextureHandle bakedIndirect;
+        RenderGraphTextureHandle litTileFeatureFlags;
+        RenderGraphBufferHandle litIndirectArgs;
         RenderGraphBufferHandle fullscreen;
         std::array<RenderGraphTextureHandle, 4> decal{};
         std::array<RenderGraphTextureHandle, 5> gbuffer{};
@@ -262,6 +303,10 @@ class ForwardRenderer {
     bool ensureLightBigTileTexture(uint16_t renderWidth, uint16_t renderHeight);
     bool ensureClusterLightListTextures(uint16_t renderWidth, uint16_t renderHeight);
     bool ensureLightListBuffers(uint16_t renderWidth, uint16_t renderHeight);
+    bool ensureLitVariantTileResources(uint16_t renderWidth, uint16_t renderHeight);
+    void releaseLitVariantTileResources();
+    void addLitVariantTilePasses(RenderGraph& graph, const FramePassResources& resources);
+    void addDeferredLightingComputePass(RenderGraph& graph, const FramePassResources& resources);
     void releaseLightListBuffers();
     bool ensureShadowGpuBuffers(uint32_t requestCount, uint32_t casterCount, uint32_t batchCount);
     void releaseShadowGpuBuffers();
@@ -285,10 +330,10 @@ class ForwardRenderer {
     void bindLightList(gfx::Encoder& encoder, bool cluster) const;
     void bindLightListTexture(gfx::Encoder& encoder, bool cluster) const;
     void updateEnvironmentUniforms();
-    void bindProbeTextures(gfx::Encoder& encoder) const;
+    void bindProbeTextures(gfx::Encoder& encoder, bool bindCookies = true) const;
     bool ensureCookieAtlasTexture();
     void uploadCookieAtlas();
-    void bindCookieAtlas(gfx::Encoder& encoder) const;
+    void bindCookieAtlas(gfx::Encoder& encoder, uint8_t stage = 15) const;
     void updateContactShadowUniforms();
     void updatePostProcessUniforms();
     void updateSsaoUniforms(bool enabled);
@@ -310,10 +355,13 @@ class ForwardRenderer {
     void addShadowPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                        const RenderScene& scene);
+    void addShadowMomentPasses(RenderGraph& graph, RenderGraphTextureHandle directionalShadow);
+    void bindShadowMomentSat(gfx::Encoder& encoder, gfx::TextureHandle directionalShadow) const;
     void addGpuLightListPasses(RenderGraph& graph, const FramePassResources& resources);
     RenderGraphTextureHandle addContactShadowPass(RenderGraph& graph, const FramePassResources& resources,
                                                   bool deferred);
-    void addShadowAtlasClearPass(RenderGraph& graph, RenderGraphTextureHandle atlas, uint16_t size);
+    void addShadowAtlasClearPass(RenderGraph& graph, RenderGraphTextureHandle atlas, uint16_t size,
+                                 bool clear = true);
     void addClearPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                       bool debugBlack);
     void addPrepassPass(RenderGraph& graph, RenderGraphTextureHandle normal, RenderGraphTextureHandle depth,
@@ -331,6 +379,10 @@ class ForwardRenderer {
                              RenderGraphTextureHandle depth, RenderGraphBufferHandle fullscreen);
     void addDecalPasses(RenderGraph& graph, const FramePassResources& resources, const RenderScene& scene);
     void addGBufferPass(RenderGraph& graph, const FramePassResources& resources, const RenderScene& scene);
+    void addBakedGIDrawPass(RenderGraph& graph, const FramePassResources& resources, const RenderScene& scene,
+                            const DrawList& list);
+    void addBakedGICompensatePass(RenderGraph& graph, const FramePassResources& resources);
+    void addBakedGIForwardCompositePass(RenderGraph& graph, const FramePassResources& resources);
     void addSSAOPasses(RenderGraph& graph, FramePassResources& resources);
     void addSSRPasses(RenderGraph& graph, FramePassResources& resources);
     void addSSGIPasses(RenderGraph& graph, FramePassResources& resources);
@@ -346,10 +398,31 @@ class ForwardRenderer {
                         RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                         RenderGraphBufferHandle shadowContext, RenderGraphTextureHandle contactShadow,
                         const RenderScene& scene, bool transparent, bool forwardOnly = false);
+    void renderBakedGIDraws(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
+                            const RenderScene& scene);
+    void renderBakedGIPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
+                           const DrawList& list, const RenderScene& scene);
+    void renderBakedGICompensatePass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                     gfx::FrameBufferHandle frameBuffer, gfx::TextureHandle bakedIndirect,
+                                     gfx::TextureHandle depthPyramid, gfx::TextureHandle ssao,
+                                     const std::array<gfx::TextureHandle, 5>& gbuffer);
+    void renderBakedGIForwardCompositePass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                           gfx::FrameBufferHandle frameBuffer,
+                                           gfx::TextureHandle bakedIndirect);
+    bool bakedGIProgramsReady();
     void addWireframePass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                           const RenderScene& scene);
+    void ensureVfx(const RenderScene& scene);
+    void releaseVfx();
+    void updateVfx(const RenderScene& scene, float deltaSeconds);
+    void addVfxSimulationPass(RenderGraph& graph);
+    void addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources);
+    ::vfx::FrameContext makeVfxFrameContext(const RenderGraphContext& context,
+                                          const FramePassResources& resources) const;
     void addDebugMaterialPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                               const RenderScene& scene, DebugDisplayMode debugMode);
+    void addDebugLightmapPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
+                              const RenderScene& scene);
     void addDebugGBufferPass(RenderGraph& graph, const FramePassResources& resources, DebugDisplayMode debugMode);
     void addPresentationPass(RenderGraph& graph, const FramePassResources& resources,
                              RenderGraphTextureHandle presentationColor, DebugDisplayMode debugMode,
@@ -424,7 +497,8 @@ class ForwardRenderer {
     void renderSSGICompositePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                  uint16_t width, uint16_t height, gfx::TextureHandle ssgi,
                                  gfx::TextureHandle depthPyramid, gfx::TextureHandle gbuffer0,
-                                 gfx::TextureHandle gbuffer1, gfx::TextureHandle ssao);
+                                 gfx::TextureHandle gbuffer1, gfx::TextureHandle ssao,
+                                 gfx::TextureHandle bakedIndirect);
     void renderContactShadowPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::TextureHandle output,
                                  gfx::TextureHandle depth, gfx::TextureHandle lightData,
                                  gfx::TextureHandle lightList, bool gbufferTarget, bool halfResolution,
@@ -462,6 +536,8 @@ class ForwardRenderer {
     RenderGraph m_renderGraph{"Forward Renderer"};
     shader::ShaderLibrary m_shaderLibrary;
     MaterialSamplers m_materialSamplers;
+    lightmap::LightmapSet m_lightmapSet;
+    gfx::UniformHandle m_lightmapSampler;
     gfx::generated::GlobalUniformBinder m_globalBinder;
     gfx::generated::PassUniformBinder m_passBinder;
     gfx::generated::ClusterUniformBinder m_clusterBinder;
@@ -507,6 +583,8 @@ class ForwardRenderer {
     gfx::UniformHandle m_ssaoHistorySampler;
     gfx::UniformHandle m_ssrSampler;
     gfx::UniformHandle m_ssrHistorySampler;
+    gfx::UniformHandle m_bakedIndirectSampler;
+    gfx::TextureHandle m_bakedIndirectFallback;
     gfx::UniformHandle m_ssgiSampler;
     gfx::UniformHandle m_ssgiRawSampler;
     gfx::UniformHandle m_ssgiHistorySampler;
@@ -534,6 +612,11 @@ class ForwardRenderer {
     gfx::UniformHandle m_shadowPunctualSampler;
     gfx::UniformHandle m_shadowPointSampler;
     gfx::UniformHandle m_shadowPointPunctualSampler;
+    gfx::UniformHandle m_shadowMomentSlotUniform;
+    gfx::UniformHandle m_shadowMomentParamsUniform;
+    gfx::UniformHandle m_shadowMomentDepthSampler;
+    gfx::UniformHandle m_shadowMomentSampler;
+    gfx::TextureHandle m_shadowMomentSatFallback;
     gfx::UniformHandle m_contactShadowSampler;
     gfx::UniformHandle m_depthSourceSampler;
     gfx::UniformHandle m_normalSampler;
@@ -567,6 +650,7 @@ class ForwardRenderer {
     gfx::generated::ContactUniforms m_contactUniforms;
     DrawList m_opaqueDrawList;
     DrawList m_forwardOpaqueDrawList;
+    DrawList m_bakedGIDrawList;
     DrawList m_transparentDrawList;
     DrawList m_shadowDrawList;
     DrawList m_prepassDrawList;
@@ -599,6 +683,7 @@ class ForwardRenderer {
     VolumetricFogSettings m_volumetricFogSettings;
     DebugDisplayMode m_debugDisplayMode = DebugDisplayMode::None;
     int m_debugLightClusterSlice = -1;
+    bool m_debugLightmapMask = false;
     mutable bool m_formatWarningLogged = false;
     bool m_shadowsEnabled = true;
     bool m_lightClusterEnabled = true;
@@ -633,9 +718,24 @@ class ForwardRenderer {
     bool m_wireframe = false;
     bool m_jitterEnabled = false;
     bool m_depthPrepassActive = false;
+    bool m_bakedGIActive = false;
     bool m_deferredActive = false;
     bool m_advancedMaterialActive = false;
     bool m_advancedLightingActive = false;
+    bool m_litVariantsEnabled = false;
+    bool m_litVariantsActive = false;
+    bool m_litVariantTilesEnabled = false;
+    bool m_litVariantTileActive = false;
+    bool m_litVariantTileWarningLogged = false;
+    uint32_t m_litTileListBase = 0;
+    uint32_t m_litTileListCount = 0;
+    uint16_t m_litTileWidth = 0;
+    uint16_t m_litTileHeight = 0;
+    gfx::TextureHandle m_litTileFeatureFlagsTexture;
+    gfx::BufferHandle m_litIndirectArgsBuffer;
+    bool m_litVariantsWarningLogged = false;
+    uint32_t m_litLightFlags = 0;
+    uint32_t m_usedLitVariantMask = 0;
     bool m_volumetricFogActive = false;
     uint32_t m_volumetricFogSteps = 0;
     uint16_t m_volumetricFogWidth = 0;
@@ -707,6 +807,12 @@ class ForwardRenderer {
     uint32_t m_frameIndex = 0;
     bool m_hasLastRenderTime = false;
     bool m_valid = false;
+    bool m_vfxActive = false;
+    bool m_vfxInitialized = false;
+    float m_vfxDeltaSeconds = 0.0f;
+    std::unique_ptr<hbg::vfxbridge::HbgVfxBackend> m_vfxBackend;
+    std::unique_ptr<::vfx::Runtime> m_vfxRuntime;
+    std::vector<VfxInstanceRuntime> m_vfxInstanceRuntimes;
 };
 
 } // namespace hbg::render

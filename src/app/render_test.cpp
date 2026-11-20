@@ -39,7 +39,8 @@ void updateOrbitCamera(render::RenderScene& scene, uint32_t frame, uint16_t widt
 
 bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uint16_t width, uint16_t height,
                    uint32_t frames, const std::string& screenshotPath, render::DebugDisplayMode debugMode,
-                   int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit, bool shadowsEnabled,
+                   bool debugLightmapMask, int lightClusterSlice, bool lightClusterEnabled, bool cameraOrbit,
+                   bool shadowsEnabled,
                    bool clusterStatsReadback, const render::PipelineSettings& pipelineSettings,
                    const render::FrameSettings& frameSettings, const render::ShadowSettings& shadowSettings,
                    const render::SsaoSettings& ssaoSettings, const render::SsrSettings& ssrSettings,
@@ -77,6 +78,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
     renderer.setVolumetricFogSettings(volumetricFogSettings);
     renderer.setRenderScale(renderScale);
     renderer.setDebugDisplayMode(debugMode);
+    renderer.setDebugLightmapMask(debugLightmapMask);
     renderer.setDebugLightClusterSlice(lightClusterSlice);
     renderer.setLightClusterEnabled(lightClusterEnabled);
     renderer.setShadowsEnabled(shadowsEnabled);
@@ -119,6 +121,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
         const render::ForwardRenderer::FrameDiagnostics diagnostics = renderer.frameDiagnostics();
         HBG_LOGI("render performance: frames={} avg_frame_ms={:.3f} fps={:.1f} cpu_submit_ms={:.3f} "
                  "gpu_frame_ms={:.3f} draw={} compute={} textures={} triangles={} passes={} deferred={} "
+                 "vfx={} vfx_effects={} vfx_systems={} vfx_particles={} vfx_draws={} vfx_dispatches={} "
                  "gbuffer_mrt={} stencil={} postprocess={} post_passes={} postprocess_ms={:.3f} post_compute={} "
                  "post_history={} post_exposure={} post_uber={} post_bloom={} post_taa={} post_dof={} "
                  "post_motion_blur={} post_fxaa={} fog={} fog_steps={} fog_scale={:.3f} fog_lowres={}x{} "
@@ -139,7 +142,10 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  count, averageFrameMs, averageFrameMs > 0.0 ? 1000.0 / averageFrameMs : 0.0, cpuSubmitMs,
                  gpuFrameMs, stats->numDraw, stats->numCompute, stats->numTextures,
                  stats->numPrims[bgfx::Topology::TriList], diagnostics.passCount,
-                 diagnostics.deferred ? "true" : "false", diagnostics.gbufferTargets,
+                 diagnostics.deferred ? "true" : "false",
+                 diagnostics.vfxActive ? "true" : "false", diagnostics.vfxEffects, diagnostics.vfxSystems,
+                 diagnostics.vfxParticles, diagnostics.vfxDraws, diagnostics.vfxDispatches,
+                 diagnostics.gbufferTargets,
                  diagnostics.stencil ? "true" : "false", diagnostics.postProcessActive ? "true" : "false",
                  diagnostics.postProcessPasses, diagnostics.postProcessWallMs,
                  diagnostics.postProcessComputeSupported ? "true" : "false",

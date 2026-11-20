@@ -29,6 +29,7 @@ struct DrawItem {
     RenderQueueType queueType = RenderQueueType::Unknown;
     ShaderPassMask passMask = 0;
     bool transparent = false;
+    uint32_t lightmapAtlas = UINT32_MAX;
     DrawSortKey sortKey;
     uint64_t batchKey = 0;
 };
@@ -39,6 +40,7 @@ struct DrawBatch {
     uint64_t stateKey = 0;
     uint32_t meshIndex = UINT32_MAX;
     uint32_t materialIndex = 0;
+    uint32_t lightmapAtlas = UINT32_MAX;
 };
 
 struct DrawListDesc {
@@ -46,6 +48,7 @@ struct DrawListDesc {
     RenderQueueRange queueRange = kRenderQueueRangeAll;
     SortingCriteria sortingCriteria = kOpaqueSortingCriteria;
     bool frustumCull = true;
+    bool requireLightmap = false;
 };
 
 class DrawList {

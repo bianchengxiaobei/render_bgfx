@@ -46,7 +46,9 @@ static_assert(offsetof(PassUniforms, lightListParams) == 224);
 static_assert(offsetof(PassUniforms, lightListParams2) == 240);
 static_assert(offsetof(PassUniforms, lightScreenSize) == 256);
 static_assert(offsetof(PassUniforms, cookieAtlasParams) == 272);
-static_assert(sizeof(PassUniforms) == 288);
+static_assert(offsetof(PassUniforms, litVariantParams) == 288);
+static_assert(offsetof(PassUniforms, lightmapParams2) == 304);
+static_assert(sizeof(PassUniforms) == 320);
 static_assert(offsetof(MaterialUniforms, advanced0) == 48);
 static_assert(offsetof(MaterialUniforms, advanced1) == 64);
 static_assert(offsetof(MaterialUniforms, advanced2) == 80);
@@ -54,7 +56,9 @@ static_assert(sizeof(MaterialUniforms) == 96);
 static_assert(std::is_standard_layout_v<ObjectUniforms>);
 static_assert(offsetof(ObjectUniforms, prevModel) == 0);
 static_assert(offsetof(ObjectUniforms, lightLayerMask) == 64);
-static_assert(sizeof(ObjectUniforms) == 80);
+static_assert(offsetof(ObjectUniforms, lightmapST) == 80);
+static_assert(offsetof(ObjectUniforms, lightmapParams) == 96);
+static_assert(sizeof(ObjectUniforms) == 112);
 static_assert(std::is_standard_layout_v<EnvironmentUniforms>);
 static_assert(offsetof(EnvironmentUniforms, skyParams) == 0);
 static_assert(offsetof(EnvironmentUniforms, shAr) == 16);
@@ -97,7 +101,8 @@ static_assert(sizeof(ClusterUniforms) == 96);
 static_assert(std::is_standard_layout_v<DebugUniforms>);
 static_assert(offsetof(DebugUniforms, depthParams) == 0);
 static_assert(offsetof(DebugUniforms, clusterParams) == 16);
-static_assert(sizeof(DebugUniforms) == 32);
+static_assert(offsetof(DebugUniforms, lightmapParams) == 32);
+static_assert(sizeof(DebugUniforms) == 48);
 static_assert(std::is_standard_layout_v<SsaoUniforms>);
 static_assert(offsetof(SsaoUniforms, params) == 0);
 static_assert(offsetof(SsaoUniforms, params2) == 16);
@@ -164,7 +169,7 @@ TEST_CASE("generated global uniform descriptors match the IDL") {
 
 TEST_CASE("generated pass and material descriptors match the IDL") {
     const auto& pass = PassUniformBinder::kDescriptors;
-    REQUIRE(pass.size() == 12);
+    REQUIRE(pass.size() == 14);
     CHECK(pass[0].name == "u_pass_shadowMatrix");
     CHECK(pass[0].type == UniformType::Mat4);
     CHECK(pass[1].name == "u_pass_shadowViewProj");
@@ -184,6 +189,10 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(pass[10].name == "u_pass_lightScreenSize");
     CHECK(pass[11].name == "u_pass_cookieAtlasParams");
     CHECK(pass[11].type == UniformType::Vec4);
+    CHECK(pass[12].name == "u_pass_litVariantParams");
+    CHECK(pass[12].type == UniformType::Vec4);
+    CHECK(pass[13].name == "u_pass_lightmapParams2");
+    CHECK(pass[13].type == UniformType::Vec4);
 
     const auto& cluster = ClusterUniformBinder::kDescriptors;
     REQUIRE(cluster.size() == 6);
@@ -210,12 +219,16 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(material[5].name == "u_material_advanced2");
 
     const auto& object = ObjectUniformBinder::kDescriptors;
-    REQUIRE(object.size() == 2);
+    REQUIRE(object.size() == 4);
     CHECK(object[0].name == "u_object_prevModel");
     CHECK(object[0].type == UniformType::Mat4);
     CHECK(object[0].num == 1);
     CHECK(object[1].name == "u_object_lightLayerMask");
     CHECK(object[1].type == UniformType::Vec4);
+    CHECK(object[2].name == "u_object_lightmapST");
+    CHECK(object[2].type == UniformType::Vec4);
+    CHECK(object[3].name == "u_object_lightmapParams");
+    CHECK(object[3].type == UniformType::Vec4);
 
     const auto& environment = EnvironmentUniformBinder::kDescriptors;
     REQUIRE(environment.size() == 8);
@@ -271,11 +284,13 @@ TEST_CASE("generated pass and material descriptors match the IDL") {
     CHECK(postProcess[20].type == UniformType::Vec4);
 
     const auto& debug = DebugUniformBinder::kDescriptors;
-    REQUIRE(debug.size() == 2);
+    REQUIRE(debug.size() == 3);
     CHECK(debug[0].name == "u_debug_depthParams");
     CHECK(debug[0].type == UniformType::Vec4);
     CHECK(debug[1].name == "u_debug_clusterParams");
     CHECK(debug[1].type == UniformType::Vec4);
+    CHECK(debug[2].name == "u_debug_lightmapParams");
+    CHECK(debug[2].type == UniformType::Vec4);
 
     const auto& ssao = SsaoUniformBinder::kDescriptors;
     REQUIRE(ssao.size() == 3);
@@ -363,6 +378,7 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_pass_lightCounts;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_lightListParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_pass_lightListParams2;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_pass_lightmapParams2;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_cluster_lightListParams2;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_cluster_params;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_cluster_depthParams;") != std::string::npos);
@@ -371,6 +387,8 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_material_baseColorFactor;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_material_advanced0;") != std::string::npos);
     CHECK(text.find("uniform mat4 u_object_prevModel;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_object_lightmapST;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_object_lightmapParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_environment_skyParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_environment_shCr;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_prepass_depthPyramidParams;") != std::string::npos);
@@ -381,6 +399,7 @@ TEST_CASE("generated shader declarations are in sync with C++ descriptors") {
     CHECK(text.find("uniform vec4 u_postprocess_histogramParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_debug_depthParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_debug_clusterParams;") != std::string::npos);
+    CHECK(text.find("uniform vec4 u_debug_lightmapParams;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_ssao_params;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_ssao_params2;") != std::string::npos);
     CHECK(text.find("uniform vec4 u_ssr_params;") != std::string::npos);

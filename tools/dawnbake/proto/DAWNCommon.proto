@@ -1,0 +1,220 @@
+syntax = "proto3";
+package DAWNProto;
+
+option csharp_namespace = "DAWNProto";
+
+//UE导入c++ grpc/protobuf 时使用protobuf 3.8, 不支持optional关键词。可以使用oneof技巧或者wrapper包装。
+
+// Wrapper message for `string`.
+message StringValue {
+  // The string value.
+  string value = 1;
+}
+
+//通用回复结构
+message GeneralAck {
+	AckCode code = 1;		//成功返回0(OK)，其他返回码各RPC自行定义
+	string message = 2;		//各RPC自行定义，如错误信息等
+}
+
+//对应GeneralAck的code的含义
+enum AckCode {
+	OK = 0;
+	RPCFail = -1;		//区别于RPC服务端函数会填写的正值, RPC客户端代码用此负值来代表RPC调用失败的情形。
+	Fail = 1;
+	ReRegister = 2;		//AgentPingReq: Coordinator告知Agent需要重新注册
+	StateError = 3;		//BeginMissionReq : ClientAgent告知App状态不正确
+	Wait = 4;			//ClientAgentBeginJobReq: Agent告知ClientAgent等待运行环境就绪
+}
+
+//用户信息, 用来标识/认证/上报
+message UserInfo
+{
+	string project_id = 1;	//管控平台上的project, 一般对应一个项目组
+	string user_id = 2;		//管控平台分配的用户id
+	string user_token = 3;  //管控平台分配的用户认证用token
+}
+
+//烘焙服务提供者相关信息
+message CalculationSchemeInfo
+{
+	enum CalculationScheme
+	{
+		OnlyRemote = 0;		//仅远程机器提供服务
+		Mix = 1;			//混合远程与本地
+		OnlyLocal = 2;		//仅本地机器提供服务
+	}
+
+	CalculationScheme scheme = 1;		// 模式
+	string localAgentName = 2;			// 非OnlyRemote模式下，本地烘焙程序exe的代理注册名
+	string localExecutablePath = 3;		// 非OnlyRemote模式下，本地烘焙程序exe的绝对路径
+}
+
+//Job基本信息
+message JobBasicDesc
+{
+	string categoryID = 11;	//任务的类型名字, "DAWN","PHOC", ...
+	string jobID = 1;
+	string jobDir = 2;	//(客户端)工作目录
+	repeated string jobFiles = 3;	//数据文件列表，相对于jobDir的相对路径
+	repeated string exeFiles = 4;	//可执行文件列表,被用在定制版本功能
+	int32 exeVersionMain = 5;	//程序版本号(main.sub), 每个Agent只接收特定版本的客户端发起的工作
+	int32 exeVersionSub = 6;
+	string exeTag = 12;		//比exeVersionMain/sub次一级的概念, exeTag用来区分同一个Agent上不同目录下相同version不同tag的程序（比如特定项目组的特定feature）。
+	string parameters = 7;	//执行程序的命令行参数
+	int64 totalTaskCost = 8;	//总cost
+	string exeDir = 9;		//(服务端)(相对于job工作路径的相对路径)可执行文件启动目录(配置文件没有指定启动路径的情况下); 也是生成结果文件的起始目录
+	string fileCacheDir = 10;	//（客户端）文件cache目录
+	//扩充：支持PartitionTask
+	repeated PartitionDesc partitionList = 13;	////Partition列表
+	//扩充：支持定制的DawnBaker版本
+	string customizedBakerPath = 14;
+	//扩充：是否为本地调试任务（用于Dawn2.0的lightmassdebug）
+	bool isManualDebug = 15;		
+}
+
+//Job完整信息
+message JobFullDesc
+{
+	JobBasicDesc basicDesc = 1;
+	repeated TaskDesc taskDescList = 2;
+	bool isInteractiveJob = 3;	//是否是交互模式的Job。若是, taskDescList的数量可以为0
+	bool isCustomization = 4;	//是否启用定制的DawnBaker版本
+	bool isRequireProxy = 5;	//是否因网络问题需要使用代理服务器与Agent通信
+	string ProxyAddress = 6;	//代理服务器地址
+	repeated string InterAgentResultFiles = 7;	//这里列出的文件不必取回客户端本地，按需求调度到其他agent上。DAWN用于直接光cache.
+}
+
+//Partition信息
+message PartitionDesc
+{
+	string partitionID = 1;	
+	bytes sceneInfo = 2;	//描述(分块的)场景信息, 可由c++数据结构序列化后而得 
+	bytes jobInputs = 3;	//此分块有哪些烘焙任务,可由c++数据结构序列化后而得
+	repeated string dataFiles = 4;	//数据文件，如mesh,texture等
+}
+
+//Task描述
+message TaskDesc
+{
+	string taskID = 1;
+	string parameters = 2;
+	int32 cost = 3;
+	repeated string resultFilesMust = 4;	//必须有的结果文件
+	repeated string resultFilesOptional = 5;	//可以没有的结果文件
+	//扩充：支持PartitionTask
+	string partitionID = 6;
+	bytes jobInputsRange = 7;	//对应PartitionDesc里的JobInputs, 描述本Task要计算的这个JobInputs的哪个子集(如前一半，某一类型的任务，某一区域的任务)，可由c++数据结构序列化后而得
+	repeated SubTaskDesc subTasks = 8;
+	//扩充：支持OnFly输入文件
+	repeated string optionalOnFlyFiles = 9;	//可选的输入文件,可在运行前或运行中送达。DAWN用于直接光cache, 较低概率在同一Agent上计算输出，大概率在其他Agent上计算输出, 必须在JobFullDesc的InterAgentResultFiles中列出。
+}
+
+//子Task描述
+message SubTaskDesc
+{
+	string taskID = 1;
+	repeated string resultFilesMust = 2;	//必须有的结果文件
+}
+
+message BeginMissionReq
+{
+	string missionID = 1;		//客户端自行生成的ID字符串, 比如GUID
+	string categoryID = 2;		//DAWN, PHOC, ...
+	string customInfo = 3;		//用户自定义信息, 可用于在管控平台的页面中展示
+	UserInfo userInfo = 4;		//用户名字和认证信息, 可以在UE插件中配置
+	int32 gpuCount = 5;			// 当前mission指定的gpu数目，用来给云集群扩缩容使用
+	CalculationSchemeInfo calculationSchemeInfo = 6;		//烘焙服务提供者相关信息, 相关信息来自插件端
+  bool IsPreview = 7;
+}
+
+message EndMissionReq
+{
+	string missionID = 1;
+	repeated ReportMsg reportMsgs = 2;	//JobPing未及上报Coordinator的消息放在这里上报。
+	ReportMsg finalReportMsg = 3;		//属于EndMission自己的"最终总结消息"
+}
+
+message AbortMissionReq
+{
+
+}
+
+message TaskResult
+{
+	string taskID = 1;
+	StringValue errMsg = 2;	//出错时这里填出错信息。按是否有这一个field判断执行结果是否是“出错”。
+	repeated string resultFiles = 3;
+	string parentTaskID = 4;	//如果出结果的task是一个sub task, 则这里填它的父taskID.
+	repeated MissionStatisticMsg statisticMsg = 5;	// 统计时间数据信息（开始与结束）
+}
+
+//向管控平台(如行云)发送的进度、出错等信息
+message ReportMsg
+{
+	enum ReportMsgType
+	{
+		Progress = 0;	//进度信息
+		Error = 1;		//出错信息
+		Summary = 2;	//EndMission时发送的"总结消息"
+	}
+
+	ReportMsgType type = 1;
+	string msg = 2;		//必须是json字符串, 内容由管控平台规定或自定义
+}
+
+// [Plugin][ClientAgent][Agent][DawnExe]通用的统计时间数据信息
+message MissionStatisticMsg
+{
+	// 偶数是Start，奇数是Finish
+	enum EventType
+	{
+		// Plugin
+		MissionStart = 0;					// 整个烘焙任务的开始 BeginMission
+		MissionFinish = 1;					// 整个烘焙任务的完成 EndMission
+		ExportStart = 2;					// 插件端场景导出的开始
+		ExportFinish = 3;					// 插件端场景导出的完成
+		JobStart = 4;						// 当前烘焙Job的开始 RunJob/BeginJob
+		JobFinish = 5;						// 当前烘焙Job的完成
+		// ClientAgent
+		UploadGlobalStart = 6;				// Deamon上传全局文件的开始
+		UploadGlobalFinish = 7;				// Deamon上传全局文件的完成
+		UploadPartitionStart = 8;			// Deamon上传分块文件的开始
+		UploadPartitionFinish = 9;			// Deamon上传分块文件的结束
+		// Agent
+		TaskStart = 10;						// Agent某一个任务开始处理(给烘焙端发送命令)
+		TaskFinish = 11;					// Agent某一个任务处理完成(结果文件生成完毕)
+		// DawnExe
+		JobBakingStart = 12;				// 烘焙端某一个任务真正开始烘焙
+		JobBakingFinish = 13;				// 烘焙端某一个任务真正烘焙完成
+	}
+
+	int64 UTCTime = 1;						// 事件发生的标准时间的时间戳
+	EventType Type = 2;						// 事件类型
+	int64 IdentifierNumber = 3;				// 自定义特殊标识符序号
+	int64 IdentifierNumber2 = 4;			// 自定义特殊标识符序号2
+	int32 AgentID = 5;						// 此事件的触发者序号
+	double StartTime = 6;					// 此事件的start真正的精确时间（目前仅供JobBakingFinish使用）
+	double CostTime = 7;					// 此事件的start和finish之间真正消耗的精确时间（目前仅供JobBakingFinish使用）
+}
+
+message MissionStatisticMsgArray
+{
+	repeated MissionStatisticMsg MsgArray = 1;	// 具体内容
+	int64 LocalUTCTime = 2;						// 发送此消息时的本地时间戳
+}
+
+message MissionStatisticMsgReq
+{
+
+}
+
+message PerfStatsMsgArray
+{
+	repeated string perfStatsMsgs = 1;
+}
+
+message PerfStatsMsgReq
+{
+
+}

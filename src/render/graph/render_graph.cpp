@@ -863,6 +863,7 @@ bool RenderGraph::execute(gfx::Encoder& encoder, gfx::ResourceManager& resources
 
 
         encoder.setViewName(pass.viewId, pass.name.c_str());
+        encoder.setViewClear(pass.viewId, BGFX_CLEAR_NONE, 0, 1.0f, 0);
         const uint16_t viewWidth = pass.viewWidth != 0 ? pass.viewWidth : m_width;
         const uint16_t viewHeight = pass.viewHeight != 0 ? pass.viewHeight : m_height;
         RenderGraphContext context(encoder, resources, pass.viewId, viewWidth, viewHeight, frameBuffer, pass.backbuffer,

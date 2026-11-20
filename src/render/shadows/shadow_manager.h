@@ -19,6 +19,7 @@ class Encoder;
 namespace hbg::render {
 
 constexpr uint32_t kDirectionalCascadeCount = kMaxDirectionalCascades;
+// texel 9 stores PCSS parameters, or IMS (kernelSize, lightX, lightY, maxDepthBias).
 constexpr uint32_t kShadowContextTexels = 10;
 constexpr uint32_t kPointShadowResolution = 256;
 constexpr uint32_t kSpotShadowResolution = 512;
@@ -63,6 +64,9 @@ struct ShadowRequest {
     float slopeBias = 0.0f;
     float fadeScale = 0.0f;
     float fadeBias = 0.0f;
+    float lightAngle = 0.0f;
+    float maxDepthBias = 0.001f;
+    uint32_t imsKernelSize = 5;
     uint32_t blockerSamples = 16;
     uint32_t filterSamples = 24;
     float minFilterSize = 0.01f;
@@ -103,6 +107,7 @@ class ShadowManager {
     uint32_t shadowedLightCount() const { return m_shadowedLightCount; }
     bool directionalCacheActive() const { return m_directionalCacheEligible; }
     bool directionalCacheDirty() const { return m_directionalCacheDirty; }
+    bool directionalCacheMixed() const { return m_directionalCacheMixed; }
     bool areaCacheActive() const { return m_areaCacheEligible; }
     bool areaCacheMixed() const { return m_areaCacheMixed; }
     bool areaCacheDirty() const { return m_areaCacheDirty; }
@@ -110,6 +115,9 @@ class ShadowManager {
     uint32_t cachedDirectionalRequestCount() const { return m_cachedDirectionalRequestCount; }
     uint32_t cachedAreaRequestCount() const { return m_cachedAreaRequestCount; }
 
+    bool imsActive() const { return m_imsActive; }
+    gfx::TextureHandle directionalMomentTexture() const { return m_directionalMomentTexture; }
+    gfx::TextureHandle directionalMomentSatTexture() const { return m_directionalMomentSatTexture; }
     gfx::TextureHandle directionalTexture() const { return m_directionalTexture; }
     gfx::TextureHandle activeDirectionalTexture() const {
         return m_directionalCacheEligible && m_cachedDirectionalTexture.valid()
@@ -147,7 +155,9 @@ class ShadowManager {
             m_cacheValid = false;
             m_cacheHash = 0;
             m_directionalCacheValid = false;
-            m_directionalCacheHash = 0;
+            m_directionalCacheMixed = false;
+            m_directionalRequestCacheValid.fill(false);
+            m_directionalRequestHashes.fill(0);
             m_areaCacheValid = false;
             m_areaCacheHash = 0;
         }
@@ -180,10 +190,13 @@ class ShadowManager {
     void resetFrameRequests();
     uint64_t buildCacheHash(const RenderScene& scene, const LightBuilder& lightBuilder,
                             ShadowAtlasType atlas, bool staticAreaOnly = false) const;
+    uint64_t buildDirectionalRequestHash(const RenderScene& scene, const ShadowRequest& request) const;
 
     gfx::ResourceManager* m_resources = nullptr;
     gfx::TextureHandle m_directionalTexture;
     gfx::TextureHandle m_cachedDirectionalTexture;
+    gfx::TextureHandle m_directionalMomentTexture;
+    gfx::TextureHandle m_directionalMomentSatTexture;
     gfx::TextureHandle m_punctualTexture;
     gfx::TextureHandle m_cachedPunctualTexture;
     gfx::TextureHandle m_areaTexture;
@@ -194,7 +207,8 @@ class ShadowManager {
     GpuShadowContextData m_contextData;
     ShadowSettings m_settings;
     Vec4 m_cascadeSplits{};
-    uint64_t m_directionalCacheHash = 0;
+    std::array<uint64_t, kMaxShadowRequests> m_directionalRequestHashes{};
+    std::array<bool, kMaxShadowRequests> m_directionalRequestCacheValid{};
     uint64_t m_cacheHash = 0;
     uint64_t m_areaCacheHash = 0;
     uint32_t m_cachedDirectionalRequestCount = 0;
@@ -203,6 +217,7 @@ class ShadowManager {
     bool m_directionalCacheEligible = false;
     bool m_directionalCacheValid = false;
     bool m_directionalCacheDirty = false;
+    bool m_directionalCacheMixed = false;
     bool m_cacheEligible = false;
     bool m_cacheValid = false;
     bool m_areaCacheEligible = false;
@@ -213,6 +228,8 @@ class ShadowManager {
     bool m_areaUsesDynamicAtlas = false;
     bool m_cacheSuppressed = false;
     bool m_sortedPackingWarningLogged = false;
+    bool m_imsActive = false;
+    bool m_imsWarningLogged = false;
     uint16_t m_directionalAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);
     uint16_t m_punctualAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);
     uint16_t m_areaAtlasSize = static_cast<uint16_t>(kDefaultAreaShadowAtlasSize);

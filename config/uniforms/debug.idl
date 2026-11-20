@@ -1,4 +1,5 @@
 block Debug {
     vec4 depthParams;        # near, far, unused, unused
     vec4 clusterParams;      # slice (-2 = FPTL legacy, -1 = per-pixel), gbuffer debug mode, unused, unused
+    vec4 lightmapParams;     # x = baked radiance scale, y = binary lightmap mask view, zw unused
 }

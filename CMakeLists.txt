@@ -14,6 +14,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(HBG_BUILD_TESTS "Build unit tests" ON)
 option(HBG_BUILD_SHADER_TOOLS "Build bgfx shaderc tools" ON)
+option(HBG_BUILD_DAWNBAKE "Build the Dawn GI protocol tool" ON)
+option(HBG_BUILD_DAWN_GRPC "Build the optional Dawn Agent gRPC client" OFF)
+option(HBG_BUILD_VFX "Build the standalone VFX runtime library" ON)
 option(HBG_IDL_CODEGEN "Regenerate uniform declarations from config/uniforms/*.idl" ON)
 set(HBG_SHADERC "" CACHE FILEPATH "Path to an existing bgfx shaderc executable (optional)")
 
@@ -176,11 +179,14 @@ add_library(hbg_app STATIC
     src/render/lighting/light_builder.cpp
     src/render/lighting/light_list_builder.cpp
     src/render/lighting/ltc_lut.cpp
+    src/render/lightmap/lightmap.cpp
     src/render/material/material_system.cpp
     src/render/material/render_queue.cpp
     src/render/material/shader_pass.cpp
     src/render/passes/forward_renderer.cpp
     src/render/passes/prepass_utils.cpp
+    src/render/vfx/vfx_reference.cpp
+    src/render/vfx/vfx_spike.cpp
     src/render/pipeline/frame_settings.cpp
     src/render/pipeline/pipeline_settings.cpp
     src/render/postprocess/color_grading_lut.cpp
@@ -200,7 +206,7 @@ add_library(hbg_app STATIC
 )
 target_link_libraries(hbg_app
     PUBLIC hbg_asset hbg_shader hbg_imgui
-    PRIVATE glfw ${HBG_NLOHMANN_JSON_TARGET}
+    PRIVATE glfw bimg_decode ${HBG_NLOHMANN_JSON_TARGET}
 )
 target_compile_definitions(hbg_app PRIVATE
     HBG_SHADER_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
@@ -257,7 +263,21 @@ set_target_properties(hbg PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if(HBG_BUILD_DAWNBAKE)
+    add_subdirectory(tools/dawnbake)
+endif()
+
 if(HBG_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(HBG_BUILD_VFX)
+    add_subdirectory(vfx)
+    if(TARGET hbg_vfx_adapter)
+        target_link_libraries(hbg_app PUBLIC hbg_vfx_adapter)
+    endif()
+    if(TARGET hbg_vfx_runtime)
+        target_link_libraries(hbg_app PUBLIC hbg_vfx_runtime)
+    endif()
 endif()

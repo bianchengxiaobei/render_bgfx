@@ -12,6 +12,14 @@ struct LitResult
     vec3 specular;
 };
 
+#ifndef HBG_VARIANT_MATERIAL_FLAGS
+#ifdef HBG_ADVANCED_MATERIAL
+#define HBG_VARIANT_MATERIAL_FLAGS 0xffffu
+#else
+#define HBG_VARIANT_MATERIAL_FLAGS 1u
+#endif
+#endif
+
 #ifdef HBG_ADVANCED_MATERIAL
 #include "lighting/direct_lighting_advanced.sc"
 #endif
@@ -75,28 +83,38 @@ vec3 hbgEvaluateAmbient(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition
 {
     vec3 N = normalize(surfaceData.normalWS);
     vec3 V = normalize(viewWS);
-#ifdef HBG_ADVANCED_MATERIAL
+#if (HBG_VARIANT_MATERIAL_FLAGS & 32)
     vec3 f0 = hbgAdvancedFresnel0(surfaceData, max(dot(N, V), 1.0e-4));
 #else
     vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
 #endif
     float NdotV = max(dot(N, V), 1.0e-4);
 
-    vec3 fresnel = hbgF_Schlick(f0, NdotV);
-    vec3 skyColor = mix(vec3(0.25, 0.30, 0.40), vec3(0.75, 0.82, 1.0),
-                        hbgSaturate(N.y * 0.5 + 0.5));
-    vec3 result = (surfaceData.baseColor * (1.0 - surfaceData.metallic) * surfaceData.ambientOcclusion +
-                   fresnel * skyColor * (1.0 - surfaceData.roughness * 0.5) *
-                       surfaceData.ambientOcclusion) *
-                  ambientColor * ambientIntensity;
+#ifdef HBG_FORWARD_LIGHTMAP_GI
+    const bool bakedLightmap = u_pass_lightmapParams2.w > 0.5 && u_object_lightmapParams.x > 0.5;
+#else
+    const bool bakedLightmap = false;
+#endif
+
+    vec3 result = vec3(0.0, 0.0, 0.0);
+    if (!bakedLightmap)
+    {
+        const vec3 fresnel = hbgF_Schlick(f0, NdotV);
+        const vec3 skyColor = mix(vec3(0.25, 0.30, 0.40), vec3(0.75, 0.82, 1.0),
+                                  hbgSaturate(N.y * 0.5 + 0.5));
+        result = (surfaceData.baseColor * (1.0 - surfaceData.metallic) * surfaceData.ambientOcclusion +
+                  fresnel * skyColor * (1.0 - surfaceData.roughness * 0.5) *
+                      surfaceData.ambientOcclusion) *
+                 ambientColor * ambientIntensity;
+    }
 
     const bool skyIblEnabled = u_environment_skyParams.z > 0.5;
-    if (skyIblEnabled)
+    if (skyIblEnabled && !bakedLightmap)
     {
         const float intensity = u_environment_skyParams.x;
         result = surfaceData.baseColor * (1.0 - surfaceData.metallic) * surfaceData.ambientOcclusion *
                  hbgSampleSH9(N) * intensity;
-#ifdef HBG_ADVANCED_MATERIAL
+#if (HBG_VARIANT_MATERIAL_FLAGS & 4)
         result += surfaceData.baseColor * hbgSaturate(surfaceData.subsurfaceMask) *
                   hbgSampleSH9(N) * intensity * 0.25;
 #endif
@@ -110,7 +128,7 @@ vec3 hbgEvaluateAmbient(SurfaceData surfaceData, vec3 viewWS, vec3 worldPosition
         float probeWeight = 0.0;
         const vec3 environmentReflection =
             hbgSampleReflection(worldPosition, reflection, perceptualRoughness, probeWeight);
-#ifdef HBG_ADVANCED_MATERIAL
+#if (HBG_VARIANT_MATERIAL_FLAGS & 64)
         const float coatMask = hbgSaturate(surfaceData.clearCoatMask);
         result += environmentReflection * (f0 * ab.x + ab.y) * surfaceData.ambientOcclusion *
                   (1.0 - coatMask * 0.5);

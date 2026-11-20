@@ -28,6 +28,7 @@ enum class TextureFormat : uint8_t {
     BC3,
     BC5,
     BC7,
+    RGBA32U,
     Count,
 };
 

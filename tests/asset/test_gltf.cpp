@@ -573,6 +573,79 @@ TEST_CASE("scene sidecar loads local fog volumes and density masks") {
     CHECK(scene.localFogVolumes[1].maskImage == -1);
 }
 
+TEST_CASE("scene sidecar binds lightmap atlas rect and ST") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_lightmap.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_lightmap.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_lightmap.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    std::string json = makeGltf(kPngDataUri, true);
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(), "\"uri\":\"triangle_lightmap.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lightmap": {
+            "version": 1,
+            "texelPerUnit": 6.0,
+            "atlases": [{"file":"lm0","size":64,"layers":3,"format":"rgba16f"}],
+            "objects": {
+                "MeshNode": {"atlas":0,"rect":[2,2,32,32],"contributeGI":true}
+            }
+        }
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.lightmapAtlases.size() == 1);
+    CHECK(scene.lightmapAtlases[0].file == "lm0");
+    CHECK(scene.lightmapAtlases[0].size == 64);
+    CHECK(scene.lightmapBaseDirectory == directory);
+    REQUIRE(scene.objects.size() == 1);
+    const render::RenderObject& object = scene.objects[0];
+    CHECK(object.hasLightmap());
+    CHECK(object.lightmapAtlas == 0u);
+    CHECK(object.lightmapSize == Vec2(32.0f, 32.0f));
+    CHECK(object.lightmapST.x == doctest::Approx(0.5f));
+    CHECK(object.lightmapST.y == doctest::Approx(0.5f));
+    CHECK(object.lightmapST.z == doctest::Approx(0.03125f));
+    CHECK(object.lightmapST.w == doctest::Approx(0.03125f));
+}
+
+TEST_CASE("scene sidecar rejects an out-of-bounds lightmap rect") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_lightmap_bad.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_lightmap_bad.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_lightmap_bad.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    std::string json = makeGltf(kPngDataUri, true);
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(), "\"uri\":\"triangle_lightmap_bad.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "lightmap": {
+            "version": 1,
+            "texelPerUnit": 6.0,
+            "atlases": [{"file":"lm0","size":64,"layers":3,"format":"rgba16f"}],
+            "objects": {"MeshNode":{"atlas":0,"rect":[63,0,4,4]}}
+        }
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    CHECK_FALSE(result.ok());
+    CHECK(result.error.find("outside its atlas") != std::string::npos);
+}
+
 TEST_CASE("glTF loader handles primitives without uv or normals") {
     const std::filesystem::path directory = makeFixtureDirectory();
     const std::filesystem::path bufferPath = directory / "triangle_no_uv.bin";
@@ -594,4 +667,61 @@ TEST_CASE("glTF loader handles primitives without uv or normals") {
     CHECK_FALSE(scene.meshes[0].hasUv0);
     CHECK_FALSE(scene.meshes[0].hasTangents);
     CHECK(scene.meshes[0].hasNormals);
+}
+
+TEST_CASE("scene sidecar loads VFX instances and properties") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_vfx.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_vfx.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_vfx.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    std::string json = makeGltf(kPngDataUri, true);
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(), "\"uri\":\"triangle_vfx.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "vfx": [{
+            "name": "Sparks",
+            "asset": "effects/spark.vfxb",
+            "position": [1.0, 2.0, 3.0],
+            "rotation": [0.0, 90.0, 0.0],
+            "scale": [2.0, 2.0, 2.0],
+            "play": false,
+            "playRate": 0.5,
+            "seed": 42,
+            "properties": [
+                {"name": "Tint", "type": "color", "value": [1.0, 0.0, 0.0, 1.0]},
+                {"name": "Size", "type": "float", "value": 0.3},
+                {"name": "Direction", "type": "vector3", "value": [0.0, 1.0, 0.0]}
+            ]
+        }]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.vfxInstances.size() == 1u);
+    const render::VfxInstance& instance = scene.vfxInstances.front();
+    CHECK(instance.name == "Sparks");
+    CHECK(instance.asset == directory / "effects" / "spark.vfxb");
+    CHECK(instance.position.x == doctest::Approx(1.0f));
+    CHECK(instance.position.y == doctest::Approx(2.0f));
+    CHECK(instance.position.z == doctest::Approx(3.0f));
+    CHECK(instance.rotation.y == doctest::Approx(90.0f));
+    CHECK(instance.scale.x == doctest::Approx(2.0f));
+    CHECK_FALSE(instance.playOnAwake);
+    CHECK(instance.playRate == doctest::Approx(0.5f));
+    CHECK(instance.randomSeed == 42u);
+    REQUIRE(instance.properties.size() == 3u);
+    CHECK(instance.properties[0].name == "Tint");
+    CHECK(instance.properties[0].kind == render::VfxPropertyKind::Color);
+    CHECK(instance.properties[0].values[0] == doctest::Approx(1.0f));
+    CHECK(instance.properties[1].kind == render::VfxPropertyKind::Float);
+    CHECK(instance.properties[1].values[0] == doctest::Approx(0.3f));
+    CHECK(instance.properties[2].kind == render::VfxPropertyKind::Vector3);
 }

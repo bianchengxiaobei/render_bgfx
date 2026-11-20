@@ -1,5 +1,5 @@
-$input a_position, a_normal, a_tangent, a_texcoord0, i_data0, i_data1, i_data2, i_data3
-$output v_texcoord0, v_worldPos, v_normal, v_tangent, v_bitangent
+$input a_position, a_normal, a_tangent, a_texcoord0, a_texcoord1, i_data0, i_data1, i_data2, i_data3, i_data4
+$output v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
 
 #include "common/common.sc"
 
@@ -21,4 +21,5 @@ void main()
     v_tangent = worldTangent;
     v_bitangent = worldBitangent;
     v_texcoord0 = a_texcoord0;
+    v_texcoord1 = a_texcoord1 * i_data4.xy + i_data4.zw;
 }

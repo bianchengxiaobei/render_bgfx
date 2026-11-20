@@ -1,5 +1,5 @@
-$input a_position, a_normal, a_tangent, a_texcoord0
-$output v_texcoord0, v_worldPos, v_normal, v_tangent, v_bitangent
+$input a_position, a_normal, a_tangent, a_texcoord0, a_texcoord1
+$output v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
 
 #include "common/common.sc"
 
@@ -20,4 +20,5 @@ void main()
     v_tangent = worldTangent;
     v_bitangent = worldBitangent;
     v_texcoord0 = a_texcoord0;
+    v_texcoord1 = a_texcoord1 * u_object_lightmapST.xy + u_object_lightmapST.zw;
 }

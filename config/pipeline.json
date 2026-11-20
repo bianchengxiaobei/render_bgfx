@@ -8,6 +8,8 @@
   "supportGpuLightList": true,
   "supportGpuLightListBuffers": true,
   "supportGpuLightListIndirect": false,
+  "supportLitVariants": false,
+  "supportLitVariantTiles": false,
   "lightListCapacity": 64,
   "supportCookieAtlas": true,
   "cookieAtlasSize": 1024,

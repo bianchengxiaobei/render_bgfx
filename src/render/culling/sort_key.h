@@ -56,6 +56,7 @@ struct DrawSortKey {
     float distance = 0.0f;
     uint32_t quantizedDistance = 0;
     uint64_t stateKey = 0;
+    uint32_t lightmapAtlas = UINT32_MAX;
     uint32_t sequence = 0;
 };
 

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "AttributesDefault",
+  "attributes": [
+    {"name": "user0", "type": "float4", "default": [1.0, 2.0, 3.0, 4.0]}
+  ],
+  "systems": [
+    {
+      "name": "Main",
+      "capacity": 1024,
+      "outputs": [
+        {"type": "quad", "lit": false}
+      ]
+    }
+  ]
+}

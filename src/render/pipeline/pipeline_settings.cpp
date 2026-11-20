@@ -284,6 +284,10 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportGpuLightListIndirect, error);
         } else if (key == "supportLightListFeatureFlags") {
             ok = readBool(document, key.c_str(), settings.supportLightListFeatureFlags, error);
+        } else if (key == "supportLitVariants") {
+            ok = readBool(document, key.c_str(), settings.supportLitVariants, error);
+        } else if (key == "supportLitVariantTiles") {
+            ok = readBool(document, key.c_str(), settings.supportLitVariantTiles, error);
         } else if (key == "supportCookieAtlas") {
             ok = readBool(document, key.c_str(), settings.supportCookieAtlas, error);
         } else if (key == "cookieAtlasSize") {
@@ -358,6 +362,8 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportDataDrivenLensFlare, error);
         } else if (key == "supportCustomPass") {
             ok = readBool(document, key.c_str(), settings.supportCustomPass, error);
+        } else if (key == "supportVFX") {
+            ok = readBool(document, key.c_str(), settings.supportVFX, error);
         } else if (key == "supportVariableRateShading") {
             ok = readBool(document, key.c_str(), settings.supportVariableRateShading, error);
         } else if (key == "supportVirtualTexturing") {
@@ -414,6 +420,8 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportGpuLightListBuffers"] = settings.supportGpuLightListBuffers;
     document["supportGpuLightListIndirect"] = settings.supportGpuLightListIndirect;
     document["supportLightListFeatureFlags"] = settings.supportLightListFeatureFlags;
+    document["supportLitVariants"] = settings.supportLitVariants;
+    document["supportLitVariantTiles"] = settings.supportLitVariantTiles;
     document["supportCookieAtlas"] = settings.supportCookieAtlas;
     document["cookieAtlasSize"] = settings.cookieAtlasSize;
     document["lightListCapacity"] = settings.lightListCapacity;
@@ -451,6 +459,7 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportScreenSpaceLensFlare"] = settings.supportScreenSpaceLensFlare;
     document["supportDataDrivenLensFlare"] = settings.supportDataDrivenLensFlare;
     document["supportCustomPass"] = settings.supportCustomPass;
+    document["supportVFX"] = settings.supportVFX;
     document["supportVariableRateShading"] = settings.supportVariableRateShading;
     document["supportVirtualTexturing"] = settings.supportVirtualTexturing;
     document["supportProbeVolume"] = settings.supportProbeVolume;

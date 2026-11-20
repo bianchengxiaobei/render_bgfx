@@ -82,6 +82,21 @@
           "build/dxbc/forward_buffer.fs.15.bin"
         ]
       },
+      "forwardAdvanced": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/forward_advanced_nomap.fs.bin",
+          "build/dxbc/forward_advanced_nomap_ds.fs.bin",
+          "build/dxbc/forward_advanced.fs.bin",
+          "build/dxbc/forward_advanced_ds.fs.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/forward_advanced_nomap_buffer.fs.bin",
+          "build/dxbc/forward_advanced_nomap_ds_buffer.fs.bin",
+          "build/dxbc/forward_advanced_buffer.fs.bin",
+          "build/dxbc/forward_advanced_ds_buffer.fs.bin"
+        ]
+      },
       "tonemap": {
         "vertex": "build/dxbc/tonemap.vs.bin",
         "fragment": "build/dxbc/tonemap.fs.bin"
@@ -466,6 +481,10 @@
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/debug_color.fs.bin"
       },
+      "debugLightmap": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_lightmap.fs.bin"
+      },
       "debugSsao": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/debug_ssao.fs.bin"
@@ -582,6 +601,151 @@
       "ui": {
         "vertex": "build/dxbc/imgui.vs.bin",
         "fragment": "build/dxbc/imgui.fs.bin"
+      },
+      "deferredLightingVariant": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragments": [
+          "build/dxbc/deferred_lighting_variant.fs.0.bin",
+          "build/dxbc/deferred_lighting_variant.fs.1.bin",
+          "build/dxbc/deferred_lighting_variant.fs.2.bin",
+          "build/dxbc/deferred_lighting_variant.fs.3.bin",
+          "build/dxbc/deferred_lighting_variant.fs.4.bin",
+          "build/dxbc/deferred_lighting_variant.fs.5.bin",
+          "build/dxbc/deferred_lighting_variant.fs.6.bin",
+          "build/dxbc/deferred_lighting_variant.fs.7.bin",
+          "build/dxbc/deferred_lighting_variant.fs.8.bin",
+          "build/dxbc/deferred_lighting_variant.fs.9.bin",
+          "build/dxbc/deferred_lighting_variant.fs.10.bin",
+          "build/dxbc/deferred_lighting_variant.fs.11.bin",
+          "build/dxbc/deferred_lighting_variant.fs.12.bin",
+          "build/dxbc/deferred_lighting_variant.fs.13.bin",
+          "build/dxbc/deferred_lighting_variant.fs.14.bin",
+          "build/dxbc/deferred_lighting_variant.fs.15.bin",
+          "build/dxbc/deferred_lighting_variant.fs.16.bin",
+          "build/dxbc/deferred_lighting_variant.fs.17.bin",
+          "build/dxbc/deferred_lighting_variant.fs.18.bin",
+          "build/dxbc/deferred_lighting_variant.fs.19.bin",
+          "build/dxbc/deferred_lighting_variant.fs.20.bin",
+          "build/dxbc/deferred_lighting_variant.fs.21.bin",
+          "build/dxbc/deferred_lighting_variant.fs.22.bin",
+          "build/dxbc/deferred_lighting_variant.fs.23.bin",
+          "build/dxbc/deferred_lighting_variant.fs.24.bin",
+          "build/dxbc/deferred_lighting_variant.fs.25.bin",
+          "build/dxbc/deferred_lighting_variant.fs.26.bin",
+          "build/dxbc/deferred_lighting_variant.fs.27.bin",
+          "build/dxbc/deferred_lighting_variant.fs.28.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/deferred_lighting_variant_buffer.fs.0.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.1.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.2.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.3.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.4.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.5.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.6.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.7.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.8.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.9.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.10.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.11.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.12.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.13.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.14.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.15.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.16.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.17.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.18.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.19.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.20.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.21.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.22.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.23.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.24.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.25.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.26.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.27.bin",
+          "build/dxbc/deferred_lighting_variant_buffer.fs.28.bin"
+        ]
+      },
+      "litMaterialFlags": {
+        "compute": "build/dxbc/lit_material_flags.cs.bin"
+      },
+      "litVariantIndirectClear": {
+        "compute": "build/dxbc/lit_variant_indirect_clear.cs.bin"
+      },
+      "litVariantIndirect": {
+        "compute": "build/dxbc/lit_variant_indirect.cs.bin"
+      },
+      "deferredLightingVariantCompute": {
+        "bufferComputes": [
+          "build/dxbc/deferred_lighting_variant_compute.cs.0.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.1.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.2.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.3.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.4.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.5.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.6.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.7.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.8.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.9.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.10.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.11.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.12.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.13.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.14.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.15.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.16.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.17.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.18.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.19.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.20.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.21.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.22.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.23.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.24.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.25.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.26.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.27.bin",
+          "build/dxbc/deferred_lighting_variant_compute.cs.28.bin"
+        ]
+      },
+      "shadowMoments": {
+        "compute": "build/dxbc/shadow_moments.cs.bin"
+      },
+      "shadowSatHorizontal": {
+        "compute": "build/dxbc/shadow_sat_horizontal.cs.bin"
+      },
+      "shadowSatVertical": {
+        "compute": "build/dxbc/shadow_sat_vertical.cs.bin"
+      },
+      "bakedGI": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/baked_gi.fs.0.bin",
+          "build/dxbc/baked_gi.fs.1.bin",
+          "build/dxbc/baked_gi.fs.2.bin",
+          "build/dxbc/baked_gi.fs.3.bin",
+          "build/dxbc/baked_gi.fs.4.bin",
+          "build/dxbc/baked_gi.fs.5.bin",
+          "build/dxbc/baked_gi.fs.6.bin",
+          "build/dxbc/baked_gi.fs.7.bin",
+          "build/dxbc/baked_gi.fs.8.bin",
+          "build/dxbc/baked_gi.fs.9.bin",
+          "build/dxbc/baked_gi.fs.10.bin",
+          "build/dxbc/baked_gi.fs.11.bin",
+          "build/dxbc/baked_gi.fs.12.bin",
+          "build/dxbc/baked_gi.fs.13.bin",
+          "build/dxbc/baked_gi.fs.14.bin",
+          "build/dxbc/baked_gi.fs.15.bin"
+        ]
+      },
+      "bakedGICompensate": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/baked_gi_compensate.fs.bin"
+      },
+      "bakedGIForwardComposite": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/baked_gi_forward_composite.fs.bin"
       }
     },
     "spirv": {
@@ -661,6 +825,21 @@
           "build/spirv/forward_buffer.fs.13.bin",
           "build/spirv/forward_buffer.fs.14.bin",
           "build/spirv/forward_buffer.fs.15.bin"
+        ]
+      },
+      "forwardAdvanced": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/forward_advanced_nomap.fs.bin",
+          "build/spirv/forward_advanced_nomap_ds.fs.bin",
+          "build/spirv/forward_advanced.fs.bin",
+          "build/spirv/forward_advanced_ds.fs.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/forward_advanced_nomap_buffer.fs.bin",
+          "build/spirv/forward_advanced_nomap_ds_buffer.fs.bin",
+          "build/spirv/forward_advanced_buffer.fs.bin",
+          "build/spirv/forward_advanced_ds_buffer.fs.bin"
         ]
       },
       "tonemap": {
@@ -1047,6 +1226,10 @@
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/debug_color.fs.bin"
       },
+      "debugLightmap": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_lightmap.fs.bin"
+      },
       "debugSsao": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/debug_ssao.fs.bin"
@@ -1163,6 +1346,151 @@
       "ui": {
         "vertex": "build/spirv/imgui.vs.bin",
         "fragment": "build/spirv/imgui.fs.bin"
+      },
+      "deferredLightingVariant": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragments": [
+          "build/spirv/deferred_lighting_variant.fs.0.bin",
+          "build/spirv/deferred_lighting_variant.fs.1.bin",
+          "build/spirv/deferred_lighting_variant.fs.2.bin",
+          "build/spirv/deferred_lighting_variant.fs.3.bin",
+          "build/spirv/deferred_lighting_variant.fs.4.bin",
+          "build/spirv/deferred_lighting_variant.fs.5.bin",
+          "build/spirv/deferred_lighting_variant.fs.6.bin",
+          "build/spirv/deferred_lighting_variant.fs.7.bin",
+          "build/spirv/deferred_lighting_variant.fs.8.bin",
+          "build/spirv/deferred_lighting_variant.fs.9.bin",
+          "build/spirv/deferred_lighting_variant.fs.10.bin",
+          "build/spirv/deferred_lighting_variant.fs.11.bin",
+          "build/spirv/deferred_lighting_variant.fs.12.bin",
+          "build/spirv/deferred_lighting_variant.fs.13.bin",
+          "build/spirv/deferred_lighting_variant.fs.14.bin",
+          "build/spirv/deferred_lighting_variant.fs.15.bin",
+          "build/spirv/deferred_lighting_variant.fs.16.bin",
+          "build/spirv/deferred_lighting_variant.fs.17.bin",
+          "build/spirv/deferred_lighting_variant.fs.18.bin",
+          "build/spirv/deferred_lighting_variant.fs.19.bin",
+          "build/spirv/deferred_lighting_variant.fs.20.bin",
+          "build/spirv/deferred_lighting_variant.fs.21.bin",
+          "build/spirv/deferred_lighting_variant.fs.22.bin",
+          "build/spirv/deferred_lighting_variant.fs.23.bin",
+          "build/spirv/deferred_lighting_variant.fs.24.bin",
+          "build/spirv/deferred_lighting_variant.fs.25.bin",
+          "build/spirv/deferred_lighting_variant.fs.26.bin",
+          "build/spirv/deferred_lighting_variant.fs.27.bin",
+          "build/spirv/deferred_lighting_variant.fs.28.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/deferred_lighting_variant_buffer.fs.0.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.1.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.2.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.3.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.4.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.5.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.6.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.7.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.8.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.9.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.10.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.11.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.12.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.13.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.14.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.15.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.16.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.17.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.18.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.19.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.20.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.21.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.22.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.23.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.24.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.25.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.26.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.27.bin",
+          "build/spirv/deferred_lighting_variant_buffer.fs.28.bin"
+        ]
+      },
+      "litMaterialFlags": {
+        "compute": "build/spirv/lit_material_flags.cs.bin"
+      },
+      "litVariantIndirectClear": {
+        "compute": "build/spirv/lit_variant_indirect_clear.cs.bin"
+      },
+      "litVariantIndirect": {
+        "compute": "build/spirv/lit_variant_indirect.cs.bin"
+      },
+      "deferredLightingVariantCompute": {
+        "bufferComputes": [
+          "build/spirv/deferred_lighting_variant_compute.cs.0.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.1.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.2.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.3.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.4.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.5.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.6.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.7.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.8.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.9.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.10.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.11.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.12.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.13.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.14.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.15.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.16.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.17.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.18.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.19.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.20.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.21.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.22.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.23.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.24.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.25.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.26.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.27.bin",
+          "build/spirv/deferred_lighting_variant_compute.cs.28.bin"
+        ]
+      },
+      "shadowMoments": {
+        "compute": "build/spirv/shadow_moments.cs.bin"
+      },
+      "shadowSatHorizontal": {
+        "compute": "build/spirv/shadow_sat_horizontal.cs.bin"
+      },
+      "shadowSatVertical": {
+        "compute": "build/spirv/shadow_sat_vertical.cs.bin"
+      },
+      "bakedGI": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/baked_gi.fs.0.bin",
+          "build/spirv/baked_gi.fs.1.bin",
+          "build/spirv/baked_gi.fs.2.bin",
+          "build/spirv/baked_gi.fs.3.bin",
+          "build/spirv/baked_gi.fs.4.bin",
+          "build/spirv/baked_gi.fs.5.bin",
+          "build/spirv/baked_gi.fs.6.bin",
+          "build/spirv/baked_gi.fs.7.bin",
+          "build/spirv/baked_gi.fs.8.bin",
+          "build/spirv/baked_gi.fs.9.bin",
+          "build/spirv/baked_gi.fs.10.bin",
+          "build/spirv/baked_gi.fs.11.bin",
+          "build/spirv/baked_gi.fs.12.bin",
+          "build/spirv/baked_gi.fs.13.bin",
+          "build/spirv/baked_gi.fs.14.bin",
+          "build/spirv/baked_gi.fs.15.bin"
+        ]
+      },
+      "bakedGICompensate": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/baked_gi_compensate.fs.bin"
+      },
+      "bakedGIForwardComposite": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/baked_gi_forward_composite.fs.bin"
       }
     }
   }

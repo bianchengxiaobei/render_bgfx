@@ -41,6 +41,7 @@ enum class DebugDisplayMode : uint8_t {
     ContactShadows,
     ShadowCascade,
     ShadowFilter,
+    Lightmap,
 };
 
 struct DebugDisplaySettings {

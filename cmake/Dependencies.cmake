@@ -6,6 +6,7 @@ set(HBG_GLFW_DIR "" CACHE PATH "Path to a local GLFW checkout")
 set(HBG_CGLTF_DIR "" CACHE PATH "Path to a local cgltf checkout")
 set(HBG_MIKKTSPACE_DIR "" CACHE PATH "Path to a local MikkTSpace checkout")
 set(HBG_NLOHMANN_JSON_DIR "" CACHE PATH "Path to a local nlohmann/json checkout")
+set(HBG_XATLAS_DIR "" CACHE PATH "Path to a local xatlas checkout")
 
 set(BGFX_BUILD_TOOLS ${HBG_BUILD_SHADER_TOOLS} CACHE BOOL "Build bgfx tools" FORCE)
 set(BGFX_BUILD_TOOLS_SHADER ${HBG_BUILD_SHADER_TOOLS} CACHE BOOL "Build bgfx shaderc" FORCE)
@@ -84,6 +85,27 @@ endif()
 
 add_library(hbg_mikktspace STATIC ${HBG_MIKKTSPACE_SOURCE_DIR}/mikktspace.c)
 target_include_directories(hbg_mikktspace PUBLIC ${HBG_MIKKTSPACE_SOURCE_DIR})
+
+if(HBG_XATLAS_DIR)
+    set(HBG_XATLAS_SOURCE_DIR "${HBG_XATLAS_DIR}")
+else()
+    FetchContent_Declare(
+        xatlas
+        GIT_REPOSITORY https://github.com/jpcy/xatlas.git
+        GIT_TAG f700c7790aaa030e794b52ba7791a05c085faf0c
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(xatlas)
+    set(HBG_XATLAS_SOURCE_DIR "${xatlas_SOURCE_DIR}")
+endif()
+
+add_library(hbg_xatlas STATIC ${HBG_XATLAS_SOURCE_DIR}/source/xatlas/xatlas.cpp)
+target_include_directories(hbg_xatlas PUBLIC ${HBG_XATLAS_SOURCE_DIR}/source/xatlas)
+if(MSVC)
+    target_compile_options(hbg_xatlas PRIVATE /w)
+else()
+    target_compile_options(hbg_xatlas PRIVATE -w)
+endif()
 
 if(HBG_NLOHMANN_JSON_DIR)
     add_library(hbg_nlohmann_json INTERFACE)

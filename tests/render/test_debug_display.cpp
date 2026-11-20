@@ -18,7 +18,7 @@ TEST_CASE("debug display settings default to lit rendering") {
 }
 
 TEST_CASE("debug display mode table is stable") {
-    REQUIRE(debugDisplayModeCount() == 33);
+    REQUIRE(debugDisplayModeCount() == 34);
     CHECK(debugDisplayModeAt(0) == DebugDisplayMode::None);
     CHECK(debugDisplayModeAt(1) == DebugDisplayMode::LightData);
     CHECK(debugDisplayModeAt(2) == DebugDisplayMode::Normal);
@@ -52,6 +52,7 @@ TEST_CASE("debug display mode table is stable") {
     CHECK(debugDisplayModeAt(30) == DebugDisplayMode::ContactShadows);
     CHECK(debugDisplayModeAt(31) == DebugDisplayMode::ShadowCascade);
     CHECK(debugDisplayModeAt(32) == DebugDisplayMode::ShadowFilter);
+    CHECK(debugDisplayModeAt(33) == DebugDisplayMode::Lightmap);
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::None)) == "Off");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::LightData)) == "Light Data Texture");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Normal)) == "Normal Buffer");
@@ -92,5 +93,6 @@ TEST_CASE("debug display mode table is stable") {
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::ContactShadows)) == "Contact Shadows");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::ShadowCascade)) == "Shadow Cascade");
     CHECK(std::string(debugDisplayModeName(DebugDisplayMode::ShadowFilter)) == "Shadow Filter");
+    CHECK(std::string(debugDisplayModeName(DebugDisplayMode::Lightmap)) == "Baked Lightmap");
     CHECK(debugDisplayModeAt(999) == DebugDisplayMode::None);
 }

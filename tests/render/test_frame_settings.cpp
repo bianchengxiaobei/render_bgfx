@@ -309,3 +309,15 @@ TEST_CASE("FrameSettings sanitize gates volumetric fog") {
     settings.sanitize(pipeline);
     CHECK_FALSE(settings.isEnabled(FrameSettingsField::Volumetrics));
 }
+
+TEST_CASE("pipeline settings parse and serialize supportVFX") {
+    render::PipelineSettings settings;
+    std::string error;
+    REQUIRE(render::parsePipelineSettings(R"({"supportVFX":true})", settings, error));
+    CHECK(settings.supportVFX);
+    const std::string serialized = render::pipelineSettingsToJson(settings);
+    render::PipelineSettings roundTrip;
+    REQUIRE(render::parsePipelineSettings(serialized, roundTrip, error));
+    CHECK(roundTrip.supportVFX);
+    CHECK_FALSE(render::parsePipelineSettings(R"({"supportVFX":"true"})", settings, error));
+}

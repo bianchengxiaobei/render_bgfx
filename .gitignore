@@ -9,3 +9,9 @@ gfx_test_screenshot.png
 /shaders/build/
 __pycache__/
 *.pyc
+
+# C# tooling (tools/dawnbake/golden)
+tools/dawnbake/**/bin/
+tools/dawnbake/**/obj/
+tools/dawn-coordinator/bin/
+tools/dawn-coordinator/obj/

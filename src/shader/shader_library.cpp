@@ -85,6 +85,22 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         if (bufferCompute != object.end() && bufferCompute->is_string()) {
             files.bufferCompute = bufferCompute->get<std::string>();
         }
+        const auto computes = object.find("computes");
+        if (computes != object.end() && computes->is_array()) {
+            for (const auto& compute : *computes) {
+                if (compute.is_string()) {
+                    files.computes.push_back(compute.get<std::string>());
+                }
+            }
+        }
+        const auto bufferComputes = object.find("bufferComputes");
+        if (bufferComputes != object.end() && bufferComputes->is_array()) {
+            for (const auto& compute : *bufferComputes) {
+                if (compute.is_string()) {
+                    files.bufferComputes.push_back(compute.get<std::string>());
+                }
+            }
+        }
         return files;
     };
 
@@ -129,7 +145,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     };
 
     const auto forward = backend->find("forward");
+    const auto forwardAdvanced = backend->find("forwardAdvanced");
     const auto forwardInstanced = backend->find("forwardInstanced");
+    const auto bakedGI = backend->find("bakedGI");
+    const auto bakedGICompensate = backend->find("bakedGICompensate");
+    const auto bakedGIForwardComposite = backend->find("bakedGIForwardComposite");
     const auto tonemap = backend->find("tonemap");
     const auto postProcessExposure = backend->find("postProcessExposure");
     const auto exposurePrepass = backend->find("postProcessExposurePrepass");
@@ -160,6 +180,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto shadow = backend->find("shadow");
     const auto shadowInstanced = backend->find("shadowInstanced");
     const auto shadowCull = backend->find("shadowCull");
+    const auto shadowMoments = backend->find("shadowMoments");
+    const auto shadowSatHorizontal = backend->find("shadowSatHorizontal");
+    const auto shadowSatVertical = backend->find("shadowSatVertical");
     const auto prepass = backend->find("prepass");
     const auto motionVectors = backend->find("motionVectors");
     const auto cameraMotionVectors = backend->find("cameraMotionVectors");
@@ -176,6 +199,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto debugLightCluster = backend->find("debugLightCluster");
     const auto debugShadowAtlas = backend->find("debugShadowAtlas");
     const auto debugColor = backend->find("debugColor");
+    const auto debugLightmap = backend->find("debugLightmap");
     const auto debugAlbedo = backend->find("debugAlbedo");
     const auto debugRoughness = backend->find("debugRoughness");
     const auto debugGbuffer = backend->find("debugGbuffer");
@@ -187,6 +211,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto decalClear = backend->find("decalClear");
     const auto deferredLighting = backend->find("deferredLighting");
     const auto deferredLightingAdvanced = backend->find("deferredLightingAdvanced");
+    const auto deferredLightingVariant = backend->find("deferredLightingVariant");
+    const auto deferredLightingVariantCompute = backend->find("deferredLightingVariantCompute");
+    const auto litMaterialFlags = backend->find("litMaterialFlags");
+    const auto litVariantIndirectClear = backend->find("litVariantIndirectClear");
+    const auto litVariantIndirect = backend->find("litVariantIndirect");
     const auto ssao = backend->find("ssao");
     const auto ssaoBlur = backend->find("ssaoBlur");
     const auto ssaoTemporal = backend->find("ssaoTemporal");
@@ -217,20 +246,28 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto debugShadowCascade = backend->find("debugShadowCascade");
     const auto debugShadowFilter = backend->find("debugShadowFilter");
     const auto ui = backend->find("ui");
-    if (forward == backend->end() || forwardInstanced == backend->end() || tonemap == backend->end() ||
+    if (forward == backend->end() || forwardAdvanced == backend->end() ||
+        forwardInstanced == backend->end() || bakedGI == backend->end() ||
+        bakedGICompensate == backend->end() || bakedGIForwardComposite == backend->end() ||
+        tonemap == backend->end() ||
         shadow == backend->end() || shadowInstanced == backend->end() || shadowCull == backend->end() ||
-        prepass == backend->end() ||
+        shadowMoments == backend->end() || shadowSatHorizontal == backend->end() ||
+        shadowSatVertical == backend->end() || prepass == backend->end() ||
         motionVectors == backend->end() || cameraMotionVectors == backend->end() ||
         depthPyramidCopy == backend->end() || depthPyramidDownsample == backend->end() || sky == backend->end() ||
         volumetricFog == backend->end() || volumetricFogComposite == backend->end() ||
         debugLightData == backend->end() ||
         debugNormal == backend->end() || debugMotionVectors == backend->end() ||
         debugDepth == backend->end() || debugDepthPyramid == backend->end() || debugLightCluster == backend->end() ||
-        debugShadowAtlas == backend->end() || debugColor == backend->end() || debugAlbedo == backend->end() ||
+        debugShadowAtlas == backend->end() || debugColor == backend->end() ||
+        debugLightmap == backend->end() || debugAlbedo == backend->end() ||
         debugRoughness == backend->end() || debugGbuffer == backend->end() || wireframe == backend->end() ||
         gbufferDecals == backend->end() ||
         decal == backend->end() || decalClear == backend->end() || deferredLighting == backend->end() ||
         deferredLightingAdvanced == backend->end() ||
+        deferredLightingVariant == backend->end() ||
+        deferredLightingVariantCompute == backend->end() || litMaterialFlags == backend->end() ||
+        litVariantIndirectClear == backend->end() || litVariantIndirect == backend->end() ||
         ssao == backend->end() || ssaoBlur == backend->end() || ssaoTemporal == backend->end() ||
         ssaoUpsample == backend->end() || debugSsao == backend->end() || ssrTrace == backend->end() ||
         ssrTemporal == backend->end() || ssrComposite == backend->end() ||
@@ -252,7 +289,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     }
 
     m_files.forward = readFiles(*forward, true);
+    m_files.forwardAdvanced = readFiles(*forwardAdvanced, true);
     m_files.forwardInstanced = readFiles(*forwardInstanced, true);
+    m_files.bakedGI = readFiles(*bakedGI, true);
+    m_files.bakedGICompensate = readFiles(*bakedGICompensate, false);
+    m_files.bakedGIForwardComposite = readFiles(*bakedGIForwardComposite, false);
     m_files.tonemap = readFiles(*tonemap, false);
     if (postProcessExposure != backend->end()) {
         m_files.postProcessExposure = readCompute(*postProcessExposure);
@@ -335,6 +376,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.shadow = readFiles(*shadow, true);
     m_files.shadowInstanced = readFiles(*shadowInstanced, true);
     m_files.shadowCull = readCompute(*shadowCull);
+    m_files.shadowMoments = readCompute(*shadowMoments);
+    m_files.shadowSatHorizontal = readCompute(*shadowSatHorizontal);
+    m_files.shadowSatVertical = readCompute(*shadowSatVertical);
     m_files.prepass = readFiles(*prepass, true);
     m_files.motionVectors = readFiles(*motionVectors, false);
     m_files.cameraMotionVectors = readFiles(*cameraMotionVectors, false);
@@ -351,6 +395,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.debugLightCluster = readFiles(*debugLightCluster, false);
     m_files.debugShadowAtlas = readFiles(*debugShadowAtlas, false);
     m_files.debugColor = readFiles(*debugColor, false);
+    m_files.debugLightmap = readFiles(*debugLightmap, false);
     m_files.debugAlbedo = readFiles(*debugAlbedo, true);
     m_files.debugRoughness = readFiles(*debugRoughness, true);
     m_files.debugGbuffer = readFiles(*debugGbuffer, false);
@@ -366,6 +411,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.decalClear = readFiles(*decalClear, false);
     m_files.deferredLighting = readFiles(*deferredLighting, false);
     m_files.deferredLightingAdvanced = readFiles(*deferredLightingAdvanced, false);
+    m_files.deferredLightingVariant = readFiles(*deferredLightingVariant, true);
+    m_files.deferredLightingVariantCompute = readCompute(*deferredLightingVariantCompute);
+    m_files.litMaterialFlags = readCompute(*litMaterialFlags);
+    m_files.litVariantIndirectClear = readCompute(*litVariantIndirectClear);
+    m_files.litVariantIndirect = readCompute(*litVariantIndirect);
     m_files.ssao = readFiles(*ssao, false);
     m_files.ssaoBlur = readFiles(*ssaoBlur, false);
     m_files.ssaoTemporal = readFiles(*ssaoTemporal, false);
@@ -405,7 +455,12 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.debugShadowFilter = readFiles(*debugShadowFilter, false);
     m_files.ui = readFiles(*ui, false);
     m_valid = !m_files.forward.vertex.empty() && !m_files.forward.fragments.empty() &&
+              !m_files.forwardAdvanced.vertex.empty() && !m_files.forwardAdvanced.fragments.empty() &&
               !m_files.forwardInstanced.vertex.empty() && !m_files.forwardInstanced.fragments.empty() &&
+              !m_files.bakedGI.vertex.empty() && !m_files.bakedGI.fragments.empty() &&
+              !m_files.bakedGICompensate.vertex.empty() && !m_files.bakedGICompensate.fragments.empty() &&
+              !m_files.bakedGIForwardComposite.vertex.empty() &&
+              !m_files.bakedGIForwardComposite.fragments.empty() &&
               !m_files.tonemap.vertex.empty() && !m_files.tonemap.fragments.empty() && !m_files.shadow.vertex.empty() &&
               !m_files.shadow.fragments.empty() && !m_files.shadowInstanced.vertex.empty() &&
               !m_files.shadowInstanced.fragments.empty() && !m_files.prepass.vertex.empty() &&
@@ -424,7 +479,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.debugDepthPyramid.fragments.empty() && !m_files.debugLightCluster.vertex.empty() &&
               !m_files.debugLightCluster.fragments.empty() && !m_files.debugShadowAtlas.vertex.empty() &&
               !m_files.debugShadowAtlas.fragments.empty() && !m_files.debugColor.vertex.empty() &&
-              !m_files.debugColor.fragments.empty() && !m_files.debugAlbedo.vertex.empty() &&
+              !m_files.debugColor.fragments.empty() && !m_files.debugLightmap.vertex.empty() &&
+              !m_files.debugLightmap.fragments.empty() && !m_files.debugAlbedo.vertex.empty() &&
               !m_files.debugAlbedo.fragments.empty() && !m_files.debugRoughness.vertex.empty() &&
               !m_files.debugRoughness.fragments.empty() && !m_files.debugGbuffer.vertex.empty() &&
               !m_files.debugGbuffer.fragments.empty() && !m_files.wireframe.vertex.empty() &&
@@ -434,7 +490,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.decalClear.fragments.empty() && !m_files.deferredLighting.vertex.empty() &&
               !m_files.deferredLighting.fragments.empty() &&
               !m_files.deferredLightingAdvanced.vertex.empty() &&
-              !m_files.deferredLightingAdvanced.fragments.empty() && !m_files.ssao.vertex.empty() &&
+              !m_files.deferredLightingAdvanced.fragments.empty() &&
+              !m_files.deferredLightingVariant.vertex.empty() &&
+              !m_files.deferredLightingVariant.fragments.empty() &&
+              !m_files.deferredLightingVariant.bufferFragments.empty() &&
+              !m_files.ssao.vertex.empty() &&
               !m_files.ssao.fragments.empty() && !m_files.ssaoBlur.vertex.empty() &&
               !m_files.ssaoBlur.fragments.empty() && !m_files.ssaoTemporal.vertex.empty() &&
               !m_files.ssaoTemporal.fragments.empty() && !m_files.ssaoUpsample.vertex.empty() &&
@@ -451,6 +511,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.ssgiComposite.fragments.empty() && !m_files.debugSsgi.vertex.empty() &&
               !m_files.debugSsgi.fragments.empty() && !m_files.debugSsgiRaw.vertex.empty() &&
               !m_files.debugSsgiRaw.fragments.empty() && !m_files.contactShadows.compute.empty() &&
+              !m_files.shadowCull.compute.empty() && !m_files.shadowMoments.compute.empty() &&
+              !m_files.shadowSatHorizontal.compute.empty() && !m_files.shadowSatVertical.compute.empty() &&
               !m_files.debugContactShadows.vertex.empty() && !m_files.debugContactShadows.fragments.empty() &&
               !m_files.debugShadowCascade.vertex.empty() && !m_files.debugShadowCascade.fragments.empty() &&
               !m_files.debugShadowFilter.vertex.empty() && !m_files.debugShadowFilter.fragments.empty() &&
@@ -504,8 +566,16 @@ gfx::ProgramHandle ShaderLibrary::createProgram(const PassFiles& files, uint32_t
     return program;
 }
 
-gfx::ProgramHandle ShaderLibrary::createComputeProgram(const PassFiles& files, bool bufferPath) {
-    const std::string& computeFile = bufferPath ? files.bufferCompute : files.compute;
+gfx::ProgramHandle ShaderLibrary::createComputeProgram(const PassFiles& files, bool bufferPath,
+                                                       uint32_t variant) {
+    const std::vector<std::string>& computes = bufferPath ? files.bufferComputes : files.computes;
+    std::string computeFile = bufferPath ? files.bufferCompute : files.compute;
+    if (!computes.empty()) {
+        if (variant >= computes.size()) {
+            return {};
+        }
+        computeFile = computes[variant];
+    }
     if (m_resources == nullptr || computeFile.empty()) {
         return {};
     }
@@ -531,8 +601,24 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
     switch (pass) {
     case PassId::Forward:
         break;
+    case PassId::ForwardAdvanced:
+        files = &m_files.forwardAdvanced;
+        variant = ((materialKey & MaterialVariantDoubleSided) != 0 ? 1u : 0u) |
+                  ((materialKey & (MaterialVariantNormalMap | MaterialVariantMaskMap)) != 0 ? 2u : 0u);
+        break;
     case PassId::ForwardInstanced:
         files = &m_files.forwardInstanced;
+        break;
+    case PassId::BakedGI:
+        files = &m_files.bakedGI;
+        break;
+    case PassId::BakedGICompensate:
+        files = &m_files.bakedGICompensate;
+        variant = 0;
+        break;
+    case PassId::BakedGIForwardComposite:
+        files = &m_files.bakedGIForwardComposite;
+        variant = 0;
         break;
     case PassId::Tonemap:
         files = &m_files.tonemap;
@@ -648,6 +734,18 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.shadowCull;
         variant = 0;
         break;
+    case PassId::ShadowMoments:
+        files = &m_files.shadowMoments;
+        variant = 0;
+        break;
+    case PassId::ShadowSatHorizontal:
+        files = &m_files.shadowSatHorizontal;
+        variant = 0;
+        break;
+    case PassId::ShadowSatVertical:
+        files = &m_files.shadowSatVertical;
+        variant = 0;
+        break;
     case PassId::Prepass:
         files = &m_files.prepass;
         break;
@@ -711,6 +809,10 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.debugColor;
         variant = 0;
         break;
+    case PassId::DebugLightmap:
+        files = &m_files.debugLightmap;
+        variant = 0;
+        break;
     case PassId::DebugAlbedo:
         files = &m_files.debugAlbedo;
         break;
@@ -749,6 +851,26 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::DeferredLightingAdvanced:
         files = &m_files.deferredLightingAdvanced;
+        variant = 0;
+        break;
+    case PassId::DeferredLightingVariant:
+        files = &m_files.deferredLightingVariant;
+        variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
+        break;
+    case PassId::DeferredLightingVariantCompute:
+        files = &m_files.deferredLightingVariantCompute;
+        variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
+        break;
+    case PassId::LitMaterialFlags:
+        files = &m_files.litMaterialFlags;
+        variant = 0;
+        break;
+    case PassId::LitVariantIndirectClear:
+        files = &m_files.litVariantIndirectClear;
+        variant = 0;
+        break;
+    case PassId::LitVariantIndirect:
+        files = &m_files.litVariantIndirect;
         variant = 0;
         break;
     case PassId::SSAO:
@@ -882,8 +1004,9 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
     }
 
     gfx::ProgramHandle program;
-    if (!files->compute.empty() || !files->bufferCompute.empty()) {
-        program = createComputeProgram(*files, bufferPath);
+    if (!files->compute.empty() || !files->bufferCompute.empty() || !files->computes.empty() ||
+        !files->bufferComputes.empty()) {
+        program = createComputeProgram(*files, bufferPath, variant);
     } else {
         program = createProgram(*files, variant, bufferPath, lightLayersPath);
         if (!program.valid() && variant != 0 && !bufferPath) {

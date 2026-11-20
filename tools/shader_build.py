@@ -54,7 +54,8 @@ BACKENDS = {
 
 def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, output: Path,
                    shader_type: str, backend: str, defines: Sequence[str], force: bool,
-                   newest_input: float, varying_def: Optional[Path] = None) -> None:
+                   newest_input: float, varying_def: Optional[Path] = None,
+                   d3d_skip_optimization: bool = False) -> None:
     if _EXECUTOR is None:
         raise RuntimeError("shader compile executor is not initialized")
     output_display = output.relative_to(root).as_posix()
@@ -79,9 +80,13 @@ def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, outp
         "-i", str(root / "shaders/include"),
         "-i", str(bgfx_src / "src"),
         *BACKENDS[backend],
-        "-O", str(_OPTIMIZATION),
-        "--Werror",
     ]
+    # FXC can spend unbounded time optimizing area-light variants. Omitting -O
+    # selects D3DCOMPILE_SKIP_OPTIMIZATION; warnings are not treated as errors
+    # for this fallback because FXC reports conservative uninitialized-local
+    # warnings that the optimized path suppresses.
+    if not (backend == "dxbc" and d3d_skip_optimization):
+        command.extend(["-O", str(_OPTIMIZATION), "--Werror"])
     if shader_type != "compute":
         command.extend(["--varyingdef", str(varying_def or (root / "shaders/include/varying.def.sc"))])
     if defines:
@@ -272,15 +277,54 @@ def main() -> int:
             fragment = backend_root / f"forward.fs.{mask}.bin"
             compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward.fs.sc",
                            fragment, "fragment", backend, variant_defines(mask) + ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_CONTACT_SHADOW_TEXTURE=1"],
-                           args.force, newest_input)
+                           args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
             forward_fragments.append(fragment.relative_to(root / "shaders").as_posix())
             buffer_fragment = backend_root / f"forward_buffer.fs.{mask}.bin"
             compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward.fs.sc",
                            buffer_fragment, "fragment", backend,
                            variant_defines(mask) + ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_CONTACT_SHADOW_TEXTURE=1",
                                                     "HBG_LIGHT_LIST_BUFFER=1"],
-                           args.force, newest_input)
+                           args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
             forward_buffer_fragments.append(buffer_fragment.relative_to(root / "shaders").as_posix())
+
+        forward_advanced_fragments = []
+        forward_advanced_buffer_fragments = []
+        advanced_defines = [
+            "ALPHA_CLIP=1", "HBG_ADVANCED_MATERIAL=1",
+            "HBG_CONTACT_SHADOW_TEXTURE=1",
+        ]
+        for hasMaps in (False, True):
+            for doubleSided in (False, True):
+                suffix = ("_nomap" if not hasMaps else "") + ("_ds" if doubleSided else "")
+                defines = advanced_defines + (["DOUBLE_SIDED=1"] if doubleSided else [])
+                if hasMaps:
+                    defines += ["HAS_NORMAL_MAP=1", "HAS_MASK_MAP=1"]
+                fragment = backend_root / f"forward_advanced{suffix}.fs.bin"
+                buffer_fragment = backend_root / f"forward_advanced{suffix}_buffer.fs.bin"
+                compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_advanced.fs.sc",
+                               fragment, "fragment", backend, defines, args.force, newest_input,
+                               d3d_skip_optimization=(backend == "dxbc"))
+                compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_advanced.fs.sc",
+                               buffer_fragment, "fragment", backend,
+                               defines + ["HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input,
+                               d3d_skip_optimization=(backend == "dxbc"))
+                forward_advanced_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+                forward_advanced_buffer_fragments.append(buffer_fragment.relative_to(root / "shaders").as_posix())
+
+        baked_gi_compensate_fragment = backend_root / "baked_gi_compensate.fs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/baked_gi_compensate.fs.sc",
+                       baked_gi_compensate_fragment, "fragment", backend, [], args.force, newest_input)
+        baked_gi_forward_composite_fragment = backend_root / "baked_gi_forward_composite.fs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/baked_gi_forward_composite.fs.sc",
+                       baked_gi_forward_composite_fragment, "fragment", backend, [], args.force, newest_input)
+
+        baked_gi_fragments = []
+        for mask in range(1 << len(VARIANT_BITS)):
+            fragment = backend_root / f"baked_gi.fs.{mask}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/baked_gi.fs.sc",
+                           fragment, "fragment", backend, variant_defines(mask), args.force,
+                           newest_input)
+            baked_gi_fragments.append(fragment.relative_to(root / "shaders").as_posix())
 
         prepass_fragments = []
         for mask in range(1 << len(VARIANT_BITS)):
@@ -337,16 +381,79 @@ def main() -> int:
         deferred_lighting_advanced_buffer_fragment = backend_root / "deferred_lighting_advanced_buffer.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting.fs.sc",
                        deferred_lighting_fragment, "fragment", backend, ["HBG_SHADOW_POINT_SAMPLER=1"],
-                       args.force, newest_input)
+                       args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting.fs.sc",
                        deferred_lighting_buffer_fragment, "fragment", backend,
-                       ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input)
+                       ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input,
+                       d3d_skip_optimization=(backend == "dxbc"))
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
                        deferred_lighting_advanced_fragment, "fragment", backend,
-                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1"], args.force, newest_input)
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1"], args.force, newest_input,
+                       d3d_skip_optimization=(backend == "dxbc"))
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
                        deferred_lighting_advanced_buffer_fragment, "fragment", backend,
-                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input)
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"],
+                       args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+
+        deferred_variant_fragments = []
+        deferred_variant_buffer_fragments = []
+        deferred_variant_flags = [
+            (1, 0), (1, 4), (1, 5), (1, 6), (1, 7), (1, 12), (1, 13), (1, 15),
+            (13, 0), (13, 4), (13, 5), (13, 6), (13, 7),
+            (17, 0), (17, 4), (17, 5), (17, 6), (17, 7),
+            (65, 0), (65, 4), (65, 5), (65, 6), (65, 7),
+            (33, 0), (33, 4), (33, 5), (33, 6), (33, 7),
+            (125, 15),
+        ]
+        for variant, (material_flags, light_flags) in enumerate(deferred_variant_flags):
+            defines = [f"HBG_VARIANT_MATERIAL_FLAGS={material_flags}",
+                       f"HBG_VARIANT_LIGHT_FLAGS={light_flags}"]
+            if variant == 28:
+                defines.append("HBG_VARIANT_CATCHALL=1")
+            if (material_flags & 0x7e) != 0:
+                defines.append("HBG_SHADOW_AREA_SAMPLER=1")
+            else:
+                defines.append("HBG_SHADOW_POINT_SAMPLER=1")
+            fragment = backend_root / f"deferred_lighting_variant.fs.{variant}.bin"
+            buffer_fragment = backend_root / f"deferred_lighting_variant_buffer.fs.{variant}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_variant.fs.sc",
+                           fragment, "fragment", backend, defines, args.force, newest_input,
+                           d3d_skip_optimization=(backend == "dxbc"))
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_variant.fs.sc",
+                           buffer_fragment, "fragment", backend, defines + ["HBG_LIGHT_LIST_BUFFER=1"],
+                           args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+            deferred_variant_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+            deferred_variant_buffer_fragments.append(buffer_fragment.relative_to(root / "shaders").as_posix())
+
+        lit_material_flags_compute = backend_root / "lit_material_flags.cs.bin"
+        lit_variant_indirect_clear_compute = backend_root / "lit_variant_indirect_clear.cs.bin"
+        lit_variant_indirect_compute = backend_root / "lit_variant_indirect.cs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/lit_material_flags.cs.sc",
+                       lit_material_flags_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/lit_variant_indirect_clear.cs.sc",
+                       lit_variant_indirect_clear_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/lit_variant_indirect.cs.sc",
+                       lit_variant_indirect_compute, "compute", backend, [], args.force, newest_input)
+
+        deferred_variant_computes = []
+        for variant, (material_flags, light_flags) in enumerate(deferred_variant_flags):
+            defines = [f"HBG_VARIANT_INDEX={variant}",
+                       f"HBG_VARIANT_MATERIAL_FLAGS={material_flags}",
+                       f"HBG_VARIANT_LIGHT_FLAGS={light_flags}",
+                       "HBG_LIGHT_LIST_BUFFER=1",
+                       "HBG_COOKIE_SAMPLER_STAGE=11"]
+            if variant == 28:
+                defines.append("HBG_VARIANT_CATCHALL=1")
+            if (material_flags & 0x7e) != 0:
+                defines.append("HBG_SHADOW_AREA_SAMPLER=1")
+            else:
+                defines.append("HBG_SHADOW_POINT_SAMPLER=1")
+            compute = backend_root / f"deferred_lighting_variant_compute.cs.{variant}.bin"
+            compile_shader(shaderc, root, bgfx_src,
+                           root / "shaders/passes/deferred_lighting_variant_compute.cs.sc",
+                           compute, "compute", backend, defines, args.force, newest_input,
+                           d3d_skip_optimization=(backend == "dxbc"))
+            deferred_variant_computes.append(compute.relative_to(root / "shaders").as_posix())
 
         ssao_fragment = backend_root / "ssao.fs.bin"
         ssao_blur_fragment = backend_root / "ssao_blur.fs.bin"
@@ -433,6 +540,7 @@ def main() -> int:
         debug_light_cluster_buffer_fragment = backend_root / "debug_light_cluster_buffer.fs.bin"
         debug_shadow_atlas_fragment = backend_root / "debug_shadow_atlas.fs.bin"
         debug_color_fragment = backend_root / "debug_color.fs.bin"
+        debug_lightmap_fragment = backend_root / "debug_lightmap.fs.bin"
         debug_ssao_fragment = backend_root / "debug_ssao.fs.bin"
         debug_ssr_fragment = backend_root / "debug_ssr.fs.bin"
         debug_decals_fragment = backend_root / "debug_decals.fs.bin"
@@ -456,6 +564,8 @@ def main() -> int:
                        debug_shadow_atlas_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_color.fs.sc",
                        debug_color_fragment, "fragment", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_lightmap.fs.sc",
+                       debug_lightmap_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_ssao.fs.sc",
                        debug_ssao_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/debug_ssr.fs.sc",
@@ -660,8 +770,17 @@ def main() -> int:
             shadow_fragments.append(fragment.relative_to(root / "shaders").as_posix())
 
         shadow_cull_compute = backend_root / "shadow_cull.cs.bin"
+        shadow_moments_compute = backend_root / "shadow_moments.cs.bin"
+        shadow_sat_horizontal_compute = backend_root / "shadow_sat_horizontal.cs.bin"
+        shadow_sat_vertical_compute = backend_root / "shadow_sat_vertical.cs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_cull.cs.sc",
                        shadow_cull_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_moments.cs.sc",
+                       shadow_moments_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_sat_horizontal.cs.sc",
+                       shadow_sat_horizontal_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_sat_vertical.cs.sc",
+                       shadow_sat_vertical_compute, "compute", backend, [], args.force, newest_input)
 
         debug_vertex = backend_root / "debug_light_data.vs.bin"
         debug_fragment = backend_root / "debug_light_data.fs.bin"
@@ -685,6 +804,40 @@ def main() -> int:
         compile_shader(shaderc, root, bgfx_src, root / "shaders/ui/imgui.fs.sc",
                        ui_fragment, "fragment", backend, [], args.force, newest_input, ui_varying_def)
 
+        vfx_spike_varying_def = root / "shaders/vfx/vfx_spike.def.sc"
+        vfx_spike_attributes_compute = backend_root / "vfx_spike_attributes.cs.bin"
+        vfx_spike_indirect_compute = backend_root / "vfx_spike_indirect.cs.bin"
+        vfx_spike_audit_compute = backend_root / "vfx_spike_audit.cs.bin"
+        vfx_spike_vertex = backend_root / "vfx_spike.vs.bin"
+        vfx_spike_unlit_fragment = backend_root / "vfx_spike_unlit.fs.bin"
+        vfx_spike_lit_fragment = backend_root / "vfx_spike_lit.fs.bin"
+        vfx_attributes_test_compute = backend_root / "vfx_attributes_test.cs.bin"
+        vfx_attributes_test_vertex = backend_root / "vfx_attributes_test.vs.bin"
+        vfx_expressions_test_compute = backend_root / "vfx_expressions_test.cs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike_attributes.cs.sc",
+                       vfx_spike_attributes_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike_indirect.cs.sc",
+                       vfx_spike_indirect_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_attributes_test.cs.sc",
+                       vfx_attributes_test_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_attributes_test.vs.sc",
+                       vfx_attributes_test_vertex, "vertex", backend, [], args.force, newest_input,
+                       vfx_spike_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_expressions_test.cs.sc",
+                       vfx_expressions_test_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike_audit.cs.sc",
+                       vfx_spike_audit_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike.vs.sc",
+                       vfx_spike_vertex, "vertex", backend, [], args.force, newest_input,
+                       vfx_spike_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike_unlit.fs.sc",
+                       vfx_spike_unlit_fragment, "fragment", backend, [], args.force, newest_input,
+                       vfx_spike_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/vfx/vfx_spike_lit.fs.sc",
+                       vfx_spike_lit_fragment, "fragment", backend,
+                       ["HBG_CONTACT_SHADOW_TEXTURE=1"], args.force, newest_input,
+                       vfx_spike_varying_def, d3d_skip_optimization=(backend == "dxbc"))
+
         backend_entry = {
             "forward": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
@@ -696,6 +849,23 @@ def main() -> int:
                 "fragments": forward_fragments,
                 "bufferFragments": forward_buffer_fragments,
             },
+            "forwardAdvanced": {
+                "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": forward_advanced_fragments,
+                "bufferFragments": forward_advanced_buffer_fragments,
+            },
+            "bakedGI": {
+                "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": baked_gi_fragments,
+            },
+            "bakedGICompensate": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": baked_gi_compensate_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "bakedGIForwardComposite": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": baked_gi_forward_composite_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "tonemap": {
                 "vertex": tonemap_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": tonemap_fragment.relative_to(root / "shaders").as_posix(),
@@ -703,6 +873,17 @@ def main() -> int:
             "final": {
                 "vertex": tonemap_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": final_fragments,
+            },
+            "vfxSpike": {
+                "vertex": vfx_spike_vertex.relative_to(root / "shaders").as_posix(),
+                "unlit": vfx_spike_unlit_fragment.relative_to(root / "shaders").as_posix(),
+                "lit": vfx_spike_lit_fragment.relative_to(root / "shaders").as_posix(),
+                "attributes": vfx_spike_attributes_compute.relative_to(root / "shaders").as_posix(),
+                "attributesLayout": vfx_attributes_test_compute.relative_to(root / "shaders").as_posix(),
+                "attributesLayoutVertex": vfx_attributes_test_vertex.relative_to(root / "shaders").as_posix(),
+                "expressions": vfx_expressions_test_compute.relative_to(root / "shaders").as_posix(),
+                "indirect": vfx_spike_indirect_compute.relative_to(root / "shaders").as_posix(),
+                "audit": vfx_spike_audit_compute.relative_to(root / "shaders").as_posix(),
             },
             "uberPost": {
                 "vertex": tonemap_vertex.relative_to(root / "shaders").as_posix(),
@@ -808,6 +989,15 @@ def main() -> int:
             "shadowCull": {
                 "compute": shadow_cull_compute.relative_to(root / "shaders").as_posix(),
             },
+            "shadowMoments": {
+                "compute": shadow_moments_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "shadowSatHorizontal": {
+                "compute": shadow_sat_horizontal_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "shadowSatVertical": {
+                "compute": shadow_sat_vertical_compute.relative_to(root / "shaders").as_posix(),
+            },
             "prepass": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": prepass_fragments,
@@ -841,6 +1031,23 @@ def main() -> int:
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": deferred_lighting_advanced_fragment.relative_to(root / "shaders").as_posix(),
                 "bufferFragment": deferred_lighting_advanced_buffer_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "deferredLightingVariant": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": deferred_variant_fragments,
+                "bufferFragments": deferred_variant_buffer_fragments,
+            },
+            "litMaterialFlags": {
+                "compute": lit_material_flags_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "litVariantIndirectClear": {
+                "compute": lit_variant_indirect_clear_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "litVariantIndirect": {
+                "compute": lit_variant_indirect_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "deferredLightingVariantCompute": {
+                "bufferComputes": deferred_variant_computes,
             },
             "ssao": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
@@ -947,6 +1154,10 @@ def main() -> int:
             "debugColor": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": debug_color_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "debugLightmap": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": debug_lightmap_fragment.relative_to(root / "shaders").as_posix(),
             },
             "debugSsao": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),

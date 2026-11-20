@@ -37,6 +37,7 @@ constexpr DebugDisplayMode kModes[] = {
     DebugDisplayMode::ContactShadows,
     DebugDisplayMode::ShadowCascade,
     DebugDisplayMode::ShadowFilter,
+    DebugDisplayMode::Lightmap,
 };
 
 constexpr const char* kModeNames[] = {
@@ -73,6 +74,7 @@ constexpr const char* kModeNames[] = {
     "Contact Shadows",
     "Shadow Cascade",
     "Shadow Filter",
+    "Baked Lightmap",
 };
 
 static_assert(sizeof(kModes) / sizeof(kModes[0]) == sizeof(kModeNames) / sizeof(kModeNames[0]));

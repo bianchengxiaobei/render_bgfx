@@ -37,8 +37,13 @@ bool drawSortKeyLess(const DrawSortKey& lhs, const DrawSortKey& rhs, SortingCrit
         lhs.quantizedDistance != rhs.quantizedDistance) {
         return lhs.quantizedDistance < rhs.quantizedDistance;
     }
-    if (hasSortingCriteria(criteria, SortingCriteria::OptimizeStateChanges) && lhs.stateKey != rhs.stateKey) {
-        return lhs.stateKey < rhs.stateKey;
+    if (hasSortingCriteria(criteria, SortingCriteria::OptimizeStateChanges)) {
+        if (lhs.stateKey != rhs.stateKey) {
+            return lhs.stateKey < rhs.stateKey;
+        }
+        if (lhs.lightmapAtlas != rhs.lightmapAtlas) {
+            return lhs.lightmapAtlas < rhs.lightmapAtlas;
+        }
     }
     return lhs.sequence < rhs.sequence;
 }

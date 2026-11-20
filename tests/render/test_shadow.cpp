@@ -120,6 +120,9 @@ TEST_CASE("shadow manager builds four directional cascades") {
     CHECK(manager.contextData().texels[9].y == doctest::Approx(24.0f));
     CHECK(manager.contextData().texels[9].z == doctest::Approx(0.01f));
     CHECK(manager.contextData().texels[9].w > 0.0f);
+    CHECK(manager.requests()[0].lightAngle == doctest::Approx(0.0174532925f));
+    CHECK(manager.requests()[0].maxDepthBias == doctest::Approx(0.001f));
+    CHECK(manager.requests()[0].imsKernelSize == 5);
 }
 
 TEST_CASE("shadow settings drive cascade count, resolution and context layout") {
@@ -276,6 +279,99 @@ TEST_CASE("shadow manager builds an independent rectangle area shadow request") 
     CHECK(manager.contextData().requestCount == 1);
 }
 
+TEST_CASE("shadow manager propagates EVSM filter mode to area requests") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeArea());
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.areaFilter = ShadowFilter::Evsm;
+    settings.maxRequests = 8;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.requests().size() == 1);
+    CHECK(manager.requests()[0].filter == ShadowFilter::Evsm);
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(5.0f));
+}
+
+TEST_CASE("shadow manager propagates VSM filter mode to area requests") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeArea());
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.areaFilter = ShadowFilter::Vsm;
+    settings.maxRequests = 8;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.requests().size() == 1);
+    CHECK(manager.requests()[0].filter == ShadowFilter::Vsm);
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(6.0f));
+}
+
+TEST_CASE("shadow manager propagates MSM filter mode to directional requests") {
+    RenderScene scene;
+    scene.lights.push_back(makeDirectional());
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.directionalFilter = ShadowFilter::Msm;
+    settings.punctualFilter = ShadowFilter::Off;
+    settings.maxRequests = 8;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.directionalRequestCount() == kDirectionalCascadeCount);
+    CHECK(manager.requests()[0].filter == ShadowFilter::Msm);
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(7.0f));
+}
+
+TEST_CASE("shadow manager propagates MSM filter mode to area requests") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeArea());
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.areaFilter = ShadowFilter::Msm;
+    settings.maxRequests = 8;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.requests().size() == 1);
+    CHECK(manager.requests()[0].filter == ShadowFilter::Msm);
+    CHECK(manager.contextData().texels[6].z == doctest::Approx(7.0f));
+}
+
 TEST_CASE("shadow manager scales to 128 requests with a 4096 atlas") {
     RenderScene scene = makeScene();
     constexpr uint32_t kSpotCount = 122;
@@ -358,4 +454,114 @@ TEST_CASE("shadow manager scales to 128 requests with a 4096 atlas") {
             CHECK_FALSE(overlap);
         }
     }
+}
+
+TEST_CASE("directional cache invalidates on camera changes") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeDirectional());
+    RenderObject object;
+    object.name = "cached-caster";
+    object.meshIndex = 0;
+    object.world = Mat4::identity();
+    object.worldBounds.expand(Vec3(-0.5f, -0.5f, -0.5f));
+    object.worldBounds.expand(Vec3(0.5f, 0.5f, 0.5f));
+    scene.objects.push_back(object);
+
+    Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.cachedDirectionalShadows = true;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.directionalCacheActive());
+    CHECK(manager.cachedDirectionalRequestCount() == 0);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.cachedDirectionalRequestCount() == manager.directionalRequestCount());
+    CHECK_FALSE(manager.directionalCacheDirty());
+
+    camera.world.values[12] += 1.0f;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.cachedDirectionalRequestCount() == 0);
+    CHECK(manager.directionalCacheDirty());
+}
+
+TEST_CASE("directional cache keeps unaffected cascades") {
+    RenderScene base = makeScene();
+    base.lights.push_back(makeDirectional());
+
+    Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    ShadowSettings probeSettings;
+    probeSettings.cachedDirectionalShadows = false;
+    ShadowManager probe;
+    REQUIRE(probe.setSettings(probeSettings));
+
+    RenderObject object;
+    object.name = "moving-caster";
+    object.meshIndex = 0;
+    object.worldBounds.expand(Vec3(-0.5f, -0.5f, -0.5f));
+    object.worldBounds.expand(Vec3(0.5f, 0.5f, 0.5f));
+
+    bool foundPartial = false;
+    uint32_t partialCount = 0;
+    for (float z = -20.0f; z <= 20.0f && !foundPartial; z += 1.0f) {
+        for (float x = -20.0f; x <= 20.0f && !foundPartial; x += 1.0f) {
+            RenderScene probeScene = base;
+            object.world = Mat4::identity();
+            object.world.values[12] = x;
+            object.world.values[14] = z;
+            object.worldBounds = {};
+            object.worldBounds.expand(Vec3(x - 0.5f, -0.5f, z - 0.5f));
+            object.worldBounds.expand(Vec3(x + 0.5f, 0.5f, z + 0.5f));
+            probeScene.objects.push_back(object);
+
+            LightBuilder builder;
+            builder.build(probeScene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f),
+                          camera.farClip);
+            if (!probe.update(probeScene, viewState.constants(), camera, builder)) {
+                continue;
+            }
+            uint32_t intersections = 0;
+            for (const ShadowRequest& request : probe.requests()) {
+                if (request.atlas == ShadowAtlasType::Directional &&
+                    intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
+                    ++intersections;
+                }
+            }
+            if (intersections > 0 && intersections < kDirectionalCascadeCount) {
+                foundPartial = true;
+                partialCount = intersections;
+            }
+        }
+    }
+    REQUIRE(foundPartial);
+
+    RenderScene scene = base;
+    scene.objects.push_back(object);
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.cachedDirectionalShadows = true;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    REQUIRE(manager.directionalCacheActive());
+    CHECK(manager.cachedDirectionalRequestCount() == 0);
+
+    scene.objects[0].world.values[12] += 0.1f;
+    scene.objects[0].worldBounds.min.x += 0.1f;
+    scene.objects[0].worldBounds.max.x += 0.1f;
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.cachedDirectionalRequestCount() ==
+          kDirectionalCascadeCount - partialCount);
+    CHECK(manager.directionalCacheMixed());
 }

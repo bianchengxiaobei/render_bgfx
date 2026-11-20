@@ -2,77 +2,139 @@
 > 工程根：`E:\Learn\hdrp-bgfx`。> 状态：**M8.0–M8.7 完成**（2026-11-14）；M8 验收通过。> 原则：先读 HDRP 与 vendored bgfx 源码再实现；不改动 M7 已验证的视觉语义；容量扩展必须保留 32-light M7 基线的 **0 diff** 回退。> 前置基线：M7.8 已完成，`supportGpuLightList=true`、`supportGpuLightListBuffers=true` 默认开启；texture/CPU 仍可回退；cluster 每 cell 固定 32。
 ---
 
-## 0. 缁撹鎽樿
+## 0. 结论摘要
 
-M8 鐨勭洰鏍囨槸鎶?punctual light 瀹归噺浠庡浐瀹?32 鎵╁睍鍒?**32/64/128 涓夋。**锛屽悓鏃朵繚鎸?M7 鐨?FPTL 16脳16銆乥ig-tile 64脳64銆乧luster 64脳64脳32銆佸崌搴?light index 鍜?CPU/texture/buffer 鍙鐓ц涔夈€?
-M8 鐨勬牳蹇冨伐浣滐細
+M8 的目标是把 punctual light 容量从固定 32 扩展到 **32/64/128 三档**，同时保持 M7 的 FPTL 16×16、big-tile 64×64、cluster 64×64×32、升序 light index 和 CPU/texture/buffer 可对照语义。
+M8 的核心工作：
 
-1. **瀹归噺濂戠害**锛歚lightListCapacity = 32|64|128`锛屾€?slot 鍖呭惈鏈€澶?1 涓?directional锛沺unctual 鏈€澶氫负 capacity-1锛堟湁鏂瑰悜鍏夋椂锛夈€傞粯璁ゅ€欓€?64锛?2 涓哄熀绾垮洖閫€锛?28 涓?experimental銆?2. **鍔ㄦ€?list stride**锛欶PTL/big-tile 鐨?`count + capacity` 琛屽竷灞€浠庡浐瀹?33 鏀逛负杩愯鏃?`capacity+1`锛沜luster 淇濇寔鍥哄畾 33锛堟瘡 cell 鏈€澶?32锛夈€?3. **GPU producer/consumer 鎵╁**锛歴creen AABB銆乥ig-tile銆丗PTL銆乧luster 鍜屾墍鏈夎鍙?list 鐨?shader 绉婚櫎纭紪鐮?32锛?28 slot 鐢?4 涓?32-bit mask锛?4 threads 寰幆鍐欏嚭銆?4. **瀹归噺閫夋嫨涓庡洖閫€**锛歜uffer path 鏀寔 128锛泃exture path 鍙?`maxTextureSize` 闄愬埗锛岃秴闄愭椂鎸?128鈫?4鈫?2 闄嶄綆 effective capacity 骞朵竴娆℃€у憡璀︼紝涓嶉潤榛樻埅鏂垨瓒婄晫銆?5. **楠屾敹涓庢€ц兘**锛?2 涓?M7 0 diff锛?4 鍙屽悗绔€丆PU/texture/buffer 0 diff锛?28 buffer 0 diff锛?4/128 鐨?1080p 鎬ц兘鍜屽唴瀛樻湁璁板綍锛孧8.6 鍐嶅喅瀹氶粯璁ゅ閲忋€?
-M8 **涓嶅紩鍏?* HDRP 鐨?16-bit packed list銆乴ayered cluster offset銆乴ight category/feature variants銆乴ight layers銆乧ookies銆乤rea lights銆丟PU shadow atlas packing銆傝繖浜涘湪 M9 鎴栧悗缁ā鍧楀鐞嗐€?
-### 0.1 涓?M7 璁″垝鐨勫樊寮?
-M7 鏂囨。鏇炬妸 layered cluster offset 鍜?64/128 lights 鐣欑粰 M8銆侻8 閲嶆柊璇勪及鍚庡仛濡備笅鏀舵暃锛?
-- **64/128 瀹归噺杩涘叆 M8**锛岃繖鏄?M8 鐨勪富浣撱€?- **layered offset/16-bit packing 涓嶈繘鍏?M8**锛氬綋鍓嶅浐瀹?32-bit row 鍦?128 lights銆?080p 涓嬬害 6.6 MB锛屼粛鍙帴鍙楋紱鍏堜繚璇?0 diff銆乼exture fallback 鍜屽閲忔纭紝閬垮厤鍚屾椂鏀?list 缂栫爜銆乧luster 鍒嗛厤鍜屾墍鏈夋秷璐硅€呫€?- **cluster 姣?cell 涓婇檺淇濇寔 32**锛欻DRP 鐨?cluster cell 纭笂闄愭槸 24锛堥粯璁よ祫浜у€?8锛宍ShaderConfig.cs:70`/`GlobalLightLoopSettings.cs:207`锛夛紝鏈」鐩?32 宸查珮浜?HDRP锛?4/128 鍙彁楂樻€诲閲忓拰 FPTL/big-tile 瀹归噺锛屼笉鏀瑰彉 cluster cell 璇箟銆?- **category/layer/feature variants/cookies** 涓嶈繘鍏?M8锛涘畠浠細鏀瑰彉鏉愯川 lighting variant銆丟Buffer channel 鎴?light data 濂戠害锛屽崟鐙綔涓?M9 瑙勫垝銆?
-### 0.2 榛樿鍐崇瓥锛堟殏瀹氾級
+1. **容量契约**：`lightListCapacity = 32|64|128`，总 slot 包含最多 1 个 directional；punctual 最多为 capacity-1（有方向光时）。默认候选 64；32 为基线回退，128 为 experimental。
+2. **动态 list stride**：FPTL/big-tile 的 `count + capacity` 行布局从固定 33 改为运行时 `capacity+1`；cluster 保持固定 33（每 cell 最多 32）。
+3. **GPU producer/consumer 扩容**：screen AABB、big-tile、FPTL、cluster 和所有读取 list 的 shader 移除硬编码 32；128 slot 用 4 个 32-bit mask；4 threads 循环写出。
+4. **容量选择与回退**：buffer path 支持 128；texture path 受 `maxTextureSize` 限制，超限时按 128→64→32 降低 effective capacity 并一次性告警，不静默截断或越界。
+5. **验收与性能**：32 与 M7 0 diff（64 双后端、CPU/texture/buffer 0 diff，128 buffer 0 diff；64/128 的 1080p 性能和内存有记录，M8.6 再决定默认容量。
+M8 **不引入** HDRP 的 16-bit packed list、layered cluster offset、light category/feature variants、light layers、cookies、area lights、GPU shadow atlas packing。这些在 M9 或后续模块处理。
+### 0.1 与 M7 计划的差异
+M7 文档曾把 layered cluster offset 和 64/128 lights 留给 M8。M8 重新评估后做如下收敛：
+- **64/128 容量进入 M8**，这是 M8 的主体。
+- **layered offset/16-bit packing 不进入 M8**：当前固定 32-bit row 在 128 lights、 1080p 下约 6.6 MB，仍可接受；先保证 0 diff、texture fallback 和容量正确，避免同时改 list 编码、cluster 分配和所有消费者。
+- **cluster 每 cell 上限保持 32**：HDRP 的 cluster cell 硬上限是 24（默认资产值 8，`ShaderConfig.cs:70`/`GlobalLightLoopSettings.cs:207`），本项目 32 已高于 HDRP；64/128 只提高总容量和 FPTL/big-tile 容量，不改变 cluster cell 语义。
+- **category/layer/feature variants/cookies** 不进入 M8；它们会改变材质 lighting variant、GBuffer channel 与 light data 契约，单独作为 M9 规划。
+### 0.2 默认决策（暂定）
 
-- 寮€鍙戞湡榛樿浠嶄负 32锛孧8.6 閫氳繃闂ㄧ鍚庢墠鑰冭檻鎶婇粯璁ゆ敼涓?64銆?- 128 姘歌繙鍏堜綔涓?opt-in/experimental锛涗笉鍥?128 鑳借窇灏遍粯璁ゅ紑鍚€?- `supportGpuLightListBuffers` 缁存寔 M7.8 鐨勯粯璁?true锛沚uffer 涓嶅彲鐢ㄦ椂 texture/CPU 鍥為€€銆?- M7 鐨?GPU shadow culling/indirect 榛樿浠嶄负 false锛孧8 涓嶆敼鍙樸€?
+- 开发期默认仍为 32，M8.6 通过门禁后才考虑把默认改为 64。
+- 128 永远先作为 opt-in/experimental；不因 128 能跑就默认开启。
+- `supportGpuLightListBuffers` 维持 M7.8 的默认 true；buffer 不可用时 texture/CPU 回退。
+- M7 的 GPU shadow culling/indirect 默认仍为 false，M8 不改变。
 ---
 
-## 1. 褰撳墠鍩虹嚎涓庣己鍙?
-### 1.1 褰撳墠 32-light 濂戠害
+## 1. 当前基线与缺口
+### 1.1 当前 32-light 契约
 
-- `src/render/lighting/gpu_light_data.h:11-18`锛?  - `kMaxGpuLights=32`銆乣kLightListMaxLights=32`銆乣kLightListStride=33`锛?  - `kLightTileSize=16`銆乣kLightBigTileSize=64`銆乣kClusterTileSize=64`銆乣kClusterSliceCount=32`锛?  - `GpuLightData` 涓?`32 * 6` 涓?`Vec4`銆?- `src/render/lighting/light_builder.cpp:92-95`锛歞irectional 鏈€澶?1 涓紝`maxPunctual = kMaxGpuLights - 1`锛涙寜 importance 鎺掑簭鍚庢埅鏂€?- `src/render/lighting/light_list_builder.cpp:176-332`锛欳PU 鍚屾椂鏋勫缓 FPTL銆乥ig-tile銆乧luster锛岃緭鍑?`count + 32 indices`锛宑luster 鍥哄畾 33 texel row銆?- `shaders/common/light_data.sc:14-140`锛歚HBG_LIGHT_LIST_STRIDE=33`銆乣HBG_LIGHT_CLUSTER_STRIDE=33`銆乣HBG_LIGHT_CLUSTER_MAX_LIGHTS=32`锛屽苟纭紪鐮?32 鐨?loop 涓婇檺銆?- `shaders/lighting/light_loop.sc:78-116`锛歚lightCount` 涓?tile/cluster count 閮?`min(..., 32)`銆?- `src/render/passes/forward_renderer.cpp:559-566`锛歭ight data texture 楂樺害 32銆乻creen bounds 瀹藉害 `32*2`銆?- `src/render/passes/forward_renderer.cpp:1327-1331`銆乣:1758-1766`锛歜uffer 澶у皬鎸夊浐瀹?33 stride 璁＄畻骞舵牎楠屻€?
-### 1.2 褰撳墠 GPU producer
+- `src/render/lighting/gpu_light_data.h:11-18`：
+  - `kMaxGpuLights=32`、`kLightListMaxLights=32`、`kLightListStride=33`；
+  - `kLightTileSize=16`、`kLightBigTileSize=64`、`kClusterTileSize=64`、`kClusterSliceCount=32`；
+  - `GpuLightData` 为 `32 * 6` 个 `Vec4`。
+- `src/render/lighting/light_builder.cpp:92-95`：directional 最多 1 个，`maxPunctual = kMaxGpuLights - 1`；按 importance 排序后截断。
+- `src/render/lighting/light_list_builder.cpp:176-332`：CPU 同时构建 FPTL、big-tile、cluster，输出 `count + 32 indices`，cluster 固定 33 texel row。
+- `shaders/common/light_data.sc:14-140`：`HBG_LIGHT_LIST_STRIDE=33`、`HBG_LIGHT_CLUSTER_STRIDE=33`、`HBG_LIGHT_CLUSTER_MAX_LIGHTS=32`，并硬编码 32 的 loop 上限。
+- `shaders/lighting/light_loop.sc:78-116`：`lightCount` 与 tile/cluster count 部 `min(..., 32)`。
+- `src/render/passes/forward_renderer.cpp:559-566`：light data texture 高度 32、screen bounds 宽度 `32*2`。
+- `src/render/passes/forward_renderer.cpp:1327-1331`、`:1758-1766`：buffer 大小按固定 33 stride 计算并校验。
+### 1.2 当前 GPU producer
 
-- `light_screen_aabb_buffer.cs.sc`锛?4 threads 瑕嗙洊 32 涓粷瀵?slot锛涙棤鏁?slot 鍐欓浂銆?- `light_big_tile_buffer.cs.sc`锛氫竴涓?workgroup 瀵瑰簲 64脳64 big tile锛宍uint` mask 鍙兘瑕嗙洊 32 涓?light銆?- `light_fptl_buffer.cs.sc`锛氫竴涓?workgroup 瀵瑰簲 16脳16 tile锛宮ask/32-slot shared list銆?- `light_cluster_buffer.cs.sc`锛氫竴涓?workgroup 瀵瑰簲 `(64脳64 tile, slice)`锛屾渶澶?32 light銆?- M7 鐨?`light_list_passes=4`锛坈luster锛?`3`锛坣o-cluster锛?`5`锛坕ndirect锛変繚鎸佷笉鍙樸€?
-### 1.3 褰撳墠闄愬埗
+- `light_screen_aabb_buffer.cs.sc`：64 threads 覆盖 32 个绝对 slot；无效 slot 写零。
+- `light_big_tile_buffer.cs.sc`：一个 workgroup 对应 64×64 big tile，`uint` mask 只能覆盖 32 个 light。
+- `light_fptl_buffer.cs.sc`：一个 workgroup 对应 16×16 tile，mask/32-slot shared list。
+- `light_cluster_buffer.cs.sc`：一个 workgroup 对应 `(64×64 tile, slice)`，最多 32 light。
+- M7 的 `light_list_passes=4`（cluster； `3`（no-cluster； `5`（indirect）保持不变。
+### 1.3 当前限制
 
-- 瓒呰繃 32 涓?punctual lights 鏃讹紝`LightBuilder` 鐩存帴鎴柇锛涙病鏈夎瘖鏂鏄庤鎴柇鐨勬暟閲忋€?- FPTL/big-tile/cluster 鐨?stride 鍜?mask 閮芥槸缂栬瘧鏈?32锛屾棤娉曞彧鏀逛竴涓缃墿瀹广€?- cluster 姣?cell 宸插浐瀹?32锛涙墿瀹规€诲閲忔椂濡傛灉鐩存帴娌跨敤锛屼細鍑虹幇鈥淔PTL 鏈?64銆乧luster 鍙湁 32鈥濈殑棰勬湡宸紓锛岄渶瑕佹槑纭祴璇曞拰 debug銆?- texture path 鐨?list 瀹藉害闅?capacity 澧為暱锛屽彲鑳借秴杩?backend `maxTextureSize`锛沚uffer path 鏃犺闄愬埗銆?
+- 超过 32 个 punctual lights 时，`LightBuilder` 直接截断；没有诊断说明被截断的数量。
+- FPTL/big-tile/cluster 的 stride 和 mask 都是编译期 32，无法只改一个设置扩容。
+- cluster 每 cell 已固定 32；扩容总容量时如果直接沿用，会出现“FPTL 有 64、cluster 只有 32”的预期差异，需要明确测试和 debug。
+- texture path 的 list 宽度随 capacity 增长，可能超过 backend `maxTextureSize`；buffer path 无该限制。
 ---
 
-## 2. HDRP 婧愮爜缁撹
+## 2. HDRP 源码结论
 
-### 2.1 瀹归噺涓庝笂闄?
-HDRP 鐨?FPTL 瀹归噺鏄璁炬。浣嶏紝涓嶆槸浠绘剰鍊硷細
+### 2.1 容量与上限
+HDRP 的 FPTL 容量是预设档位，不是任意值：
 
-- `com.unity.render-pipelines.high-definition-config/Runtime/ShaderConfig.cs:10-19`锛?  - `FPTLMaxLightSizes.Low=31`銆乣High=63`銆乣Higher=127`銆乣Ultra=255`銆?- `ShaderConfig.cs:58-70`锛氶粯璁?`FPTLMaxLightCount=High (63)`锛沗LightClusterMaxCellElementCount=24`銆?- `ShaderConfig.cs:132-151`锛?  - big-tile `s_MaxNrBigTileLightsPlusOne = clamp((FPTLMax+1)*8, 512, 1024)`锛?  - FPTL `s_LightDwordPerFptlTile = (FPTLMax+1)/2`锛?6-bit packed锛夛紱
-  - cluster block/offset packing bits銆?- `GlobalLightLoopSettings.cs:201-207`锛歚maxDirectionalLightsOnScreen=16`銆乣maxPunctualLightsOnScreen=512`銆乣maxLightsPerClusterCell=8`锛堣繍琛屾椂璧勪骇鍙厤锛孲haderConfig 鍐?cap 24锛夈€?- `LightLoop.cs:685-686`锛氫粠 `lightLoopSettings` 璇诲彇 directional/punctual 涓婇檺銆?
-瀵?M8 鐨勫惈涔夛細HDRP 鐨?63/127 瀵瑰簲鏈」鐩殑 64/128 鎬?slot锛堝惈 1 涓?directional锛宲unctual 63/127锛夛紝瀹归噺鏂瑰悜鍜?HDRP High/Higher 涓€鑷达紱鏈」鐩粛杩滀綆浜?HDRP 鐨?512 punctual 涓婇檺銆?
-### 2.2 FPTL/big-tile 鍒楄〃
+- `com.unity.render-pipelines.high-definition-config/Runtime/ShaderConfig.cs:10-19`：
+  - `FPTLMaxLightSizes.Low=31`、`High=63`、`Higher=127`、`Ultra=255`。
+- `ShaderConfig.cs:58-70`：默认 `FPTLMaxLightCount=High (63)`；`LightClusterMaxCellElementCount=24`。
+- `ShaderConfig.cs:132-151`：
+  - big-tile `s_MaxNrBigTileLightsPlusOne = clamp((FPTLMax+1)*8, 512, 1024)`；
+  - FPTL `s_LightDwordPerFptlTile = (FPTLMax+1)/2`； 6-bit packed）；
+  - cluster block/offset packing bits。
+- `GlobalLightLoopSettings.cs:201-207`：`maxDirectionalLightsOnScreen=16`、`maxPunctualLightsOnScreen=512`、`maxLightsPerClusterCell=8`（运行时资产可配，ShaderConfig 写 cap 24）。
+- `LightLoop.cs:685-686`：从 `lightLoopSettings` 读取 directional/punctual 上限。
+对 M8 的含义：HDRP 的 63/127 对应本项目的 64/128 总 slot（含 1 个 directional，punctual 63/127），容量方向和 HDRP High/Higher 一致；本项目仍远低于 HDRP 的 512 punctual 上限。
+### 2.2 FPTL/big-tile 列表
 
-HDRP 浣跨敤 16-bit light index锛宑ount 鏀惧湪绗竴涓?dword 鐨勪綆 16 浣嶏細
+HDRP 使用 16-bit light index，count 放在第一个 dword 的低 16 位：
 
-- `LightLoopDef.hlsl:232-262`锛?  - `GetCountAndStartTile` 璇?`g_vLightListTile[...] & 0xffff`锛?  - `FetchIndex` 鐢?`(lightOffset+1)>>1` 鍜?16-bit shift 鍙?index銆?- `lightlistbuild.compute:413-422`锛?  - 姣忎釜 category 鐨?count clamp 鍒?`SHADEROPTIONS_FPTLMAX_LIGHT_COUNT`锛?  - 姣忎釜 dword 鍐欎袱涓?16-bit index銆?- `HDRenderPipeline.LightLoop.cs:621-657`锛?  - FPTL buffer 涓?`LightCategory.Count * s_LightDwordPerFptlTile * nrTiles`锛?  - big-tile buffer 涓?`s_MaxNrBigTileLightsPlusOne * nrBigTiles / 2`锛?  - cluster offset/index 涓虹嫭绔?buffer銆?
-M8 **涓嶇Щ妞?* 16-bit packing锛氬綋鍓?32-bit 琛屽竷灞€鍦?64/128 涓嬪唴瀛樺彲鎺ュ彈锛屼笖鑳戒繚鎸?texture fallback 涓?M7 0 diff锛?6-bit packed list 浣滀负 M9 鐨勫彲閫変紭鍖栵紝灞婃椂鍜?category/layered 涓€璧峰仛銆?
-### 2.3 Cluster 涓?layered offset
+- `LightLoopDef.hlsl:232-262`；
+  - `GetCountAndStartTile` 读 `g_vLightListTile[...] & 0xffff`；
+  - `FetchIndex` 用 `(lightOffset+1)>>1` 和 16-bit shift 取 index。
+- `lightlistbuild.compute:413-422`；
+  - 每个 category 的 count clamp 到 `SHADEROPTIONS_FPTLMAX_LIGHT_COUNT`：
+  - 每个 dword 写两个 16-bit index。
+- `HDRenderPipeline.LightLoop.cs:621-657`：
+  - FPTL buffer 为 `LightCategory.Count * s_LightDwordPerFptlTile * nrTiles`；
+  - big-tile buffer 为 `s_MaxNrBigTileLightsPlusOne * nrBigTiles / 2`；
+  - cluster offset/index 为独立 buffer。
+M8 **不移植** 16-bit packing：当前 32-bit 行布局在 64/128 下内存可接受，且能保持 texture fallback 与 M7 0 diff； 6-bit packed list 作为 M9 的可选优化，届时和 category/layered 一起做。
+### 2.3 Cluster 不 layered offset
 
-HDRP cluster 鐢变袱閮ㄥ垎缁勬垚锛?
-- `ClusteredUtils.hlsl:106-111`锛歚GenerateLayeredOffsetBufferIndex` 鎸?category/tile/cluster 璁＄畻 offset buffer 涓嬫爣銆?- `LightLoopDef.hlsl:286-315`锛?  - `UnpackClusterLayeredOffset` 浠?packed uint 鎷?offset/count锛?  - `GetCountAndStartCluster` 鍏堣 offset/count锛屽啀浠?`g_vLightListCluster[start+i]` 鍙?index銆?- `lightlistbuild-clustered.compute:76-78`锛歚PackClusterLayeredOffset(offset,count)`銆?- `lightlistbuild-clustered.compute:482-502`锛氬啓鍏?`g_vLayeredLightList`锛屽苟鐢?`g_LayeredOffset` 璁板綍姣忎釜 category/tile/cluster 鐨?start/count銆?- `LightLoop.cs:871-874`锛氭瘡 cluster tile 鐨?index 瀹归噺绾︿负 `(FPTLMax+1) * (1 << (log2Clusters+1))`銆?
-M8 淇濇寔鏈」鐩浐瀹?row锛歚count + 32 indices`锛宑luster stride 33锛涘師鍥犳槸锛?
-1. M8 鐨?64/128 鍙墿鎬诲閲忥紝cluster cell 涓婇檺浠?32锛?2. 鍥哄畾 row 鍙繚鎸佺‘瀹氭€у崌搴忚緭鍑哄拰 M7 0 diff锛?3. layered/atomic append 浼氬紩鍏ラ潪纭畾鎬ч『搴忔垨澶氫釜 buffer锛岄€傚悎鍜?category/layer 涓€璧峰湪 M9 鍋氥€?
-### 2.4 HDRP 涓庢湰椤圭洰鏄犲皠
+HDRP cluster 由两部分组成：
+- `ClusteredUtils.hlsl:106-111`：`GenerateLayeredOffsetBufferIndex` 按 category/tile/cluster 计算 offset buffer 下标。
+- `LightLoopDef.hlsl:286-315`；
+  - `UnpackClusterLayeredOffset` 从 packed uint 取 offset/count；
+  - `GetCountAndStartCluster` 先读 offset/count，再以 `g_vLightListCluster[start+i]` 可 index。
+- `lightlistbuild-clustered.compute:76-78`：`PackClusterLayeredOffset(offset,count)`。
+- `lightlistbuild-clustered.compute:482-502`：写入 `g_vLayeredLightList`，并用 `g_LayeredOffset` 记录每个 category/tile/cluster 的 start/count。
+- `LightLoop.cs:871-874`：每 cluster tile 的 index 容量约为 `(FPTLMax+1) * (1 << (log2Clusters+1))`。
+M8 保持本项目固定 row：`count + 32 indices`，cluster stride 33；原因是：
+1. M8 的 64/128 只扩总容量，cluster cell 上限仍 32：
+2. 固定 row 可保持确定性升序输出和 M7 0 diff：
+3. layered/atomic append 会引入非确定性顺序或多个 buffer，适合和 category/layer 一起在 M9 做。
+### 2.4 HDRP 与本项目映射
 
-| 椤?| HDRP | M8 鏈」鐩?|
+| 项
+| HDRP | M8 本项目 |
 |---|---|---|
-| FPTL 瀹归噺 | 31/63/127/255锛坄ShaderConfig.cs:10-19`锛?| 32/64/128 鎬?slot锛堝惈 1 directional锛?|
-| big-tile 涓婇檺 | `clamp((FPTLMax+1)*8,512,1024)`锛坄ShaderConfig.cs:133`锛?| effective capacity锛?2/64/128锛?|
-| tile 灏哄 | FPTL 16銆乥ig-tile 64銆乧luster 32銆?2 slices锛坄LightLoop.cs:106-108`锛?| FPTL 16銆乥ig-tile 64銆乧luster 64脳32 slices锛堜繚鎸?M6/M7锛?|
-| cluster cell 涓婇檺 | 榛樿璧勪骇 8锛孲haderConfig cap 24锛坄GlobalLightLoopSettings.cs:207`銆乣ShaderConfig.cs:70`锛?| 鍥哄畾 32 |
-| FPTL 缂栫爜 | 16-bit packed + count low 16锛坄LightLoopDef.hlsl:242-262`锛?| 32-bit row + count dword锛圡8 鏆備笉 packed锛?|
-| cluster offset | layered `g_LayeredOffset` + 鍏ㄥ眬 index list锛坄LightLoopDef.hlsl:286-315`锛?| 鍥哄畾 33 row锛岀‘瀹氭€у崌搴忥紙M8 涓?layered锛?|
-| category/feature | Punctual/Area/Env/Decal + feature flags锛坄LightLoop.cs:66-83`锛?| 浠?punctual + 1 directional |
-| 榛樿瀹归噺 | FPTL High=63锛坄ShaderConfig.cs:65`锛?| 32 baseline锛?4 鍊欓€夛紱128 experimental |
+| FPTL 容量 | 31/63/127/255（`ShaderConfig.cs:10-19`）
+| 32/64/128 总 slot（含 1 directional） |
+| big-tile 上限 | `clamp((FPTLMax+1)*8,512,1024)`（`ShaderConfig.cs:133`）
+| effective capacity（32/64/128； |
+| tile 尺寸 | FPTL 16、big-tile 64、cluster 32、 2 slices（`LightLoop.cs:106-108`）
+| FPTL 16、big-tile 64、cluster 64×32 slices（保持 M6/M7； |
+| cluster cell 上限 | 默认资产 8，ShaderConfig cap 24（`GlobalLightLoopSettings.cs:207`、`ShaderConfig.cs:70`）
+| 固定 32 |
+| FPTL 编码 | 16-bit packed + count low 16（`LightLoopDef.hlsl:242-262`）
+| 32-bit row + count dword（M8 暂不 packed） |
+| cluster offset | layered `g_LayeredOffset` + 全局 index list（`LightLoopDef.hlsl:286-315`）
+| 固定 33 row，确定性升序（M8 不 layered） |
+| category/feature | Punctual/Area/Env/Decal + feature flags（`LightLoop.cs:66-83`）
+| 仍 punctual + 1 directional |
+| 默认容量 | FPTL High=63（`ShaderConfig.cs:65`）
+| 32 baseline；64 候选；128 experimental |
 
-### 2.5 涓嶈繘鍏?M8 鐨?HDRP 鑳藉姏
+### 2.5 不进入 M8 的 HDRP 能力
 
-- **Category/feature flags**锛歚LightLoop.cs:66-83`锛圥unctual/Area/Env/Decal 涓?feature flags锛夛紝`lightlistbuild.compute:356-386` 鐨勫垎绫昏鏁?feature flags锛汳8 鍙湁 punctual + 1 directional銆?- **Light layers**锛歚LightLoop.hlsl:305` 鐨?`IsMatchingLightLayer`锛宍HDAdditionalLightData.cs:1033-1073` 鐨?light layer mask锛涢渶瑕?GBuffer/prepass rendering-layer channel锛孧9 鍗曠嫭瑙勫垝銆?- **Cookies/IES**锛歚LightCookieManager.cs:47-62`銆乣:242-317` 鐨?cookie atlas/atlas packing锛汳9 鎴栫嫭绔嬫ā鍧椼€?- **Shadow request/atlas**锛歚HDShadowCullingUtils.cs:64-132`銆乣HDShadowManager.cs:1414-1452` 浠嶆槸 CPU request/atlas锛汳8 涓嶆敼 shadow 鏁版嵁濂戠害銆?
+- **Category/feature flags**：`LightLoop.cs:66-83`（Punctual/Area/Env/Decal 与 feature flags），`lightlistbuild.compute:356-386` 的分类计数 feature flags；M8 只有 punctual + 1 directional。
+- **Light layers**：`LightLoop.hlsl:305` 的 `IsMatchingLightLayer`，`HDAdditionalLightData.cs:1033-1073` 的 light layer mask；需要 GBuffer/prepass rendering-layer channel，M9 单独规划、
+- **Cookies/IES**：`LightCookieManager.cs:47-62`、`:242-317` 的 cookie atlas/atlas packing；M9 或独立模块。
+- **Shadow request/atlas**：`HDShadowCullingUtils.cs:64-132`、`HDShadowManager.cs:1414-1452` 仍是 CPU request/atlas；M8 不改 shadow 数据契约。
 ---
 
-## 3. M8 浠诲姟鎷嗗垎
+## 3. M8 任务拆分
 
-| 浠诲姟 | 浜у嚭 | 鐘舵€?|
+| 任务 | 产出 | 状态 |
 |---|---|---|
-| **M8.0 瀹归噺濂戠害/鍩虹嚎閿?* | `32/64/128` 璁剧疆銆丆LI/JSON/UI銆両DL銆?2 baseline 鍥炲綊 | `[x]` 瀹屾垚锛圙PU >32 鏆?gate锛?|
-| **M8.1 CPU reference** | `LightBuilder`/`LightListBuilder` 瀹归噺鍙傛暟銆佽竟鐣?鎴柇娴嬭瘯 | `[x]` 瀹屾垚 |
+| **M8.0 容量契约/基线锁 * | `32/64/128` 设置、CLI/JSON/UI、IDL、 2 baseline 回归 | `[x]` 完成（GPU >32 暴 gate； |
+| **M8.1 CPU reference** | `LightBuilder`/`LightListBuilder` 容量参数、边界 截断测试 | `[x]` 完成 |
 | **M8.2 GPU FPTL/big-tile** | 128-slot AABB、4×mask、动态 stride、64/128 0 diff | `[x]` 完成（2026-11-13） |
 | **M8.3 GPU cluster** | 32/cell 保持、128 输入、overflow 打包/debug、0 diff | `[x]` 完成（2026-11-13） |
 | **M8.4 Buffer/texture consumers** | forward/deferred/contact/fog/debug 移除 32 硬编码；texture/CPU 128→64→32 clamp | `[x]` 完成（2026-11-14） |
@@ -80,53 +142,76 @@ M8 淇濇寔鏈」鐩浐瀹?row锛歚count + 32 indices`锛宑luster strid
 | **M8.6 性能与默认决策** | 32/64/128 1080p 300 帧、内存、默认值 | [x] 完成（2026-11-14） |
 | **M8.7 M8 验收** | 双后端矩阵、测试/IDL/gfx/docs、边界 | [x] 完成（2026-11-14） |
 
-渚濊禆锛歁8.0 鈫?M8.1 鈫?M8.2/M8.3 鈫?M8.4 鈫?M8.5 鈫?M8.6 鈫?M8.7銆侻8.2 涓?M8.3 鍦?M8.1 鍚庡彲浠ュ苟琛岋紝浣嗛兘蹇呴』鍏堟湁 CPU reference銆?
+依赖：M8.0 → M8.1 → M8.2/M8.3 → M8.4 → M8.5 → M8.6 → M8.7。M8.2 与 M8.3 在 M8.1 后可以并行，但都必须先有 CPU reference。
 ---
 
-## 4. 鏁版嵁濂戠害
+## 4. 数据契约
 
-### 4.1 瀹归噺妗ｄ綅
+### 4.1 容量档位
 
-| 璁剧疆 | 鎬?slot | 鏈?directional 鏃?punctual 涓婇檺 | FPTL/big-tile stride | cluster stride | cluster cell 涓婇檺 |
+| 设置 | 总 slot | 有 directional 时 punctual 上限 | FPTL/big-tile stride | cluster stride | cluster cell 上限 |
 |---|---:|---:|---:|---:|---:|
 | 32 | 32 | 31 | 33 | 33 | 32 |
 | 64 | 64 | 63 | 65 | 33 | 32 |
 | 128 | 128 | 127 | 129 | 33 | 32 |
 
-- `lightListCapacity` 鏄€?slot锛涙病鏈?directional 鏃?punctual 鍙互浣跨敤鍏ㄩ儴 capacity銆?- directional 浠嶅彧鏀寔 1 涓富鏂瑰悜鍏夛紱澶?directional 涓嶅湪 M8銆?- cluster 姣?cell 涓婇檺淇濇寔 32锛涘嵆浣挎€诲閲?64/128锛宑luster 涔熶笉浼氳秴杩?32銆俙--no-light-cluster` 璧?FPTL 鏃跺彲浠ョ湅鍒板畬鏁?64/128銆?- FPTL/big-tile 姣?tile 鐨?light 涓婇檺绛変簬 effective capacity銆?- 鎵€鏈?list 浠嶆寜缁濆 `GpuLightData` index 鍗囧簭锛沗LightBuilder` 鐨?importance 鎺掑簭鍙喅瀹氭埅鏂摢浜?light锛屼笉鏀瑰彉 list 鍐呴儴鍗囧簭銆?
-### 4.2 GpuLightData 涓?uniform
+- `lightListCapacity` 是总 slot；没有 directional 时 punctual 可以使用全部 capacity。
+- directional 仍只支持 1 个主方向光；失 directional 不在 M8。
+- cluster 每 cell 上限保持 32；即使总容量 64/128，cluster 也不会超过 32。`--no-light-cluster` 用 FPTL 时可以看到完整 64/128。
+- FPTL/big-tile 每 tile 的 light 上限等于 effective capacity。
+- 所有 list 仍按绝对 `GpuLightData` index 升序；`LightBuilder` 的 importance 排序只决定截断哪些 light，不改变 list 内部升序。
+### 4.2 GpuLightData 不 uniform
 
-- `kMaxGpuLights` 缂栬瘧鏈熶笂闄愭敼涓?**128**锛沗GpuLightData::texels` 涓?`128 * 6` 涓?`Vec4`銆?- light data texture 楂樺害涓?**effective capacity**锛?2/64/128锛夛紝瀹藉害浠?6锛沜onsumer 璇诲彇 `index < capacity`銆?- `LightScreenBounds` buffer 鍥哄畾 `2 * 128` 涓?vec4锛涜秴鍑?effective capacity 鐨?slot 鍐欓浂銆?- `PassUniforms`/`ClusterUniforms` 鏂板鎴栭暅鍍?`lightListParams2 = (listStride, capacity, maxFptlLights, maxBigTileLights)`锛?  - `listStride = effectiveCapacity + 1`锛?  - `capacity = effectiveCapacity`锛?  - `maxFptlLights = maxBigTileLights = effectiveCapacity`锛?  - cluster cell 涓婇檺浠嶇敱 `HBG_LIGHT_CLUSTER_MAX_LIGHTS=32` 琛ㄨ揪銆?- 涓嶆敼鍙?`lightListParams = (tileSize,tileCountX,tileCountY,enabled)` 鐨勬棦鏈夎涔夈€?
-### 4.3 FPTL/big-tile 琛屽竷灞€
+- `kMaxGpuLights` 编译期上限改为 **128**；`GpuLightData::texels` 为 `128 * 6` 个 `Vec4`。
+- light data texture 高度上 **effective capacity**（ 2/64/128），宽度仍 6；consumer 读取 `index < capacity`。
+- `LightScreenBounds` buffer 固定 `2 * 128` 个 vec4；超出 effective capacity 的 slot 写零。
+- `PassUniforms`/`ClusterUniforms` 新增或镜像 `lightListParams2 = (listStride, capacity, maxFptlLights, maxBigTileLights)`：
+  - `listStride = effectiveCapacity + 1`：
+  - `capacity = effectiveCapacity`：
+  - `maxFptlLights = maxBigTileLights = effectiveCapacity`：
+  - cluster cell 上限仍由 `HBG_LIGHT_CLUSTER_MAX_LIGHTS=32` 表达。
+- 不改变 `lightListParams = (tileSize,tileCountX,tileCountY,enabled)` 的既有语义。
+### 4.3 FPTL/big-tile 行布局
 
-淇濇寔 M6/M7 鐨?32-bit 琛屽竷灞€锛屽彧鎶?stride 鍙樻垚杩愯鏃讹細
+保持 M6/M7 的 32-bit 行布局，只把 stride 变成运行时：
 
 ```text
 row = (tileY * tileCountX + tileX) * listStride
 row[0] = lightCount
-row[1..capacity] = absolute light index锛堝崌搴忥級
+row[1..capacity] = absolute light index（升序）
 ```
 
-- texture path锛歚width = tileCountX * listStride`锛宍height = tileCountY`锛?- buffer path锛歚count = tileCountX * tileCountY * listStride`锛?- big-tile 鍚屾牱浣跨敤 `listStride`锛屾瘡 big tile 鏈€澶?effective capacity 涓?light锛?- 涓嶆敼鍙?16脳16/64脳64 tile 灏哄鍜屽崌搴忚涔夈€?
-### 4.4 Cluster 琛屽竷灞€
+- texture path：`width = tileCountX * listStride`，`height = tileCountY`：
+- buffer path：`count = tileCountX * tileCountY * listStride`；
+- big-tile 同样使用 `listStride`，每 big tile 最多 effective capacity 不 light：
+- 不改变 16×16/64×64 tile 尺寸和升序语义。
+### 4.4 Cluster 行布局
 
-淇濇寔鍥哄畾 33 stride锛?
+保持固定 33 stride：
 ```text
 row = (tileY * 32 + slice) * tileCountX + tileX
-row[0] = lightCount锛?= 32锛?row[1..32] = absolute light index锛堝崌搴忥級
+row[0] = lightCount； = 32； row[1..32] = absolute light index（升序）
 ```
 
-- cluster 杈撳叆浠?big-tile list 璇诲彇锛宐ig-tile 鍙互鏈?64/128 涓?light锛?- cluster 杈撳嚭 clamp 鍒?32锛涜秴杩?32 鐨?light 涓嶈繘鍏?cluster锛屼絾璁″叆 overflow 璇婃柇锛?- debug slice銆乼ransparent/forward-only銆乫og 鐨?cluster 璇诲彇淇濇寔 M7 璇箟锛?- 涓嶅紩鍏?`g_LayeredOffset`/鍏ㄥ眬 atomic append锛汳8 鐨?cluster 鏄浐瀹?row锛岀‘瀹氭€у崌搴忋€?
-### 4.5 璺緞涓?effective capacity
+- cluster 输入仓 big-tile list 读取，big-tile 可以有 64/128 不 light：
+- cluster 输出 clamp 到 32；超过 32 的 light 不进入 cluster，但计入 overflow 诊断；
+- debug slice、transparent/forward-only、fog 的 cluster 读取保持 M7 语义；
+- 不引入 `g_LayeredOffset`/全局 atomic append；M8 的 cluster 是固定 row，确定性升序。
+### 4.5 路径不 effective capacity
 
-涓夊眰璺緞淇濇寔锛?
+三层路径保持：
 ```text
 buffer GPU -> texture GPU -> CPU fallback
 ```
 
-- **buffer**锛氭敮鎸?32/64/128锛屼笉鍙?texture width 闄愬埗锛涙墍鏈?list buffer 鎸?effective capacity 閲嶅缓銆?- **texture**锛氭敮鎸?32/64/128锛屼絾 `width = tileCountX * (capacity+1)` 蹇呴』 <= `bgfx::getCaps()->limits.maxTextureSize`锛沜luster 瀹藉害 33脳tileCountX 涓嶅彉銆?- **CPU fallback**锛氬拰 texture 涓€鏍峰彈 width 闄愬埗锛涘鏋滆秴闄愶紝effective capacity 閫愭。闄嶄綆銆?- `effectiveCapacity` 閫夋嫨椤哄簭锛氳姹?128 鈫?64 鈫?32锛沚uffer 鍙敤鏃朵笉闄嶄綆銆?- 闄嶄綆鍙戠敓鏃跺彧璀﹀憡涓€娆★紝骞跺湪 diagnostics 涓褰?`light_list_capacity_clamped=true`銆乣light_list_capacity_requested/effective`銆?- 涓嶅厑璁告妸璇锋眰 128 闈欓粯鍙樻垚 128 涓?light 浣嗗彧鍐?32 涓紱鎴柇蹇呴』鏉ヨ嚜鏄庣‘鐨?capacity 瑙勫垯銆?
-### 4.6 甯ч『搴?
-M8 涓嶆敼鍙?M6/M7 鐨?light-list 甯ч『搴忥細
+- **buffer**：支持 32/64/128，不参 texture width 限制；所有 list buffer 持 effective capacity 重建。
+- **texture**：支持 32/64/128，但 `width = tileCountX * (capacity+1)` 必须 <= `bgfx::getCaps()->limits.maxTextureSize`；cluster 宽度 33×tileCountX 不变。
+- **CPU fallback**：和 texture 一样受 width 限制；如果超限，effective capacity 逐档降低。
+- `effectiveCapacity` 选择顺序：请求 128 → 64 → 32；buffer 可用时不降低。
+- 降低发生时只警告一次，并在 diagnostics 中记录 `light_list_capacity_clamped=true`、`light_list_capacity_requested/effective`。
+- 不允许把请求 128 静默变成 128 个 light 但只写 32 个；截断必须来自明确的 capacity 规则。
+### 4.6 帧顺序
+M8 不改变 M6/M7 的 light-list 帧顺序：
 
 ```text
 ClearLightLists
@@ -137,8 +222,10 @@ GPU Light Cluster
 GBuffer / Forward / Contact / Fog / Debug consumers
 ```
 
-- `light_screen_aabb_buffer` 鐨?slot 寰幆瑕嗙洊 128锛?- cluster 浠嶈緭鍑?32/cell锛?- indirect dispatch 鐨?group 鏁颁笉鍥?light capacity 鏀瑰彉锛屽彧鏀瑰彉姣忎釜 group 鍐呯殑 slot 鏁般€?
-### 4.7 涓?shadow/contact/fog 鐨勮竟鐣?
+- `light_screen_aabb_buffer` 的 slot 循环覆盖 128：
+- cluster 仍输出 32/cell：
+- indirect dispatch 的 group 数不回 light capacity 改变，只改变每个 group 内的 slot 数。
+### 4.7 不 shadow/contact/fog 的边界
 - 1 个 directional shadow 不变；shadow request 上限仍为 64。
 - contact shadow mask 实际为 **8-bit**；最多 8 个 contact shadow light，超过部分不分配 contact mask（保持 M5 语义）。
 - 体积雾 punctual light 上限仍由 fog settings（默认 8）控制。
@@ -146,115 +233,236 @@ GBuffer / Forward / Contact / Fog / Debug consumers
 - M7 GPU shadow culling/indirect 仍是 opt-in，M8 不修改其数据布局。
 ---
 
-## 5. 瀛愪换鍔¤缁嗚璁?
-### M8.0 瀹归噺濂戠害涓庡熀绾块攣
+## 5. 子任务详细设计
+### M8.0 容量契约与基线锁
 
-鐩爣锛氬厛鍥哄畾鏁版嵁濂戠害鍜?32-light 鍥炲綊锛屼笉鏀硅瑙夈€?
-- 鏂板 `PipelineSettings::lightListCapacity`锛?2/64/128锛夛紝`sanitize` 鍒板悎娉曟。浣嶃€?- 鏂板 CLI `--light-capacity=32|64|128`锛汮SON key `lightListCapacity`锛汥ebugUI 鏄剧ず requested/effective銆?- `kMaxGpuLights=128`銆乣kLightListMaxLights=128`銆乣kLightListStrideMax=129`锛涘垹闄ゅ浐瀹?`kLightListStride=33` 鐨?C++ 缂栬瘧鏈熺敤娉曪紝`LightListBuilder` 浣跨敤杩愯鏃?`capacity+1`銆侴PU shader 鐨?33/32 鍥哄畾鍊煎湪 M8.2 鎵嶆浛鎹紱鍦ㄦ涔嬪墠 GPU 璺緞鎶婅姹傚閲?clamp 鍒?32 骞跺彧璀﹀憡涓€娆°€?- 鍏堥攣瀹?M7 32-light 鍩虹嚎锛歚m61_thirtytwo`銆乣m61_transparent`銆乫og銆乧ontact銆乨eferred銆乫orward锛屽湪 capacity=32銆乥uffer/texture/CPU 涓嬩笌 M7 鎴浘 **0 diff**銆?- 鍗曟祴锛歝apacity 鍚堟硶鍊笺€侀潪娉曞€煎洖閫€銆乪ffective capacity銆?2 baseline 涓嶈蛋 128 鍒嗘敮銆?
-楠屾敹锛?2-light 鍏ㄩ儴鏃㈡湁娴嬭瘯/鎴浘涓嶅彉锛涙柊璁剧疆鍙В鏋?搴忓垪鍖栵紱鏃?shader 缂栬瘧閿欒銆?
+目标：先固定数据契约和 32-light 回归，不改视觉。
+- 新增 `PipelineSettings::lightListCapacity`（32/64/128），`sanitize` 到合法档位、
+- 新增 CLI `--light-capacity=32|64|128`；JSON key `lightListCapacity`；DebugUI 显示 requested/effective。
+- `kMaxGpuLights=128`、`kLightListMaxLights=128`、`kLightListStrideMax=129`；删除固定 `kLightListStride=33` 的 C++ 编译期用法，`LightListBuilder` 使用运行时 `capacity+1`。GPU shader 的 33/32 固定值在 M8.2 才替换；在此之前 GPU 路径把请求容量 clamp 到 32 并只警告一次。
+- 先锁定 M7 32-light 基线：`m61_thirtytwo`、`m61_transparent`、fog、contact、deferred、forward，在 capacity=32、buffer/texture/CPU 下与 M7 截图 **0 diff**。
+- 单测：capacity 合法值、非法值回退、effective capacity、 2 baseline 不走 128 分支。
+验收： 2-light 全部既有测试/截图不变；新设置可解析 序列化；无 shader 编译错误。
 M8.0 验证：ctest **207 cases / 20,170 assertions** + IDL check 通过；D3D11/Vulkan 默认 buffer、texture 和 --no-gpu-light-list CPU 路径对 M7 default_*.png **0 diff**；M8.2 后 --light-capacity=64/128 不再 clamp，见第 12 节。
 ### M8.1 CPU reference
 
-鐩爣锛欳PU `LightListBuilder` 鍜?`LightBuilder` 鏀寔 32/64/128锛宑luster 浠?32/cell銆?
-- `LightBuilder::build(..., capacity)`锛氭寜 importance 鎺掑簭鍚庢埅鏂埌 `capacity`锛涜褰?`truncatedLightCount`锛堝€欓€夋暟 - 閫変腑鏁帮級銆?- `LightListBuilder::build(..., capacity)`锛?  - `lightRects/lightVisible` 鎵╁埌 128锛?  - FPTL/big-tile 鐨?list 涓婇檺鍜?stride 浣跨敤 effective capacity锛?  - cluster 浠嶆埅鏂?32锛屽苟璁板綍 `overflowClusters`锛?  - `textureWidthFor(width, capacity)`銆乣bigTileTextureWidthFor(width, capacity)`銆乧luster width 淇濇寔 33锛?  - `maxLightsPerTile`/`maxLightsPerBigTile`/`maxLightsPerCluster` 缁熻鍑嗙‘銆?- 鍗曟祴瑕嗙洊锛?  - 31/32/33銆?3/64/65銆?27/128/129 鐏紱
-  - 鏈?鏃?directional锛?  - 64/128 鐏悓鏃惰惤鍦ㄥ悓涓€ tile銆乥ig tile銆乧luster锛?  - cluster 鍙湁鍓?32 涓崌搴?index锛?  - 鎴柇椤哄簭涓?importance 鎺掑簭涓€鑷达紱
-  - texture width 璁＄畻銆?- 涓?M7 32-light CPU reference 閫?tile/閫?cluster 瀵圭収 0 diff銆?
-楠屾敹锛欳PU 娴嬭瘯鍏ㄨ繃锛?28 capacity 涓嬫棤瓒婄晫銆?
-M8.1 楠岃瘉锛歚LightBuilder` 鍦?capacity=32 鎴柇 33 涓€欓€変负 32/truncated=1锛宑apacity=64 淇濈暀 33锛沗LightListBuilder` capacity=64/128 鐨?FPTL stride 涓?65/129銆?28 鐏悓 tile 璁℃暟涓?128銆乧luster 浠?32/cell 涓旇褰?overflow锛?2-light 榛樿璺緞涓?M7 0 diff銆?
+目标：CPU `LightListBuilder` 和 `LightBuilder` 支持 32/64/128，cluster 仍 32/cell。
+- `LightBuilder::build(..., capacity)`：按 importance 排序后截断到 `capacity`；记录 `truncatedLightCount`（候选数 - 选中数）。
+- `LightListBuilder::build(..., capacity)`；
+  - `lightRects/lightVisible` 扩到 128：
+  - FPTL/big-tile 的 list 上限和 stride 使用 effective capacity；
+  - cluster 仍截断 32，并记录 `overflowClusters`；
+  - `textureWidthFor(width, capacity)`、`bigTileTextureWidthFor(width, capacity)`、cluster width 保持 33：
+  - `maxLightsPerTile`/`maxLightsPerBigTile`/`maxLightsPerCluster` 统计准确。
+- 单测覆盖；
+  - 31/32/33、 3/64/65、 27/128/129 灯；
+  - 有 时 directional：
+  - 64/128 灯同时落在同一 tile、big tile、cluster：
+  - cluster 只有前 32 个升序 index）
+  - 截断顺序为 importance 排序一致；
+  - texture width 计算。
+- 为 M7 32-light CPU reference 逐 tile/逐 cluster 对照 0 diff。
+验收：CPU 测试全过；128 capacity 下无越界。
+M8.1 验证：`LightBuilder` 在 capacity=32 截断 33 个候选为 32/truncated=1，capacity=64 保留 33；`LightListBuilder` capacity=64/128 的 FPTL stride 为 65/129、128 灯同 tile 计数为 128、cluster 仍 32/cell 且记录 overflow；32-light 默认路径不 M7 0 diff。
 ### M8.2 GPU big-tile/FPTL
 
-鐩爣锛欸PU producer 鏀寔 128 slot 鍜屽姩鎬?stride銆侻8.0/M8.1 宸插畬鎴?CPU/setting锛汳8.2 鍚屾椂绉婚櫎 `ForwardRenderer::setSettings` 鐨?32 瀹归噺涓存椂 gate 鍜?shader 鐨勫浐瀹?33/32銆?
-- `light_screen_aabb_buffer.cs.sc`锛?  - 64 threads锛屾瘡涓?thread 璐熻矗 2 涓粷瀵?slot锛?..127锛夛紱
-  - 瓒呭嚭 effective capacity 鐨?slot 鍐?`visible=0`锛?  - 淇濇寔 AABB `min/max` 甯冨眬涓嶅彉銆?- `light_big_tile_buffer.cs.sc` / `light_fptl_buffer.cs.sc`锛?  - 浣跨敤 `uint s_mask[4]`锛?28 bit锛夛紱
-  - shared list `uint s_list[128]`锛?  - 杈撳叆 big-tile count/pass uniform 浣跨敤 effective capacity锛?  - `atomicOr` 鐢?`mask[index >> 5]`锛?  - thread 0 鎸?0..capacity-1 鎵弿 mask 鐢熸垚鍗囧簭 list锛?  - 64 threads 寰幆鍐欏嚭 `row[1..capacity]`锛堜笉鑳藉亣璁?thread 鏁?= capacity锛夛紱
-  - 杈撳嚭 stride 浠?`lightListParams2.x` 璇诲彇锛屼笉鍐欐 33銆?- `light_indirect_args.cs.sc`锛歞ispatch group 鏁颁笉鍙橈紝涓嶄緷璧?capacity銆?- buffer 澶у皬/鏍￠獙浣跨敤 `capacity+1`锛屽苟妫€鏌?`bufferCount == tileCountX*tileCountY*stride`銆?- D3D11/Vulkan銆乧apacity 32/64/128銆乥uffer vs CPU reference **0 diff**銆?- 32-light M7 鍥炲綊 0 diff銆?
-楠屾敹锛?4/128 鐨?tile/big-tile light 闆嗗悎鍜岄『搴忎笌 CPU 涓€鑷达紱鏃?shared memory/瓒婄晫/validation 閿欒銆?
+目标：GPU producer 支持 128 slot 和动态 stride。M8.0/M8.1 已完成 CPU/setting；M8.2 同时移除 `ForwardRenderer::setSettings` 的 32 容量临时 gate 和 shader 的固定 33/32。
+- `light_screen_aabb_buffer.cs.sc`：
+  - 64 threads，每个 thread 负责 2 个绝对 slot； ..127）；
+  - 超出 effective capacity 的 slot 写 `visible=0`；
+  - 保持 AABB `min/max` 布局不变。
+- `light_big_tile_buffer.cs.sc` / `light_fptl_buffer.cs.sc`：
+  - 使用 `uint s_mask[4]`； 28 bit）；
+  - shared list `uint s_list[128]`：
+  - 输入 big-tile count/pass uniform 使用 effective capacity；
+  - `atomicOr` 用 `mask[index >> 5]`：
+  - thread 0 持 0..capacity-1 扫描 mask 生成升序 list；
+  - 64 threads 循环写出 `row[1..capacity]`（不能假设 thread 数 = capacity）；
+  - 输出 stride 仍 `lightListParams2.x` 读取，不写死 33。
+- `light_indirect_args.cs.sc`：dispatch group 数不变，不依赖 capacity。
+- buffer 大小/校验使用 `capacity+1`，并检查 `bufferCount == tileCountX*tileCountY*stride`。
+- D3D11/Vulkan、capacity 32/64/128、buffer vs CPU reference **0 diff**。
+- 32-light M7 回归 0 diff。
+验收： 4/128 的 tile/big-tile light 集合和顺序与 CPU 一致；无 shared memory/越界/validation 错误。
 ### M8.3 GPU cluster
 
-鐩爣锛氬湪鎬诲閲?64/128 涓嬩繚鎸?cluster 32/cell锛屽苟淇濊瘉杈撳叆/overflow 姝ｇ‘銆?
-- `light_cluster_buffer.cs.sc`锛?  - 杈撳叆 big-tile list 鍙惈 64/128 涓?light锛屾寜 FPTL/big-tile 鐨勫姩鎬?`listStride` 璇诲彇锛涜緭鍏ュ惊鐜笉鑳界户缁敤 `HBG_LIGHT_CLUSTER_MAX_LIGHTS` 鎴柇 big-tile锛屽彧鑳界敤瀹冮檺鍒惰緭鍑猴紱
-  - 杈撳嚭 shared list 浠?32锛?  - 姣忎釜鍊欓€夋鏌?`lightIndex < effective capacity`銆丄ABB銆乨epth slice锛?  - 瓒呰繃 32 鐨勫€欓€夎鍏?overflow锛坰hared/atomic 鎴?CPU 鍙缁熻锛夛紝涓嶅啓瓒婄晫锛?  - 杈撳嚭 count 鍜?32 涓崌搴?index銆?- cluster stride/绾圭悊甯冨眬淇濇寔 33锛?- `light_cluster_buffer` 鐨?debug slice 浠嶄笌 CPU 鍚?slice 0 diff锛?- 64/128 lights 涓嬶細
-  - cluster 鍓?32 涓崌搴?index 涓?CPU 涓€鑷达紱
-  - 绗?33 涓強浠ュ悗涓嶅嚭鐜帮紱
-  - transparent/forward-only cluster 璺緞浠嶅伐浣滐紱
-  - `--no-light-cluster` 鍥為€€ FPTL 鑳界湅鍒板畬鏁?64/128銆?- 涓嶅湪 M8 寮曞叆 layered offset锛涘鏋滃疄娴?fixed row 32/cell 涓嶅彲鎺ュ彈锛孧8.3 鍙褰曟暟鎹紝layered 杞叆 M9锛屼笉浣滀负 M8 闃诲椤广€?
-楠屾敹锛歝luster 32/cell 杈圭晫銆?4/128 杈撳叆銆乨ebug slice 鍏ㄩ儴 0 diff/鏃犺秺鐣屻€?
+目标：在总容量 64/128 下保持 cluster 32/cell，并保证输入/overflow 正确。
+- `light_cluster_buffer.cs.sc`：
+  - 输入 big-tile list 可含 64/128 个 light，按 FPTL/big-tile 的动态 `listStride` 读取；输入循环不能继续用 `HBG_LIGHT_CLUSTER_MAX_LIGHTS` 截断 big-tile，只能用它限制输出；
+  - 输出 shared list 仍 32：
+  - 每个候选检查 `lightIndex < effective capacity`、AABB、depth slice：
+  - 超过 32 的候选计入 overflow（shared/atomic 成 CPU 可见统计），不写越界；
+  - 输出 count 和 32 个升序 index。
+- cluster stride/纹理布局保持 33：
+- `light_cluster_buffer` 的 debug slice 仍与 CPU 同 slice 0 diff；
+- 64/128 lights 下：
+  - cluster 前 32 个升序 index 不 CPU 一致；
+  - 第 33 个及以后不出现；
+  - transparent/forward-only cluster 路径仍工作；
+  - `--no-light-cluster` 回退 FPTL 能看到完整 64/128。
+- 不在 M8 引入 layered offset；如果实测 fixed row 32/cell 不可接受，M8.3 只记录数据，layered 转入 M9，不作为 M8 阻塞项。
+验收：cluster 32/cell 边界。 64/128 输入、debug slice 全部 0 diff/无越界。
 ### M8.4 Buffer/texture consumers
 
-鐩爣锛氭墍鏈夋秷璐硅€呬笉鍐嶇‖缂栫爜 32锛屽苟淇濇寔 M7 缁戝畾璺緞銆?
-- `shaders/common/light_data.sc`锛?  - `HBG_LIGHT_LIST_STRIDE` 鏀逛负 `u_pass_lightListParams2.x`锛坆uffer/texture 閮界敤杩愯鏃?stride锛夛紱
-  - `HBG_LIGHT_LIST_MAX_LIGHTS` 涓?128锛?  - cluster 瀹忎繚鎸?`33/32`锛?  - `hbgLightListCount/Index` 鐢?`tileCountX * stride`锛?  - texture path 鐨?`texelFetch` x 鍧愭爣鐢ㄨ繍琛屾椂 stride锛?  - 鎵€鏈?index 璇诲彇鍔?`index < capacity` 闃叉姢銆?- `shaders/lighting/light_loop.sc`锛?  - FPTL `lightCount`/tile count clamp 鍒?128锛?  - cluster clamp 浠?32锛?  - fallback loop 鏈€澶?128锛?  - 涓嶆敼鍙?directional 鍗曠嫭寰幆鍜?punctual 姹傚€奸『搴忋€?- forward/deferred/contact/fog/debug锛?  - 缁戝畾 `s_lightList` 鐨?stage 7 涓嶅彉锛?  - `bindLightList` 鐨?buffer/texture 鏉′欢涓嶅彉锛?  - debug light-cluster 缁х画璇?cluster 33 stride锛?  - fog punctual 浠嶇敱 fog settings 闄愬埗锛屼笉鍥?128 鎵╁銆?- `debug` 杈撳嚭 capacity/stride/cluster cap锛屼究浜庡畾浣?tile/list 閿欒銆?
-楠屾敹锛歝apacity 32/64/128銆乥uffer/texture銆乫orward/deferred/transparent/fog/contact/debug 鍚屽悗绔?0 diff锛汳7 32 鍩虹嚎 0 diff銆?
-### M8.5 闆嗘垚銆佸洖閫€銆丆LI銆乁I
+目标：所有消费者不再硬编码 32，并保持 M7 绑定路径。
+- `shaders/common/light_data.sc`：
+  - `HBG_LIGHT_LIST_STRIDE` 改为 `u_pass_lightListParams2.x`（buffer/texture 都用运行时 stride）；
+  - `HBG_LIGHT_LIST_MAX_LIGHTS` 不 128：
+  - cluster 宏保持 `33/32`；
+  - `hbgLightListCount/Index` 用 `tileCountX * stride`；
+  - texture path 的 `texelFetch` x 坐标用运行时 stride：
+  - 所有 index 读取动 `index < capacity` 防护。
+- `shaders/lighting/light_loop.sc`：
+  - FPTL `lightCount`/tile count clamp 分 128：
+  - cluster clamp 仍 32：
+  - fallback loop 最多 128：
+  - 不改变 directional 单独循环和 punctual 求值顺序。
+- forward/deferred/contact/fog/debug：
+  - 绑定 `s_lightList` 的 stage 7 不变；
+  - `bindLightList` 的 buffer/texture 条件不变；
+  - debug light-cluster 继续读 cluster 33 stride：
+  - fog punctual 仍由 fog settings 限制，不回 128 扩容。
+- `debug` 输出 capacity/stride/cluster cap，便于定位 tile/list 错误。
+验收：capacity 32/64/128、buffer/texture、forward/deferred/transparent/fog/contact/debug 同后端 0 diff；M7 32 基线 0 diff。
+### M8.5 集成、回退、CLI、UI
 
-鐩爣锛氬閲忛€夋嫨鍙厤缃€佸彲璇婃柇銆佸彲鍥為€€銆?
-- CLI/JSON/UI锛?  - `--light-capacity=32|64|128`锛?  - `config/pipeline.json` 澧炲姞 `lightListCapacity`锛堥粯璁?32锛孧8.6 鍐嶅喅瀹氭槸鍚﹀垏 64锛夛紱
-  - DebugUI 鏄剧ず requested/effective capacity銆乻tride銆乸ath銆乼runcated/overflow銆?- effective capacity锛?  - buffer path 鐩存帴浣跨敤璇锋眰鍊硷紱
-  - texture/CPU path 妫€鏌?`(capacity+1)*tileCountX <= maxTextureSize`锛屼笉婊¤冻鍒欓€愭。闄嶄綆锛?  - 鍙戠敓 clamp 鍙鍛婁竴娆★紝璁板綍 requested/effective锛?  - 涓嶅洜 capacity 闄嶄綆鑰屾敼鍙?32-light 鍩虹嚎銆?- 璧勬簮锛?  - light data texture 楂樺害闅?effective capacity锛?  - screen bounds 鍥哄畾 2*128锛?  - FPTL/big-tile buffer/texture 闅?stride 閲嶅缓锛?  - cluster 璧勬簮涓嶅彉锛?  - resize/RT scale/4K 鍚庨噸寤哄苟鏍￠獙锛屾棤娉勬紡銆?- diagnostics锛?  - `light_list_capacity_requested/effective`锛?  - `light_list_stride`锛?  - `light_truncated`锛?  - `cluster_overflow`锛?  - 淇濈暀 M7 鐨?`light_list_passes/cpu_ms/path`銆?- 4K/1440p锛?  - capacity 64/32 鍦?4K texture 瀹藉害鍐咃紙鎸夊疄闄?maxTextureSize 鏍￠獙锛夛紱
-  - capacity 128 鍦?1080p texture 鍙繍琛岋紝1440p 浠ヤ笂搴旇蛋 buffer 鎴?clamp锛?  - buffer path 浣滀负 128 鐨勪富璺緞銆?- 澶辫触鍥為€€锛歜uffer 涓嶅彲鐢?鈫?texture锛泃exture 瀹藉害涓嶈冻 鈫?闄?capacity锛涘啀澶辫触 鈫?CPU reference锛涙瘡涓€姝ュ彧璀﹀憡涓€娆°€?
-楠屾敹锛欳LI/JSON/UI/璇婃柇姝ｇ‘锛況esize/0.5/4K 鏃犺秺鐣?娉勬紡锛?2 鍥炲綊涓嶅彉銆?
-### M8.6 鎬ц兘涓庨粯璁ゅ喅绛?
-鐩爣锛氱粰鍑?32/64/128 鐨勭湡瀹炴垚鏈拰榛樿鍊笺€?
-- 1080p 300 甯?full post锛堟部鐢?M7.7 鍦烘櫙/璁剧疆锛夛細
-  - capacity 32 baseline锛?  - 64 鐩爣 >60 fps锛屼笖涓嶆樉钁楁參浜?32锛?  - 128 璁板綍 fps/鍐呭瓨锛屼笉瑕佹眰榛樿杈炬爣銆?- 璁板綍锛?  - FPTL/big-tile/cluster buffer 瀛楄妭鏁帮紱
-  - `light_list_stride`銆乵ax lights銆乼runcated/overflow锛?  - GPU/CPU frame銆乻hadow/contact/fog 鏄惁鍙楀奖鍝嶃€?- 榛樿鍐崇瓥锛?  - 64 閫氳繃鍙屽悗绔?0 diff銆?2 鍥炲綊銆?080p >60銆佹棤娉勬紡鍚庢墠鍙粯璁わ紱
-  - 128 涓嶄綔涓洪粯璁ゅ閲忥紝淇濇寔 opt-in/experimental锛?  - 32 濮嬬粓鏄畨鍏ㄥ洖閫€銆?- 濡傛灉 64 鍦ㄧ洰鏍?GPU 涓婃槑鏄鹃€€鍖栵紝淇濈暀 32 榛樿骞惰褰?64 opt-in锛涗笉涓轰簡鈥滃閲忊€濈壓鐗?60 fps 闂ㄧ銆?
-楠屾敹锛氭€ц兘鏃ュ織銆佸唴瀛樿〃銆侀粯璁ゅ喅绛栧啓鍏ユ枃妗ｃ€?
-### M8.7 M8 楠屾敹
+目标：容量选择可配置、可诊断、可回退。
+- CLI/JSON/UI：
+  - `--light-capacity=32|64|128`：
+  - `config/pipeline.json` 增加 `lightListCapacity`（默认 32，M8.6 再决定是否切 64）；
+  - DebugUI 显示 requested/effective capacity、stride、path、truncated/overflow。
+- effective capacity；
+  - buffer path 直接使用请求值；
+  - texture/CPU path 检查 `(capacity+1)*tileCountX <= maxTextureSize`，不满足则逐档降低：
+  - 发生 clamp 只警告一次，记录 requested/effective；
+  - 不因 capacity 降低而改变 32-light 基线。
+- 资源：
+  - light data texture 高度随 effective capacity；
+  - screen bounds 固定 2*128：
+  - FPTL/big-tile buffer/texture 随 stride 重建；
+  - cluster 资源不变；
+  - resize/RT scale/4K 后重建并校验，无泄漏。
+- diagnostics：
+  - `light_list_capacity_requested/effective`；
+  - `light_list_stride`；
+  - `light_truncated`：
+  - `cluster_overflow`：
+  - 保留 M7 的 `light_list_passes/cpu_ms/path`。
+- 4K/1440p：
+  - capacity 64/32 在 4K texture 宽度内（按实际 maxTextureSize 校验）；
+  - capacity 128 在 1080p texture 可运行，1440p 以上应走 buffer 成 clamp：
+  - buffer path 作为 128 的主路径。
+- 失败回退：buffer 不可用 → texture；texture 宽度不足 → 限 capacity；再失败 → CPU reference；每一步只警告一次。
+验收：CLI/JSON/UI/诊断正确；resize/0.5/4K 无越界 泄漏； 2 回归不变。
+### M8.6 性能与默认决策
+目标：给出 32/64/128 的真实成本和默认值。
+- 1080p 300 帧 full post（沿用 M7.7 场景/设置）：
+  - capacity 32 baseline：
+  - 64 目标 >60 fps，且不显著慢于 32：
+  - 128 记录 fps/内存，不要求默认达标。
+- 记录：
+  - FPTL/big-tile/cluster buffer 字节数；
+  - `light_list_stride`、max lights、truncated/overflow；
+  - GPU/CPU frame、shadow/contact/fog 是否受影响。
+- 默认决策：
+  - 64 通过双后端 0 diff、 2 回归。 1080p >60、无泄漏后才可默认；
+  - 128 不作为默认容量，保持 opt-in/experimental：
+  - 32 始终是安全回退。
+- 如果 64 在目标 GPU 上明显退化，保留 32 默认并记录 64 opt-in；不为了“容量”牺物 60 fps 门禁。
+验收：性能日志、内存表、默认决策写入文档。
+### M8.7 M8 验收
 
-- 瑙嗚锛?2 M7 鍩虹嚎 0 diff锛?4/128 CPU vs GPU vs texture/buffer 0 diff锛沜luster 32/cell 杈圭晫姝ｇ‘銆?- 鏁板€硷細max lights/stride/count/overflow 缁熻姝ｇ‘锛涙棤瓒婄晫/绌?list銆?- 鍚庣锛欴3D11/Vulkan 鍙屽悗绔€?- 鍦烘櫙锛歠orward/deferred/transparent/fog/contact/debug/0.5/4K銆?- 鎬ц兘锛?080p 300 甯?64 >60锛?28 璁板綍銆?- 闂ㄧ锛歚hbg_tests`銆乣ctest`銆乣hbg_idl_check`銆乣--gfx-test`銆乣git diff --check`銆佹枃妗ｆ洿鏂般€?- 鍥為€€锛歜uffer 鈫?texture 鈫?CPU锛泃exture 瀹藉害 鈫?capacity clamp锛涜祫婧愰噴鏀炬棤娉勬紡銆?
+- 视觉： 2 M7 基线 0 diff；64/128 CPU vs GPU vs texture/buffer 0 diff；cluster 32/cell 边界正确。
+- 数值：max lights/stride/count/overflow 统计正确；无越界/空 list。
+- 后端：D3D11/Vulkan 双后端、
+- 场景：forward/deferred/transparent/fog/contact/debug/0.5/4K。
+- 性能（1080p 300 帧 64 >60；128 记录。
+- 门禁：`hbg_tests`、`ctest`、`hbg_idl_check`、`--gfx-test`、`git diff --check`、文档更新。
+- 回退：buffer → texture → CPU；texture 宽度 → capacity clamp；资源释放无泄漏。
 ---
 
-## 6. 楠屾敹鐭╅樀
+## 6. 验收矩阵
 
-| 鐢ㄤ緥 | 鐩爣 |
+| 用例 | 目标 |
 |---|---|
-| 32-light M7 鍥炲綊 | m61_thirtytwo/transparent/fog/contact/deferred/forward 鍦?CPU/texture/buffer 涓?0 diff |
-| 64-light CPU vs GPU | tile/big-tile 闆嗗悎/椤哄簭 0 diff锛沜luster 鍓?32 0 diff锛汥3D11/Vulkan |
-| 128-light buffer | 1080p 0 diff锛泃ile/big-tile 瀹屾暣锛沜luster 32/cell |
-| 128-light texture | 1080p 瀹藉害鍙绾虫椂 0 diff锛涜秴闄愭椂 clamp/buffer |
-| 64-light texture | 4K 瀹藉害鍙绾虫椂 0 diff锛涘惁鍒?clamp |
-| capacity 杈圭晫 | 31/32/33銆?3/64/65銆?27/128/129锛涙埅鏂『搴忔纭?|
-| cluster 杈圭晫 | 32/33 涓噸鍙?light锛涚 33 涓笉杩?cluster锛涙棤瓒婄晫 |
-| transparent/forward-only | cluster 32/cell锛沗--no-light-cluster` 鍥為€€ FPTL 64/128 |
-| fog/contact | fog 8-light 涓婇檺銆乧ontact 32-bit mask 涓嶅彉锛涗笉鍑虹幇绌?list/閿欒 shadow |
-| buffer/texture/CPU | 鍚屽悗绔?0 diff锛涘け璐ラ€愬眰鍥為€€鍙鍛婁竴娆?|
-| resize/0.5/4K | list/buffer/texture 閲嶅缓銆乻tride/灏哄姝ｇ‘銆佹棤娉勬紡 |
-| 鎬ц兘 | 1080p 300 甯?64 >60锛?28 璁板綍锛?2 baseline |
-| 闂ㄧ | 鍗曟祴/ctest/IDL/gfx/docs/diff 鍏ㄩ€氳繃 |
+| 32-light M7 回归 | m61_thirtytwo/transparent/fog/contact/deferred/forward 在 CPU/texture/buffer 不 0 diff |
+| 64-light CPU vs GPU | tile/big-tile 集合/顺序 0 diff；cluster 前 32 0 diff；D3D11/Vulkan |
+| 128-light buffer | 1080p 0 diff；tile/big-tile 完整；cluster 32/cell |
+| 128-light texture | 1080p 宽度可容纳时 0 diff；超限时 clamp/buffer |
+| 64-light texture | 4K 宽度可容纳时 0 diff；否则 clamp |
+| capacity 边界 | 31/32/33、 3/64/65、 27/128/129；截断顺序正确 |
+| cluster 边界 | 32/33 个重叠 light；第 33 个不进 cluster；无越界 |
+| transparent/forward-only | cluster 32/cell；`--no-light-cluster` 回退 FPTL 64/128 |
+| fog/contact | fog 8-light 上限、contact 32-bit mask 不变；不出现空 list/错误 shadow |
+| buffer/texture/CPU | 同后端 0 diff；失败逐层回退只警告一次 |
+| resize/0.5/4K | list/buffer/texture 重建、stride/尺寸正确、无泄漏 |
+| 性能 | 1080p 300 帧 64 >60；128 记录； 2 baseline |
+| 门禁 | 单测/ctest/IDL/gfx/docs/diff 全通过 |
 
 ---
 
-## 7. 鎬ц兘涓庡唴瀛橀绠楋紙浼扮畻锛?
-1080p 涓嬶紙`tileCountX=120`銆乣bigTileCountX=30`銆乧luster tiles `30脳17`锛?2 slices锛夛細
+## 7. 性能与内存预算（估算）
+1080p 下（`tileCountX=120`、`bigTileCountX=30`、cluster tiles `30×17`； 2 slices）：
 
-| capacity | FPTL stride | FPTL bytes | big-tile bytes | cluster bytes锛?3锛?| 鍚堣锛堜笉鍚?light data锛?|
+| capacity | FPTL stride | FPTL bytes | big-tile bytes | cluster bytes； 3：
+| 合计（不同 light data） |
 |---:|---:|---:|---:|---:|---:|
-| 32 | 33 | 120脳68脳33脳4 鈮?1.08 MB | 30脳17脳33脳4 鈮?67 KB | 30脳17脳32脳33脳4 鈮?2.15 MB | 鈮?3.30 MB |
-| 64 | 65 | 鈮?2.12 MB | 鈮?133 KB | 2.15 MB | 鈮?4.40 MB |
-| 128 | 129 | 鈮?4.21 MB | 鈮?263 KB | 2.15 MB | 鈮?6.63 MB |
+| 32 | 33 | 120×68×33×4 ≁ 1.08 MB | 30×17×33×4 ≁ 67 KB | 30×17×32×33×4 ≈ 2.15 MB | ≁ 3.30 MB |
+| 64 | 65 | ≁ 2.12 MB | ≁ 133 KB | 2.15 MB | ≁ 4.40 MB |
+| 128 | 129 | ≁ 4.21 MB | ≁ 263 KB | 2.15 MB | ≁ 6.63 MB |
 
-- light data texture锛?28脳6脳16 鈮?12 KB锛泂creen bounds 鍥哄畾 128脳2脳16 = 4 KB銆?- texture path 瀹藉害锛?080p FPTL 涓?3960/7800/15480锛?28 宸叉帴杩?16384 涓婇檺锛?440p 128 浼氳秴杩囬檺鍒躲€?- buffer path 鏃?texture 瀹藉害闄愬埗锛屼絾 128 鐨?FPTL 甯﹀/寰幆鎴愭湰闇€瑕佸疄娴嬨€?- 鍐呭瓨棰勭畻涓嶆槸榛樿寮€鍚?128 鐨勭悊鐢憋紱M8.6 鎸夊疄闄?GPU 缁撴灉鍐冲畾銆?
+- light data texture； 128×6×16 ≈ 12 KB；screen bounds 固定 128×2×16 = 4 KB。
+- texture path 宽度； 1080p FPTL 为 3960/7800/15480；128 已接近 16384 上限， 440p 128 会超过限制。
+- buffer path 时 texture 宽度限制，但 128 的 FPTL 带宽/循环成本需要实测。
+- 内存预算不是默认开启 128 的理由；M8.6 按实际 GPU 结果决定。
 ---
 
-## 8. 椋庨櫓涓庡鐞?
-1. **shared mask/shared list 鎵╁**锛?28 bit 闇€瑕?4 涓?`uint`锛宼hread 0 鎵弿 128锛泂hared list 128銆傚厛鍋?64锛屽啀寮€ 128锛涙瘡姝ュ鐓?CPU銆?2. **64 threads 鍐欏嚭 128 indices**锛氫笉鑳芥部鐢?`if (thread < MAX)`锛涘繀椤荤敤 `for (i=thread; i<capacity; i+=64)`锛屽惁鍒?64..127 涓㈠け銆?3. **texture 瀹藉害闄愬埗**锛?28 鍦?1440p/4K 瓒?`maxTextureSize`锛涘繀椤?query caps锛屾寜 128鈫?4鈫?2 clamp 鎴栬蛋 buffer锛屼笉闈欓粯瓒婄晫銆?4. **cluster 32/cell 涓庢€诲閲忎笉涓€鑷?*锛氳繖鏄湁鎰忚竟鐣岋紝闇€ debug/overflow 缁熻鍜屾枃妗ｏ紱涓嶈兘鐢ㄢ€渃luster 32鈥濊鍒や负 128 鍏ㄤ涪銆?5. **contact/fog/shadow 涓婇檺鏈墿瀹?*锛歝ontact mask 浠?32 bit锛宖og 浠?8锛宻hadow requests 浠?64锛涗笉瑕佸０绉?128 鐏叏閮ㄦ湁 contact/shadow/fog銆?6. **FPTL 涓?cluster 瑙嗚宸紓**锛歰paque FPTL 64/128銆乼ransparent cluster 32锛涢獙鏀跺繀椤诲湪鍚岃矾寰勫鐓э紝`--no-light-cluster` 鍗曠嫭璁板綍銆?7. **M7 0 diff 鍥炲綊**锛氭敼 stride 鏃跺厛閿?32 baseline锛汳8.0 蹇呴』鍏堟埅 32 鍥撅紝鍐嶆敼 producer/consumer銆?8. **shader 鍙樹綋/瀹?*锛歚HBG_LIGHT_LIST_STRIDE` 涓嶈兘鍐嶆槸鍥哄畾 33锛涙墍鏈?include 璺緞缁熶竴浠?uniform 璇伙紝閬垮厤 texture/buffer 鍒嗘敮涓嶄竴鑷淬€?9. **IDL 瀵归綈**锛歚PassUniforms`/`ClusterUniforms` 鏂板 vec4 浼氬奖鍝?offset锛涙洿鏂?`test_uniform_layout.cpp`锛屽弻鍚庣 gfx 楠岃瘉銆?10. **scope 鑶ㄨ儉**锛歁8 涓嶉『鎵嬪仛 layered/16-bit/category/layer/cookie/shadow atlas锛涘嚭鐜伴渶姹傛柊寤?M9銆?
+## 8. 风险与处理
+1. **shared mask/shared list 扩容**； 128 bit 需要 4 个 `uint`，thread 0 扫描 128；shared list 128。先做 64，再开 128；每步对照 CPU。
+2. **64 threads 写出 128 indices**：不能沿用 `if (thread < MAX)`；必须用 `for (i=thread; i<capacity; i+=64)`，否则 64..127 丢失。
+3. **texture 宽度限制**：128 在 1440p/4K 超 `maxTextureSize`；必须 query caps，按 128→64→32 2 clamp 或走 buffer，不静默越界。
+4. **cluster 32/cell 与总容量不一致 *：这是有意边界，需 debug/overflow 统计和文档；不能用“cluster 32”误判为 128 全丢。
+5. **contact/fog/shadow 上限未扩容 *：contact mask 仍 32 bit，fog 仍 8，shadow requests 仍 64；不要声称 128 灯全部有 contact/shadow/fog。
+6. **FPTL 与 cluster 视觉差异**：opaque FPTL 64/128、transparent cluster 32；验收必须在同路径对照，`--no-light-cluster` 单独记录。
+7. **M7 0 diff 回归**：改 stride 时先锁 32 baseline；M8.0 必须先截 32 图，再改 producer/consumer。
+8. **shader 变体/实 *：`HBG_LIGHT_LIST_STRIDE` 不能再是固定 33；所有 include 路径统一任 uniform 读，避免 texture/buffer 分支不一致。
+9. **IDL 对齐**：`PassUniforms`/`ClusterUniforms` 新增 vec4 会影响 offset；更新 `test_uniform_layout.cpp`，双后端 gfx 验证。
+10. **scope 膨胀**：M8 不顺手做 layered/16-bit/category/layer/cookie/shadow atlas；出现需求新建 M9。
 ---
 
-## 9. 寰呯‘璁?瀹炵幇鍓嶆鏌?
-- [ ] `maxTextureSize` 鍦?D3D11/Vulkan 瀹為檯鍊硷紱128 鍦?1080p 鏄惁绋冲畾灏忎簬涓婇檺銆?- [ ] 128-slot AABB 鐢?64 threads 杩樻槸 128 threads锛汥3D11/Vulkan shared/atomic 鎴愭湰銆?- [ ] `uint[4]` mask 鍦?GLSL/HLSL/SPIR-V 鐨?shared memory 澹版槑鍜?`atomicOr` 鍏煎鎬с€?- [ ] FPTL/big-tile 鐨?`lightListParams2` 鏀?Pass/Cluster 涓ゅ uniform 鏄惁闇€瑕侀噸澶嶄笂浼犮€?- [ ] texture path 128 鐨勫搴︽槸鍚﹀湪鐩爣 backend 涓婄ǔ瀹氾紙1080p 15480锛夈€?- [ ] 64 threads 鍐?128 index 鐨勫惊鐜湪 FPTL/big/cluster 涓変釜 shader 涓竴鑷淬€?- [ ] `LightBuilder` 鐨?importance 鎴柇鏄惁闇€瑕佸湪 diagnostics 涓樉绀猴紱鏄惁淇濇寔鐜版湁鎺掑簭绋冲畾銆?- [ ] 64 榛樿瀹归噺鏄惁婊¤冻 1080p >60锛涘鏋滃惁锛屾槸鍚﹀彧淇濈暀 64 opt-in銆?- [ ] 128 cluster 32/cell 鏄惁瓒冲锛沴ayered 鏄惁纭畾鐣?M9銆?- [ ] shadow/contact/fog 涓婇檺鏄惁闇€瑕佸湪 UI 涓彁绀猴紝閬垮厤璇В 128 鍏ㄥ姛鑳姐€?
+## 9. 待确认/实现前检查
+- [ ] `maxTextureSize` 在 D3D11/Vulkan 实际值；128 在 1080p 是否稳定小于上限。
+- [ ] 128-slot AABB 用 64 threads 还是 128 threads；D3D11/Vulkan shared/atomic 成本、
+- [ ] `uint[4]` mask 在 GLSL/HLSL/SPIR-V 的 shared memory 声明和 `atomicOr` 兼容性。
+- [ ] FPTL/big-tile 的 `lightListParams2` 改 Pass/Cluster 两套 uniform 是否需要重复上传。
+- [ ] texture path 128 的宽度是否在目标 backend 上稳定（1080p 15480）。
+- [ ] 64 threads 写 128 index 的循环在 FPTL/big/cluster 三个 shader 中一致。
+- [ ] `LightBuilder` 的 importance 截断是否需要在 diagnostics 中显示；是否保持现有排序稳定。
+- [ ] 64 默认容量是否满足 1080p >60；如果否，是否只保留 64 opt-in。
+- [ ] 128 cluster 32/cell 是否足够；layered 是否确定界 M9。
+- [ ] shadow/contact/fog 上限是否需要在 UI 中提示，避免误解 128 全功能。
 ---
 
-## 10. M8 鏄庣‘涓嶅仛
+## 10. M8 明确不做
 
-- HDRP 16-bit packed FPTL/big-tile list锛汳8 缁х画 32-bit row銆?- Layered cluster offset銆乬lobal atomic append銆乸er-category offset buffer銆?- Light category锛圓rea/Env/Decal锛夈€乫eature flags銆乸er-material lighting variants銆?- Light layers/rendering layer masks銆丟Buffer rendering-layer channel銆?- Cookies/IES銆乤rea lights銆乵ulti-directional >1銆?- GPU shadow request/atlas packing銆乧ached shadow GPU 鏇存柊锛汳7 shadow 鎵╁睍浠嶆槸 opt-in銆?- 256/512 lights銆丏3D12銆丏XR/RT銆乥indless/descriptor indexing銆丠i-Z銆乵eshlet/mesh shader銆?- 鏀瑰彉 M7 榛樿鐨?GPU shadow culling/indirect/async 寮€鍏炽€?
+- HDRP 16-bit packed FPTL/big-tile list；M8 继续 32-bit row。
+- Layered cluster offset、global atomic append、per-category offset buffer。
+- Light category（Area/Env/Decal）、feature flags、per-material lighting variants。
+- Light layers/rendering layer masks、GBuffer rendering-layer channel。
+- Cookies/IES、area lights、multi-directional >1。
+- GPU shadow request/atlas packing、cached shadow GPU 更新；M7 shadow 扩展仍是 opt-in。
+- 256/512 lights、D3D12、DXR/RT、bindless/descriptor indexing、Hi-Z、meshlet/mesh shader。
+- 改变 M7 默认的 GPU shadow culling/indirect/async 开关。
 ---
 
-## 11. 鏂囨。涓庝唬鐮佽竟鐣?
-鏈枃浠跺彧鍋?M8 瑙勫垝锛屼笉鍖呭惈鍔熻兘瀹炵幇銆傝繘鍏ュ疄鐜板悗锛?
-- 姣忎釜瀛愪换鍔″畬鎴愬悗鏇存柊鏈枃浠剁姸鎬併€佸疄闄?`file:line`銆佹祴璇?鎴浘/鎬ц兘锛?- 鏇存柊 `docs/implementation-plan.md` 鐨?M8 鐘舵€佸拰涓嬩竴浠诲姟锛?- 鏇存柊 `AGENTS.md` 鐨勫閲?list stride/cluster 32 杈圭晫锛?- 涓存椂鍦烘櫙/鎴浘/鏃ュ織缁х画鏀惧湪 `C:\Users\chenfuling\AppData\Local\Temp\`锛屼笉鎻愪氦鍒颁粨搴擄紱
-- 鏈畬鎴愭垨闃诲鐨勮兘鍔涙槑纭啓鈥滄湭瀹炵幇/闃诲鈥濓紝涓嶆妸瑙勫垝鍐欐垚宸插畬鎴愩€?
-M8 鍑哄彛锛?2/64/128 瀹归噺濂戠害绋冲畾锛?2 M7 鍩虹嚎 0 diff锛?4 鍙屽悗绔?0 diff 涓?1080p >60锛?28 鏈夊彲杩愯鐨?buffer 璺緞鍜岀湡瀹炴€ц兘璁板綍锛泃exture/CPU 鍥為€€銆乺esize/4K銆佽瘖鏂€佹祴璇曞拰鏂囨。榻愬叏銆?
+## 11. 文档与代码边界
+本文件只做 M8 规划，不包含功能实现。进入实现后：
+- 每个子任务完成后更新本文件状态、实际 `file:line`、测试/截图/性能：
+- 更新 `docs/implementation-plan.md` 的 M8 状态和下一任务：
+- 更新 `AGENTS.md` 的容量 list stride/cluster 32 边界：
+- 临时场景/截图/日志继续放在 `C:\Users\chenfuling\AppData\Local\Temp\`，不提交到仓库；
+- 未完成或阻塞的能力明确写“未实现/阻塞”，不把规划写成已完成。
+M8 出口： 2/64/128 容量契约稳定；32 M7 基线 0 diff（64 双后端 0 diff 与 1080p >60；128 有可运行的 buffer 路径和真实性能记录；texture/CPU 回退、resize/4K、诊断、测试和文档齐全。
 
 ---
 

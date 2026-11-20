@@ -1,4 +1,6 @@
-$input v_texcoord0, v_worldPos, v_normal, v_tangent, v_bitangent
+$input v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
+
+#define HBG_FORWARD_LIGHTMAP_GI 1
 
 #include "material/surface_data.sc"
 #include "lighting/contact_shadow.sc"

@@ -1,0 +1,33 @@
+{
+  "vfx": [
+    {
+      "name": "Sparks",
+      "asset": "minimal_unlit.vfxb",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "play": true,
+      "playRate": 1.0,
+      "seed": 7,
+      "properties": [
+        {
+          "name": "Tint",
+          "type": "color",
+          "value": [
+            1.0,
+            0.5,
+            0.1,
+            1.0
+          ]
+        },
+        {
+          "name": "Size",
+          "type": "float",
+          "value": 0.25
+        }
+      ]
+    }
+  ]
+}

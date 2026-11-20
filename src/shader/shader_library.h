@@ -36,11 +36,17 @@ class ShaderLibrary {
         std::vector<std::string> bufferFragments;
         std::string compute;
         std::string bufferCompute;
+        std::vector<std::string> computes;
+        std::vector<std::string> bufferComputes;
     };
 
     struct BackendFiles {
         PassFiles forward;
+        PassFiles forwardAdvanced;
         PassFiles forwardInstanced;
+        PassFiles bakedGI;
+        PassFiles bakedGICompensate;
+        PassFiles bakedGIForwardComposite;
         PassFiles tonemap;
         PassFiles postProcessExposure;
         PassFiles postProcessExposurePrepass;
@@ -71,6 +77,9 @@ class ShaderLibrary {
         PassFiles shadow;
         PassFiles shadowInstanced;
         PassFiles shadowCull;
+        PassFiles shadowMoments;
+        PassFiles shadowSatHorizontal;
+        PassFiles shadowSatVertical;
         PassFiles prepass;
         PassFiles motionVectors;
         PassFiles cameraMotionVectors;
@@ -87,6 +96,7 @@ class ShaderLibrary {
         PassFiles debugLightCluster;
         PassFiles debugShadowAtlas;
         PassFiles debugColor;
+        PassFiles debugLightmap;
         PassFiles debugAlbedo;
         PassFiles debugRoughness;
         PassFiles debugGbuffer;
@@ -98,6 +108,8 @@ class ShaderLibrary {
         PassFiles decalClear;
         PassFiles deferredLighting;
         PassFiles deferredLightingAdvanced;
+        PassFiles deferredLightingVariant;
+        PassFiles deferredLightingVariantCompute;
         PassFiles ssao;
         PassFiles ssaoBlur;
         PassFiles ssaoTemporal;
@@ -115,6 +127,9 @@ class ShaderLibrary {
         PassFiles debugSsgi;
         PassFiles debugSsgiRaw;
         PassFiles contactShadows;
+        PassFiles litMaterialFlags;
+        PassFiles litVariantIndirectClear;
+        PassFiles litVariantIndirect;
         PassFiles lightScreenAabb;
         PassFiles lightBigTile;
         PassFiles lightFptl;
@@ -132,7 +147,7 @@ class ShaderLibrary {
 
     bool loadManifest(const std::filesystem::path& manifestPath);
     gfx::ProgramHandle createProgram(const PassFiles& files, uint32_t variant, bool bufferPath, bool lightLayers);
-    gfx::ProgramHandle createComputeProgram(const PassFiles& files, bool bufferPath);
+    gfx::ProgramHandle createComputeProgram(const PassFiles& files, bool bufferPath, uint32_t variant);
 
     gfx::ResourceManager* m_resources = nullptr;
     std::filesystem::path m_root;

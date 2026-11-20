@@ -23,6 +23,10 @@ enum class ShadowFilter : uint8_t {
     Pcf5x5,
     Pcf7x7,
     Pcss,
+    Evsm,
+    Vsm,
+    Msm,
+    Ims,
 };
 
 struct ShadowSettings {
@@ -45,6 +49,9 @@ struct ShadowSettings {
     float normalBias = 0.2f;
     float slopeBias = 0.5f;
     float shadowNearPlane = 0.1f;
+    float directionalLightAngle = 1.0f;
+    float directionalMaxDepthBias = 0.001f;
+    uint32_t imsKernelSize = 5;
     float softness = 0.5f;
     uint32_t blockerSamples = 16;
     uint32_t filterSamples = 24;

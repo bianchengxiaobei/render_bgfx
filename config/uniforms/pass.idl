@@ -11,4 +11,6 @@ block Pass {
     vec4 lightListParams2;   # list stride, capacity, max fptl lights, max big-tile lights
     vec4 lightScreenSize;    # render width, render height, inverse width, inverse height
     vec4 cookieAtlasParams; # atlas size, padding / size, last valid mip, unused
+    vec4 litVariantParams;   # x = light flags, y = tile size, z = enabled, w = unused
+    vec4 lightmapParams2;    # x = SH scale, y = SH layer count, z = debug, w = forward baked-GI active
 }

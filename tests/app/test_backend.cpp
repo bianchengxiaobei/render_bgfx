@@ -30,6 +30,7 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK_FALSE(result.options.verbose);
     CHECK_FALSE(result.options.bgfxDebug);
     CHECK_FALSE(result.options.gfxTest);
+    CHECK_FALSE(result.options.vfxSpike);
     CHECK_FALSE(result.options.debugLightData);
     CHECK(result.options.debugDisplayMode == render::DebugDisplayMode::None);
     CHECK(result.options.debugLightClusterSlice == -1);
@@ -50,6 +51,8 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK_FALSE(result.options.ssgiTemporal.has_value());
     CHECK_FALSE(result.options.decals.has_value());
     CHECK_FALSE(result.options.reflectionProbes.has_value());
+    CHECK_FALSE(result.options.vfx.has_value());
+    CHECK_FALSE(result.options.vfxTest);
     CHECK(result.options.assetTestPath.empty());
     CHECK(result.options.scenePath.empty());
     CHECK(result.options.renderTestPath.empty());
@@ -66,6 +69,13 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK(result.options.postProcess.limitMin == doctest::Approx(-1.0f));
     CHECK(result.options.postProcess.limitMax == doctest::Approx(14.0f));
     CHECK(result.options.postProcess.tonemapping == render::TonemappingMode::ACES);
+}
+
+TEST_CASE("parseCommandLine parses the VFX spike switch") {
+    const char* argv[] = {"hbg", "--vfx-spike"};
+    const CommandLineResult result = parseCommandLine(2, argv);
+    REQUIRE(result.ok);
+    CHECK(result.options.vfxSpike);
 }
 
 TEST_CASE("parseCommandLine parses options") {
@@ -344,6 +354,10 @@ TEST_CASE("parseCommandLine parses prepass debug views and camera orbit") {
     CHECK(result.options.debugDisplayMode == render::DebugDisplayMode::Normal);
     CHECK(result.options.cameraOrbit);
 
+    const char* lightmapMask[] = {"hbg", "--debug-lightmap-mask"};
+    const auto lightmapMaskResult = parseCommandLine(2, lightmapMask);
+    CHECK(lightmapMaskResult.ok);
+    CHECK(lightmapMaskResult.options.debugLightmapMask);
     const char* invalid[] = {"hbg", "--debug-view=bogus"};
     CHECK_FALSE(parseCommandLine(2, invalid).ok);
 }
@@ -365,6 +379,9 @@ TEST_CASE("parseCommandLine parses M1.10 debug views") {
           render::DebugDisplayMode::ShadowCascade);
     CHECK(parse("--debug-view=shadow-filter").options.debugDisplayMode ==
           render::DebugDisplayMode::ShadowFilter);
+    CHECK(parse("--debug-view=lightmap").options.debugDisplayMode == render::DebugDisplayMode::Lightmap);
+    CHECK(parse("--debug-view=baked-lightmap").options.debugDisplayMode ==
+          render::DebugDisplayMode::Lightmap);
     CHECK(parse("--debug-view=albedo").options.debugDisplayMode == render::DebugDisplayMode::Albedo);
     CHECK(parse("--debug-view=roughness").options.debugDisplayMode == render::DebugDisplayMode::Roughness);
     CHECK(parse("--debug-view=metallic").options.debugDisplayMode == render::DebugDisplayMode::Metallic);
@@ -1041,4 +1058,19 @@ TEST_CASE("parseCommandLine parses low-resolution temporal fog options") {
     CHECK_FALSE(parseCommandLine(2, invalidWeight).ok);
     const char* invalidLights[] = {"hbg", "--fog-max-punctual-lights=20"};
     CHECK_FALSE(parseCommandLine(2, invalidLights).ok);
+}
+
+TEST_CASE("parseCommandLine parses VFX runtime switches") {
+    const char* enabledArgv[] = {"hbg", "--vfx-test"};
+    const CommandLineResult enabled = parseCommandLine(2, enabledArgv);
+    REQUIRE(enabled.ok);
+    REQUIRE(enabled.options.vfx.has_value());
+    CHECK(*enabled.options.vfx);
+    CHECK(enabled.options.vfxTest);
+
+    const char* disabledArgv[] = {"hbg", "--vfx", "--no-vfx"};
+    const CommandLineResult disabled = parseCommandLine(3, disabledArgv);
+    REQUIRE(disabled.ok);
+    REQUIRE(disabled.options.vfx.has_value());
+    CHECK_FALSE(*disabled.options.vfx);
 }

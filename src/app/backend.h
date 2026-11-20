@@ -49,6 +49,9 @@ struct ShadowOverrides {
     std::optional<float> normalBias;
     std::optional<float> slopeBias;
     std::optional<float> shadowNearPlane;
+    std::optional<float> directionalLightAngle;
+    std::optional<float> directionalMaxDepthBias;
+    std::optional<uint32_t> imsKernelSize;
     std::optional<float> softness;
     std::optional<uint32_t> blockerSamples;
     std::optional<uint32_t> filterSamples;
@@ -119,8 +122,10 @@ struct AppOptions {
     bool verbose = false;
     bool bgfxDebug = false;
     bool gfxTest = false;
+    bool vfxSpike = false;
     bool clusterStatsReadback = false;
     bool debugLightData = false;
+    bool debugLightmapMask = false;
     bool debugWireframe = false;
     render::DebugDisplayMode debugDisplayMode = render::DebugDisplayMode::None;
     int debugLightClusterSlice = -1;
@@ -130,6 +135,8 @@ struct AppOptions {
     bool cameraOrbit = false;
     bool framesSpecified = false;
     std::optional<render::LitShaderMode> litShaderMode;
+    std::optional<bool> litVariants;
+    std::optional<bool> litVariantTiles;
     std::optional<bool> gpuLightList;
     std::optional<bool> gpuLightListBuffers;
     std::optional<bool> gpuLightListIndirect;
@@ -149,6 +156,11 @@ struct AppOptions {
     std::optional<bool> ssgiTemporal;
     std::optional<bool> decals;
     std::optional<bool> reflectionProbes;
+    std::optional<bool> vfx;
+    bool vfxTest = false;
+    bool vfxReference = false;
+    std::string vfxReferencePath;
+    std::string vfxReferenceGraphPath;
     float renderScale = 1.0f;
     std::string assetTestPath;
     std::string scenePath;

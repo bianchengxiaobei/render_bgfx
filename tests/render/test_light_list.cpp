@@ -1,6 +1,7 @@
 #include "render/camera/view_state.h"
 #include "render/lighting/light_builder.h"
 #include "render/lighting/light_list_builder.h"
+#include "render/passes/deferred_variant.h"
 #include "render/scene/render_scene.h"
 
 #include <doctest/doctest.h>
@@ -565,4 +566,74 @@ TEST_CASE("light builder truncates to the requested capacity") {
     builder.build(scene, Vec3(0.0f, 0.0f, 5.0f), Vec3(0.0f, 0.0f, -1.0f), 100.0f, false, false, nullptr, 64);
     CHECK(builder.data().lightCount == 33u);
     CHECK(builder.data().truncatedLightCount == 0u);
+}
+
+TEST_CASE("deferred Lit variant table covers every material and light feature combination") {
+    uint32_t materialFeatureMask = 0u;
+    const std::array<uint32_t, 5> materialFeatures = {
+        asset::MaterialFeatureClearCoat,
+        asset::MaterialFeatureTransmission,
+        asset::MaterialFeatureIridescence,
+        asset::MaterialFeatureAnisotropy,
+        asset::MaterialFeatureSubsurface,
+    };
+    for (uint32_t feature : materialFeatures) {
+        materialFeatureMask |= feature;
+    }
+    for (uint32_t features = 0; features <= materialFeatureMask; ++features) {
+        if ((features & ~materialFeatureMask) != 0u) {
+            continue;
+        }
+        const std::array<uint32_t, 4> lightFeatures = {
+            kLitLightPunctual,
+            kLitLightArea,
+            kLitLightDirectional,
+            kLitLightShadows,
+        };
+        for (uint32_t lightMask = 0u; lightMask < 16u; ++lightMask) {
+            uint32_t lightFlags = 0u;
+            for (std::size_t index = 0; index < lightFeatures.size(); ++index) {
+                if ((lightMask & (1u << index)) != 0u) {
+                    lightFlags |= lightFeatures[index];
+                }
+            }
+            const uint32_t featureFlags = litMaterialFlags(features) | lightFlags;
+            const uint32_t variant = litVariantForMaterial(features, lightFlags);
+            CHECK(variant < kLitVariantCount);
+            CHECK((kLitFeatureVariantFlags[variant] & featureFlags) == featureFlags);
+            CHECK((litVariantStencilRef(variant) & 1u) == 1u);
+            CHECK(litVariantStencilRef(variant) <= 57u);
+        }
+    }
+
+    for (uint32_t variant = 0; variant < kLitVariantCount; ++variant) {
+        CHECK((kLitFeatureVariantFlags[variant] & kLitMaterialStandard) != 0u);
+        for (uint32_t other = variant + 1; other < kLitVariantCount; ++other) {
+            CHECK(kLitFeatureVariantFlags[variant] != kLitFeatureVariantFlags[other]);
+        }
+    }
+}
+
+TEST_CASE("deferred Lit variant table follows the classification order") {
+    CHECK(kLitVariantCount == 29u);
+    CHECK(litVariantForMaterial(0, kLitLightDirectional | kLitLightPunctual) == 2u);
+    CHECK(litVariantForMaterial(asset::MaterialFeatureClearCoat,
+                                kLitLightDirectional | kLitLightPunctual) == 20u);
+    CHECK(litVariantForMaterial(asset::MaterialFeatureIridescence,
+                                kLitLightDirectional) == 24u);
+    CHECK(litVariantForMaterial(asset::MaterialFeatureAnisotropy,
+                                kLitLightDirectional | kLitLightArea) == 16u);
+    CHECK(litVariantForMaterial(asset::MaterialFeatureSubsurface,
+                                kLitLightDirectional | kLitLightPunctual) == 10u);
+    CHECK(litVariantFor(0, 0) == 0u);
+    CHECK(litVariantFor(kLitMaterialAll,
+                        kLitLightDirectional | kLitLightPunctual | kLitLightArea | kLitLightShadows) == 28u);
+    CHECK(litVariantForMaterial(0, kLitLightPunctual) == 2u);
+    for (uint32_t variant = 0; variant < kLitVariantCount; ++variant) {
+        CHECK((litVariantStencilRef(variant) & 1u) == 1u);
+        CHECK(litVariantStencilRef(variant) <= 57u);
+        for (uint32_t other = variant + 1; other < kLitVariantCount; ++other) {
+            CHECK(litVariantStencilRef(variant) != litVariantStencilRef(other));
+        }
+    }
 }

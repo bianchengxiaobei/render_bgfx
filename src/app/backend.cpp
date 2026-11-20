@@ -226,6 +226,9 @@ std::optional<render::DebugDisplayMode> parseDebugDisplayMode(std::string_view t
     if (key == "shadow-filter" || key == "shadow-filter-debug") {
         return render::DebugDisplayMode::ShadowFilter;
     }
+    if (key == "lightmap" || key == "baked-lightmap" || key == "baked-gi" || key == "lightmap-debug") {
+        return render::DebugDisplayMode::Lightmap;
+    }
     if (key == "albedo") {
         return render::DebugDisplayMode::Albedo;
     }
@@ -557,6 +560,15 @@ void applyShadowOverrides(const ShadowOverrides& overrides, render::ShadowSettin
     if (overrides.shadowNearPlane) {
         settings.shadowNearPlane = *overrides.shadowNearPlane;
     }
+    if (overrides.directionalLightAngle) {
+        settings.directionalLightAngle = *overrides.directionalLightAngle;
+    }
+    if (overrides.directionalMaxDepthBias) {
+        settings.directionalMaxDepthBias = *overrides.directionalMaxDepthBias;
+    }
+    if (overrides.imsKernelSize) {
+        settings.imsKernelSize = *overrides.imsKernelSize;
+    }
     if (overrides.softness) {
         settings.softness = *overrides.softness;
     }
@@ -647,6 +659,32 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.gfxTest = true;
             continue;
         }
+        if (arg == "--vfx-spike") {
+            result.options.vfxSpike = true;
+            continue;
+        }
+        if (arg == "--vfx-reference") {
+            result.options.vfxReference = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-reference")) {
+            result.options.vfxReference = true;
+            result.options.vfxReferencePath.assign(*value);
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-reference-graph")) {
+            result.options.vfxReferenceGraphPath.assign(*value);
+            continue;
+        }
+        if (arg == "--vfx" || arg == "--vfx-test") {
+            result.options.vfx = true;
+            result.options.vfxTest = arg == "--vfx-test";
+            continue;
+        }
+        if (arg == "--no-vfx") {
+            result.options.vfx = false;
+            continue;
+        }
         if (arg == "--cluster-stats-readback") {
             result.options.clusterStatsReadback = true;
             continue;
@@ -656,6 +694,10 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.debugDisplayMode = render::DebugDisplayMode::LightData;
             continue;
         }
+        if (arg == "--debug-lightmap-mask") {
+            result.options.debugLightmapMask = true;
+            continue;
+        }
         if (const auto value = optionValue(arg, "--debug-view")) {
             const auto mode = parseDebugDisplayMode(*value);
             if (!mode) {
@@ -663,7 +705,7 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
                          "depth-pyramid, light-cluster, directional-shadow-atlas, punctual-shadow-atlas, "
                          "shadow-cascade, shadow-filter, albedo, roughness, metallic, ao, emissive, ssao, "
                          "ssao-raw, ssao-history, ssr, ssr-raw, ssr-history, ssgi, ssgi-raw, ssgi-history, "
-                         "decals, exposure, color-grading, bloom, taa-history, dof or fxaa)",
+                         "decals, exposure, color-grading, bloom, taa-history, dof, fxaa or lightmap)",
                          *value);
                 result.ok = false;
             } else {
@@ -713,6 +755,22 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             } else {
                 result.options.debugLightClusterSlice = slice;
             }
+            continue;
+        }
+        if (arg == "--lit-variants") {
+            result.options.litVariants = true;
+            continue;
+        }
+        if (arg == "--no-lit-variants") {
+            result.options.litVariants = false;
+            continue;
+        }
+        if (arg == "--lit-variants-tile") {
+            result.options.litVariantTiles = true;
+            continue;
+        }
+        if (arg == "--no-lit-variants-tile") {
+            result.options.litVariantTiles = false;
             continue;
         }
         if (arg == "--deferred") {
@@ -1405,7 +1463,8 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
                 result.ok = false;
             } else {
                 result.options.shadowOverrides.directionalFilter = filter;
-                result.options.shadowOverrides.punctualFilter = filter;
+                result.options.shadowOverrides.punctualFilter =
+                    filter == render::ShadowFilter::Ims ? render::ShadowFilter::Pcf5x5 : filter;
             }
             continue;
         }
@@ -1421,8 +1480,8 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (const auto value = optionValue(arg, "--shadow-punctual-filter")) {
             render::ShadowFilter filter = render::ShadowFilter::Pcf3x3;
-            if (!render::parseShadowFilter(*value, filter)) {
-                HBG_LOGE("invalid --shadow-punctual-filter value '{}'", *value);
+            if (!render::parseShadowFilter(*value, filter) || filter == render::ShadowFilter::Ims) {
+                HBG_LOGE("invalid --shadow-punctual-filter value '{}' (ims is directional-only)", *value);
                 result.ok = false;
             } else {
                 result.options.shadowOverrides.punctualFilter = filter;
@@ -1527,6 +1586,36 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
                 result.ok = false;
             } else {
                 result.options.shadowOverrides.shadowNearPlane = distance;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--shadow-light-angle")) {
+            float angle = 0.0f;
+            if (!parseFloat(*value, angle) || angle < 0.0f || angle > 9.0f) {
+                HBG_LOGE("invalid --shadow-light-angle value '{}' (expected 0..9)", *value);
+                result.ok = false;
+            } else {
+                result.options.shadowOverrides.directionalLightAngle = angle;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--shadow-max-depth-bias")) {
+            float bias = 0.0f;
+            if (!parseFloat(*value, bias) || bias < 0.0001f || bias > 0.01f) {
+                HBG_LOGE("invalid --shadow-max-depth-bias value '{}' (expected 0.0001..0.01)", *value);
+                result.ok = false;
+            } else {
+                result.options.shadowOverrides.directionalMaxDepthBias = bias;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--shadow-ims-kernel-size")) {
+            int kernelSize = 0;
+            if (!parseInt(*value, kernelSize) || kernelSize < 1 || kernelSize > 32) {
+                HBG_LOGE("invalid --shadow-ims-kernel-size value '{}' (expected 1..32)", *value);
+                result.ok = false;
+            } else {
+                result.options.shadowOverrides.imsKernelSize = static_cast<uint32_t>(kernelSize);
             }
             continue;
         }
@@ -1988,13 +2077,16 @@ const char* usage() {
            "  --verbose                                         Enable debug logging (including bgfx trace)\n"
            "  --bgfx-debug                                      Enable bgfx debug/validation layers\n"
            "  --gfx-test                                        Run the M0.2 resource/draw smoke test and exit\n"
+           "  --vfx-spike                                       Run the VFX V0 GPU spike and exit\n  --vfx-reference[=<asset.vfxb>]                     Run the 1024-particle VFX GPU/CPU reference check and exit\n  --vfx-reference-graph=<effect.vfx.json>           Graph used by --vfx-reference for the CPU reference\n"
+           "  --vfx / --vfx-test / --no-vfx                     Enable/disable VFX runtime for the scene\n"
            "  --debug-ui / --no-debug-ui                        Enable/disable the interactive debug panel\n"
            "  --debug-light-data                                Start with the GPU light-data debug view\n"
+           "  --debug-lightmap-mask                             Show the binary lightmap mask instead of baked radiance\n"
            "  --debug-view=<off|light-data|normal|motion-vectors|depth|depth-pyramid|light-cluster|\n"
            "                directional-shadow-atlas|punctual-shadow-atlas|shadow-cascade|shadow-filter|\n"
            "                contact-shadows|albedo|roughness|metallic|ao|\n"
            "                emissive|ssao|ssao-raw|ssao-history|ssr|ssr-raw|ssr-history|\n"
-           "                ssgi|ssgi-raw|ssgi-history|decals|exposure|color-grading|bloom|taa-history|dof|fxaa>\n"
+           "                ssgi|ssgi-raw|ssgi-history|decals|exposure|color-grading|bloom|taa-history|dof|fxaa|lightmap>\n"
            "                                                    Select a fullscreen debug view\n"
            "  --debug-light-cluster-slice=<n>                   Light-cluster debug slice (-2 = FPTL legacy, "
            "-1 = depth slice, 0..31 = fixed)\n"
@@ -2010,9 +2102,9 @@ const char* usage() {
            "  --shadow-tint=<r,g,b>                             Global default shadow tint (0..1)\n"
            "  --shadow-profile=<path>                           Load ShadowSettings JSON\n"
            "  --shadow-quality=<off|low|medium|high>            Apply HDRP-like shadow quality presets\n"
-           "  --shadow-filter=<off|pcf3x3|pcf5x5|pcf7x7|pcss>   Override both shadow filters\n"
+           "  --shadow-filter=<off|pcf3x3|pcf5x5|pcf7x7|pcss|evsm|vsm|msm|ims>  Override both shadow filters\n"
            "  --shadow-directional-filter=<value>               Override directional shadow filter\n"
-           "  --shadow-punctual-filter=<value>                  Override point/spot shadow filter\n"
+           "  --shadow-punctual-filter=<value>                  Override point/spot shadow filter (not ims)\n"
            "  --shadow-distance=<meters>                        Maximum shadow distance (default 200)\n"
            "  --shadow-cascades=<1..4>                          Directional cascade count (default 4)\n"
            "  --shadow-cascade-fade=<0..1>                      Cascade distance fade border (default 0.1)\n"
@@ -2024,6 +2116,9 @@ const char* usage() {
            "  --shadow-normal-bias=<0..2>                       Normal-bias scale (default 0.2)\n"
            "  --shadow-slope-bias=<0..10>                       Slope-scaled caster bias (default 0.5)\n"
            "  --shadow-near-plane=<0.01..100>                   Punctual shadow near plane (default 0.1)\n"
+           "  --shadow-light-angle=<0..9>                       Directional IMS light angle in degrees (default 1.0)\n"
+           "  --shadow-max-depth-bias=<0.0001..0.01>            Directional IMS max depth bias (default 0.001)\n"
+           "  --shadow-ims-kernel-size=<1..32>                  Directional IMS kernel size (default 5)\n"
            "  --shadow-softness=<0..4>                          PCSS softness (default 0.5)\n"
            "  --shadow-blocker-samples=<1..64>                  PCSS blocker samples (default 16)\n"
            "  --shadow-filter-samples=<1..64>                   PCSS filter samples (default 24)\n"
@@ -2057,6 +2152,8 @@ const char* usage() {
            "frames\n"
            "  --render-scale=<0.1..1.0>                         Dynamic-resolution render scale (default: 1.0)\n"
            "  --lit-shader-mode=<forward|deferred>              Override the lit shader mode\n"
+           "  --lit-variants / --no-lit-variants                Enable/disable 29 deferred Lit feature variants\n"
+           "  --lit-variants-tile / --no-lit-variants-tile      Use per-tile compute dispatch for 29 Lit variants\n"
            "  --deferred                                        Alias for --lit-shader-mode=deferred\n"
             "  --ssao / --no-ssao                                Enable/disable deferred SSAO\n"
             "  --ssao-temporal / --no-ssao-temporal              Enable/disable SSAO history reprojection\n"

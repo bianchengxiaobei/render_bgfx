@@ -25,6 +25,7 @@ vec3 hbgAdvancedTangent(SurfaceData surfaceData)
 vec3 hbgAdvancedFresnel0(SurfaceData surfaceData, float NdotV)
 {
     vec3 f0 = mix(vec3(0.04, 0.04, 0.04), surfaceData.baseColor, surfaceData.metallic);
+#if (HBG_VARIANT_MATERIAL_FLAGS & 32)
     if (surfaceData.iridescenceMask > 0.0)
     {
         const vec3 iridescence = hbgEvalIridescence(surfaceData.ior, NdotV,
@@ -32,6 +33,7 @@ vec3 hbgAdvancedFresnel0(SurfaceData surfaceData, float NdotV)
                                                      f0);
         f0 = mix(f0, iridescence, hbgSaturate(surfaceData.iridescenceMask));
     }
+#endif
     return f0;
 }
 
@@ -52,8 +54,14 @@ LitResult hbgEvaluateLightAdvanced(SurfaceData surfaceData, vec3 viewWS, vec3 li
     const float LdotH = hbgSaturate(dot(L, H));
     const float LdotV = dot(L, V);
     const float maxVisibility = max(visibility.r, max(visibility.g, visibility.b));
-    const float transmissionMask = hbgSaturate(surfaceData.transmissionMask);
-    const float subsurfaceMask = hbgSaturate(surfaceData.subsurfaceMask);
+    float transmissionMask = 0.0;
+    float subsurfaceMask = 0.0;
+#if (HBG_VARIANT_MATERIAL_FLAGS & 8)
+    transmissionMask = hbgSaturate(surfaceData.transmissionMask);
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 4)
+    subsurfaceMask = hbgSaturate(surfaceData.subsurfaceMask);
+#endif
     if (maxVisibility <= 0.0 || (NdotL <= 0.0 && transmissionMask <= 0.0 && subsurfaceMask <= 0.0))
     {
         return result;
@@ -61,13 +69,19 @@ LitResult hbgEvaluateLightAdvanced(SurfaceData surfaceData, vec3 viewWS, vec3 li
 
     const vec3 f0 = hbgAdvancedFresnel0(surfaceData, NdotV);
     const vec3 diffuseColor = surfaceData.baseColor * (1.0 - surfaceData.metallic);
+#if (HBG_VARIANT_MATERIAL_FLAGS & 16)
     const float anisotropy = clamp(surfaceData.anisotropy, -1.0, 1.0);
+#endif
+#if (HBG_VARIANT_MATERIAL_FLAGS & 64)
     const float coatMask = hbgSaturate(surfaceData.clearCoatMask);
+#endif
+
 
     if (NdotL > 0.0)
     {
         const vec3 fresnel = hbgF_Schlick(f0, LdotH);
         float specularTerm = 0.0;
+#if (HBG_VARIANT_MATERIAL_FLAGS & 16)
         if (abs(anisotropy) > 0.001)
         {
             const vec3 T = hbgAdvancedTangent(surfaceData);
@@ -86,16 +100,23 @@ LitResult hbgEvaluateLightAdvanced(SurfaceData surfaceData, vec3 viewWS, vec3 li
             specularTerm = hbgD_GGX(NdotH, surfaceData.roughness) *
                            hbgV_SmithJointGGX(NdotL, NdotV, surfaceData.roughness);
         }
+#else
+        specularTerm = hbgD_GGX(NdotH, surfaceData.roughness) *
+                       hbgV_SmithJointGGX(NdotL, NdotV, surfaceData.roughness);
+#endif
         const float diffuseTerm = hbgDisneyDiffuse(NdotV, NdotL, LdotV, surfaceData.perceptualRoughness);
         result.diffuse = diffuseColor * diffuseTerm * NdotL * radiance * visibility;
         result.specular = fresnel * specularTerm * NdotL * radiance * visibility;
 
+#if (HBG_VARIANT_MATERIAL_FLAGS & 4)
         if (subsurfaceMask > 0.0)
         {
             const float wrap = hbgSaturate((NdotL + 0.5) / 1.5);
             result.diffuse += surfaceData.baseColor * subsurfaceMask * wrap * radiance * visibility * 0.35;
         }
+#endif
 
+#if (HBG_VARIANT_MATERIAL_FLAGS & 64)
         if (coatMask > 0.0)
         {
             const float coatRoughness = clamp(surfaceData.clearCoatRoughness, 0.002, 1.0);
@@ -108,8 +129,10 @@ LitResult hbgEvaluateLightAdvanced(SurfaceData surfaceData, vec3 viewWS, vec3 li
             result.specular *= attenuation;
             result.specular += radiance * visibility * NdotL * coatMask * coatSpecular;
         }
+#endif
     }
 
+#if (HBG_VARIANT_MATERIAL_FLAGS & 8)
     if (transmissionMask > 0.0)
     {
         const float backLight = hbgSaturate(dot(-N, L));
@@ -117,6 +140,7 @@ LitResult hbgEvaluateLightAdvanced(SurfaceData surfaceData, vec3 viewWS, vec3 li
         result.specular += surfaceData.baseColor * transmissionMask * backLight * transmittance *
                            radiance * visibility * 0.5;
     }
+#endif
 
     return result;
 }

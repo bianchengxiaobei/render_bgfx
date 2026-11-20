@@ -267,6 +267,52 @@ TEST_CASE("draw list sorts opaque queues and groups compatible batches") {
     CHECK(list.batches()[1].itemCount == 1);
 }
 
+TEST_CASE("draw list groups instances by lightmap atlas") {
+    RenderScene scene;
+    const uint32_t material = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t mesh = addMesh(scene, material);
+    const uint32_t atlas0First = addObject(scene, mesh, Vec3(-2.0f, 0.0f, 0.0f));
+    const uint32_t atlas1 = addObject(scene, mesh, Vec3(0.0f, 0.0f, 0.0f));
+    const uint32_t atlas0Second = addObject(scene, mesh, Vec3(2.0f, 0.0f, 0.0f));
+    const uint32_t noLightmap = addObject(scene, mesh, Vec3(4.0f, 0.0f, 0.0f));
+    scene.objects[atlas0First].lightmapAtlas = 0;
+    scene.objects[atlas0Second].lightmapAtlas = 0;
+    scene.objects[atlas1].lightmapAtlas = 1;
+
+    ViewState viewState;
+    buildViewState(viewState, makeCamera());
+    DrawListDesc desc;
+    desc.passTags = kForwardPassMask;
+    desc.queueRange = kRenderQueueRangeAllOpaque;
+    desc.sortingCriteria = kOpaqueSortingCriteria;
+
+    DrawList list;
+    list.build(scene, viewState, desc);
+    REQUIRE(list.size() == 4);
+    CHECK(list.items()[0].lightmapAtlas == 0u);
+    CHECK(list.items()[1].lightmapAtlas == 0u);
+    CHECK(list.items()[2].lightmapAtlas == 1u);
+    CHECK(list.items()[3].lightmapAtlas == UINT32_MAX);
+    REQUIRE(list.batches().size() == 3);
+    CHECK(list.batches()[0].lightmapAtlas == 0u);
+    CHECK(list.batches()[0].itemCount == 2);
+    CHECK(list.batches()[1].lightmapAtlas == 1u);
+    CHECK(list.batches()[1].itemCount == 1);
+    CHECK(list.batches()[2].lightmapAtlas == UINT32_MAX);
+    CHECK(list.batches()[2].itemCount == 1);
+
+    CHECK(scene.objects[atlas0First].hasLightmap());
+    CHECK_FALSE(scene.objects[noLightmap].hasLightmap());
+
+    desc.requireLightmap = true;
+    list.build(scene, viewState, desc);
+    REQUIRE(list.size() == 3);
+    CHECK(list.filteredCount() == 1);
+    for (const DrawItem& item : list.items()) {
+        CHECK(item.lightmapAtlas != UINT32_MAX);
+    }
+}
+
 TEST_CASE("gbuffer draw list keeps lit opaque variants only") {
     RenderScene scene;
     const uint32_t opaque = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);

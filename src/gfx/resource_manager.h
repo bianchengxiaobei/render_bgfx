@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -46,6 +47,7 @@ class ResourceManager {
     bgfx::BufferHandle native(BufferHandle handle) const;
 
     UniformHandle createUniform(const UniformDesc& desc);
+    UniformHandle uniformHandle(std::string_view name) const;
     void destroyUniform(UniformHandle handle);
     Uniform* uniform(UniformHandle handle);
     const Uniform* uniform(UniformHandle handle) const;

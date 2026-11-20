@@ -19,6 +19,11 @@ struct RenderObject {
     int rendererPriority = 0;
     uint16_t lightLayerMask = 0xffffu;
     uint8_t decalLayerMask = 0x7fu;
+    uint32_t lightmapAtlas = UINT32_MAX;
+    Vec4 lightmapST{0.0f, 0.0f, 0.0f, 0.0f};
+    Vec2 lightmapSize{0.0f, 0.0f};
+
+    bool hasLightmap() const { return lightmapAtlas != UINT32_MAX; }
 };
 
 } // namespace hbg::render

@@ -3,6 +3,8 @@
 #include "app/asset_test.h"
 #include "app/gfx_test.h"
 #include "app/render_test.h"
+#include "render/vfx/vfx_reference.h"
+#include "render/vfx/vfx_spike.h"
 #include "asset/scene_loader.h"
 #include "core/log.h"
 
@@ -45,11 +47,28 @@ int Application::run(const AppOptions& options) {
         return ok ? 0 : 1;
     }
 
+    if (options.vfxSpike) {
+        const bool ok = runVfxSpike(m_device.resources(), static_cast<uint16_t>(m_window.width()),
+                                    static_cast<uint16_t>(m_window.height()));
+        shutdown();
+        return ok ? 0 : 1;
+    }
+
+    if (options.vfxReference) {
+        const std::string assetPath = options.vfxReferencePath.empty()
+                                          ? std::string("vfx/tests/assets/reference_1024.vfxb")
+                                          : options.vfxReferencePath;
+        const bool ok = runVfxReference(m_device.resources(), assetPath, options.vfxReferenceGraphPath);
+        shutdown();
+        return ok ? 0 : 1;
+    }
+
     if (!options.renderTestPath.empty()) {
         const bool ok = runRenderTest(
             m_device.resources(), options.renderTestPath, static_cast<uint16_t>(m_window.width()),
             static_cast<uint16_t>(m_window.height()), static_cast<uint32_t>(options.frames), options.screenshotPath,
-            options.debugDisplayMode, options.debugLightClusterSlice, !options.disableLightCluster, options.cameraOrbit,
+            options.debugDisplayMode, options.debugLightmapMask, options.debugLightClusterSlice,
+            !options.disableLightCluster, options.cameraOrbit,
             !options.disableShadows, options.clusterStatsReadback, m_pipelineSettings, m_frameSettings,
             m_shadowSettings, m_ssaoSettings, m_ssrSettings, m_ssgiSettings, m_postProcessProfile,
             m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation);
@@ -94,6 +113,7 @@ int Application::run(const AppOptions& options) {
     }
 
     if (m_forwardRenderer.valid()) {
+        m_forwardRenderer.setDebugLightmapMask(options.debugLightmapMask);
         HBG_LOGI("running forward renderer: close the window or press Esc to exit");
     } else {
         HBG_LOGI("running: close the window or press Esc to exit");
@@ -209,6 +229,9 @@ bool Application::loadSettings(const AppOptions& options) {
              m_shadowSettings.shadowNearPlane,              m_shadowSettings.softness, m_shadowSettings.blockerSamples,
              m_shadowSettings.filterSamples, m_shadowSettings.minFilterSize, m_shadowSettings.cascadeFade,
              m_shadowSettings.microShadows, m_shadowSettings.microShadowOpacity);
+    HBG_LOGI("directional IMS: light_angle={:.2f} deg max_depth_bias={:.4f} kernel={}",
+             m_shadowSettings.directionalLightAngle, m_shadowSettings.directionalMaxDepthBias,
+             m_shadowSettings.imsKernelSize);
     HBG_LOGI("per-light shadow defaults: dimmer={:.2f} fade_distance={:.1f} tint=({:.2f}, {:.2f}, {:.2f}) "
              "directional_cache={} punctual_cache={} area_cache={}",
              m_shadowSettings.shadowDimmer, m_shadowSettings.shadowFadeDistance,
@@ -276,6 +299,15 @@ bool Application::loadSettings(const AppOptions& options) {
     if (options.litShaderMode) {
         m_frameSettings.setLitShaderMode(*options.litShaderMode);
     }
+    if (options.litVariants) {
+        m_pipelineSettings.supportLitVariants = *options.litVariants;
+    }
+    if (options.litVariantTiles) {
+        m_pipelineSettings.supportLitVariantTiles = *options.litVariantTiles;
+        if (*options.litVariantTiles) {
+            m_pipelineSettings.supportLitVariants = true;
+        }
+    }
     if (options.ssao) {
         m_pipelineSettings.supportSSAO = *options.ssao;
         m_frameSettings.setEnabled(render::FrameSettingsField::SSAO, *options.ssao);
@@ -303,6 +335,9 @@ bool Application::loadSettings(const AppOptions& options) {
     }
     if (options.reflectionProbes) {
         m_frameSettings.setEnabled(render::FrameSettingsField::ReflectionProbe, *options.reflectionProbes);
+    }
+    if (options.vfx) {
+        m_pipelineSettings.supportVFX = *options.vfx;
     }
     if (options.gpuLightList) {
         m_pipelineSettings.supportGpuLightList = *options.gpuLightList;

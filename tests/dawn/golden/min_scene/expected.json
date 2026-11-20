@@ -1,0 +1,71 @@
+{
+  "source": "com.tencent.dawn v2.4.5, protocol 1002, Dawn.exe 1.3.5.20241220",
+  "generator": "tools/dawnbake/golden (write-min)",
+  "sceneGuid": "11111111222222223333333344444444",
+  "files": {
+    "scene": { "name": "11111111222222223333333344444444.scene", "bytes": 1516 },
+    "jobs":  { "name": "11111111222222223333333344444444.jobs",  "bytes": 800 }
+  },
+  "scene": {
+    "mesh": {
+      "guid": [1, 0, 0, 0],
+      "triangles": 2,
+      "vertices": 4,
+      "elements": 1,
+      "index": "uint16",
+      "lightmapUVIndex": 1
+    },
+    "instance": {
+      "guid": [2, 0, 0, 0],
+      "meshIndex": 0,
+      "lightmapId": 0,
+      "uv2MapSize": [64, 64],
+      "uv2Offset": [0, 0]
+    },
+    "material": { "index": 0, "textures": 4, "size": [1, 1] },
+    "light": {
+      "guid": [3, 0, 0, 0],
+      "type": "directional",
+      "flags": 12352,
+      "color": [3.0, 3.0, 3.0]
+    },
+    "skyLight": { "cubeSize": 1 }
+  },
+  "jobs": {
+    "lightmap2D": 1,
+    "jobID": [0, 0, 0, 5],
+    "meshID": [2, 0, 0, 0],
+    "size": [64, 64],
+    "lightmapUVIndex": 1
+  },
+  "sizes": {
+    "FGuidInfo": 16,
+    "FSHAHashInfo": 20,
+    "FLightProfileInfo": 65536,
+    "FLightInfo": 176,
+    "FLightFullInfo": 200,
+    "FSkyLightInfoHeader": 112,
+    "FTexture2DInfoHeader": 16,
+    "FMaterialColor": 4,
+    "FMaterialInfoHeader": 52,
+    "FSceneBounds": 40,
+    "FSceneBoxBounds": 24,
+    "FMeshElementInfo": 16,
+    "FMeshInfoHeader": 48,
+    "FMeshInstanceInfoHeader": 312,
+    "FLandscapeInfoHeader": 172,
+    "FSceneInfoHeader": 108,
+    "FLightmap2DInput": 160,
+    "FLightmap2DSample": 192,
+    "FLightmap2DOutputHeader": 48,
+    "Matrix4x4": 64,
+    "float2": 8,
+    "float3": 12,
+    "float4": 16
+  },
+  "notes": [
+    "FLightInfo.Flags = DAWN_PT_FLAG_DIRECT_LIGHTING | DAWN_PT_FLAG_INDIRECT_LIGHTING | DAWN_PT_LIGHT_DIRECTIONAL = 4096|8192|64 = 12352; the value above is the instance-local flag word written by the generator.",
+    "Dawn expects TangentBuffer = cross(T,N) and BiTangentBuffer = T; do not 'fix' the naming.",
+    "Dawn local mode reads <localdirectory><SceneGuid>.scene/.jobs (no gzip, version header 1002)."
+  ]
+}

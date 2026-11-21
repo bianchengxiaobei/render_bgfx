@@ -83,6 +83,10 @@ TEST_CASE("per-light shadow settings sanitize and inherit global defaults") {
     CHECK(inherited.softness == doctest::Approx(1.1f));
     CHECK(inherited.blockerSamples == 12);
     CHECK(inherited.filterSamples == 18);
+    CHECK(inherited.evsmExponent == doctest::Approx(15.0f));
+    CHECK(inherited.evsmLightLeakBias == doctest::Approx(0.0f));
+    CHECK(inherited.evsmVarianceBias == doctest::Approx(1.0e-5f));
+    CHECK(inherited.evsmBlurPasses == 0u);
 
     LightShadowSettings custom;
     custom.dimmer = 2.0f;
@@ -93,6 +97,10 @@ TEST_CASE("per-light shadow settings sanitize and inherit global defaults") {
     custom.softness = -1.0f;
     custom.blockerSamples = 0;
     custom.filterSamples = 100;
+    custom.evsmExponent = 100.0f;
+    custom.evsmLightLeakBias = -1.0f;
+    custom.evsmVarianceBias = 1.0f;
+    custom.evsmBlurPasses = 12;
     sanitizeLightShadowSettings(custom);
     CHECK(custom.dimmer == doctest::Approx(1.0f));
     CHECK(custom.fadeDistance == doctest::Approx(0.0f));
@@ -102,6 +110,10 @@ TEST_CASE("per-light shadow settings sanitize and inherit global defaults") {
     CHECK(custom.softness == doctest::Approx(0.0f));
     CHECK(custom.blockerSamples == 1u);
     CHECK(custom.filterSamples == 64u);
+    CHECK(custom.evsmExponent == doctest::Approx(42.0f));
+    CHECK(custom.evsmLightLeakBias == doctest::Approx(0.0f));
+    CHECK(custom.evsmVarianceBias == doctest::Approx(0.001f));
+    CHECK(custom.evsmBlurPasses == 8u);
 
     light.shadowConfigured = true;
     light.shadow = custom;
@@ -568,4 +580,39 @@ TEST_CASE("mixed area cache transition invalidates static cache mode") {
     CHECK(manager.cachedAreaRequestCount() == 0);
     update();
     CHECK(manager.cachedAreaRequestCount() == 1);
+}
+
+TEST_CASE("shadow manager propagates per-light EVSM parameters") {
+    RenderScene scene = makeScene();
+    Light light = makeSpot(Vec3(1.0f, 2.0f, 2.0f));
+    light.shadowConfigured = true;
+    light.shadow.evsmExponent = 30.0f;
+    light.shadow.evsmLightLeakBias = 0.25f;
+    light.shadow.evsmVarianceBias = 1.0e-4f;
+    light.shadow.evsmBlurPasses = 3;
+    scene.lights.push_back(light);
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.punctualFilter = ShadowFilter::Evsm;
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+
+    REQUIRE(manager.requests().size() == 1);
+    const ShadowRequest& request = manager.requests()[0];
+    CHECK(request.evsmExponent == doctest::Approx(30.0f * kEvsmLog2e));
+    CHECK(request.evsmLightLeakBias == doctest::Approx(0.25f));
+    CHECK(request.evsmVarianceBias == doctest::Approx(1.0e-4f));
+    CHECK(request.evsmBlurPasses == 3u);
+    CHECK(manager.contextData().texels[9].x == doctest::Approx(30.0f * kEvsmLog2e));
+    CHECK(manager.contextData().texels[9].y == doctest::Approx(0.25f));
+    CHECK(manager.contextData().texels[9].z == doctest::Approx(1.0e-4f));
+    CHECK(manager.contextData().texels[9].w == doctest::Approx(3.0f));
 }

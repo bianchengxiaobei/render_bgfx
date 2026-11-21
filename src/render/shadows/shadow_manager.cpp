@@ -431,6 +431,39 @@ bool ShadowManager::createTextures() {
             return false;
         }
     }
+
+    m_areaEvsmActive = false;
+    if (m_settings.areaFilter == ShadowFilter::Evsm) {
+        const uint32_t evsmSize = std::max<uint32_t>(m_areaAtlasSize / 2u, 1u);
+        gfx::TextureDesc evsmDesc;
+        evsmDesc.width = static_cast<uint16_t>(evsmSize);
+        evsmDesc.height = static_cast<uint16_t>(evsmSize);
+        evsmDesc.format = gfx::TextureFormat::RGBA32F;
+        evsmDesc.computeWrite = true;
+        evsmDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+        evsmDesc.name = "shadow.areaEvsmMoments";
+        m_areaEvsmMomentTexture = m_resources->createTexture(evsmDesc);
+        evsmDesc.name = "shadow.areaEvsmMomentsCopy";
+        m_areaEvsmMomentCopyTexture = m_resources->createTexture(evsmDesc);
+        m_areaEvsmActive =
+            m_areaEvsmMomentTexture.valid() && m_areaEvsmMomentCopyTexture.valid();
+        if (m_areaEvsmActive) {
+            HBG_LOGI("shadow area EVSM: {}x{} RGBA32F half-res moments x2 (~{:.1f} MB)", evsmSize,
+                     evsmSize,
+                     static_cast<double>(evsmSize) * evsmSize * 32.0 / (1024.0 * 1024.0));
+        } else {
+            if (m_areaEvsmMomentTexture.valid()) {
+                m_resources->destroyTexture(m_areaEvsmMomentTexture);
+                m_areaEvsmMomentTexture = {};
+            }
+            if (m_areaEvsmMomentCopyTexture.valid()) {
+                m_resources->destroyTexture(m_areaEvsmMomentCopyTexture);
+                m_areaEvsmMomentCopyTexture = {};
+            }
+            HBG_LOGW("shadow manager: area EVSM moment atlas unavailable; falling back to PCF5x5");
+        }
+    }
+
     HBG_LOGI("shadow area atlas: {}x{} D24S8 (~{:.1f} MB), cached={} (~{:.1f} MB), resolution={}, filter={}",
              m_areaAtlasSize, m_areaAtlasSize,
              static_cast<double>(m_areaAtlasSize) * m_areaAtlasSize * 4.0 / (1024.0 * 1024.0),
@@ -505,6 +538,15 @@ void ShadowManager::destroyTextures() {
         m_resources->destroyTexture(m_cachedAreaTexture);
         m_cachedAreaTexture = {};
     }
+    if (m_areaEvsmMomentTexture.valid()) {
+        m_resources->destroyTexture(m_areaEvsmMomentTexture);
+        m_areaEvsmMomentTexture = {};
+    }
+    if (m_areaEvsmMomentCopyTexture.valid()) {
+        m_resources->destroyTexture(m_areaEvsmMomentCopyTexture);
+        m_areaEvsmMomentCopyTexture = {};
+    }
+    m_areaEvsmActive = false;
     if (m_contextBuffer.valid()) {
         m_resources->destroyBuffer(m_contextBuffer);
         m_contextBuffer = {};
@@ -792,6 +834,10 @@ bool ShadowManager::buildDirectionalRequests(const RenderScene& scene, const Vie
         request.fadeBias = fadeBias;
         request.blockerSamples = shadow.blockerSamples;
         request.filterSamples = shadow.filterSamples;
+        request.evsmExponent = shadow.evsmExponent * kEvsmLog2e;
+        request.evsmLightLeakBias = shadow.evsmLightLeakBias;
+        request.evsmVarianceBias = shadow.evsmVarianceBias;
+        request.evsmBlurPasses = shadow.evsmBlurPasses;
         request.minFilterSize = m_settings.minFilterSize;
         request.filter = m_settings.directionalFilter;
         if (request.filter == ShadowFilter::Ims && !m_imsActive) {
@@ -875,6 +921,10 @@ bool ShadowManager::buildPunctualRequest(const Light& light, const LightShadowSe
             request.slopeBias = m_settings.slopeBias * kReferenceSlopeBias;
             request.blockerSamples = shadow.blockerSamples;
             request.filterSamples = shadow.filterSamples;
+            request.evsmExponent = shadow.evsmExponent * kEvsmLog2e;
+            request.evsmLightLeakBias = shadow.evsmLightLeakBias;
+            request.evsmVarianceBias = shadow.evsmVarianceBias;
+            request.evsmBlurPasses = shadow.evsmBlurPasses;
             request.minFilterSize = m_settings.minFilterSize;
             request.filter = m_settings.punctualFilter;
             const uint32_t pointResolution = std::min(shadow.resolution != 0 ? shadow.resolution
@@ -922,6 +972,10 @@ bool ShadowManager::buildPunctualRequest(const Light& light, const LightShadowSe
         request.slopeBias = m_settings.slopeBias * kReferenceSlopeBias;
         request.blockerSamples = shadow.blockerSamples;
         request.filterSamples = shadow.filterSamples;
+        request.evsmExponent = shadow.evsmExponent * kEvsmLog2e;
+        request.evsmLightLeakBias = shadow.evsmLightLeakBias;
+        request.evsmVarianceBias = shadow.evsmVarianceBias;
+        request.evsmBlurPasses = shadow.evsmBlurPasses;
         request.minFilterSize = m_settings.minFilterSize;
         request.filter = m_settings.punctualFilter;
         const uint16_t savedX = m_punctualCursorX;
@@ -1003,8 +1057,15 @@ bool ShadowManager::buildAreaRequest(const Light& light, const LightShadowSettin
     request.slopeBias = m_settings.slopeBias * kReferenceSlopeBias;
     request.blockerSamples = shadow.blockerSamples;
     request.filterSamples = shadow.filterSamples;
+    request.evsmExponent = shadow.evsmExponent * kEvsmLog2e;
+    request.evsmLightLeakBias = shadow.evsmLightLeakBias;
+    request.evsmVarianceBias = shadow.evsmVarianceBias;
+    request.evsmBlurPasses = shadow.evsmBlurPasses;
     request.minFilterSize = m_settings.minFilterSize;
     request.filter = m_settings.areaFilter;
+    if (request.filter == ShadowFilter::Evsm && m_resources != nullptr && !m_areaEvsmActive) {
+        request.filter = ShadowFilter::Pcf5x5;
+    }
     const uint32_t requestedResolution = shadow.resolution != 0 ? shadow.resolution : m_settings.areaResolution;
     const uint16_t resolution =
         static_cast<uint16_t>(std::min<uint32_t>(requestedResolution, m_areaAtlasSize));
@@ -1244,6 +1305,10 @@ uint64_t ShadowManager::buildDirectionalRequestHash(const RenderScene& scene,
     hashUint(hash, request.imsKernelSize);
     hashUint(hash, request.blockerSamples);
     hashUint(hash, request.filterSamples);
+    hashFloat(hash, request.evsmExponent);
+    hashFloat(hash, request.evsmLightLeakBias);
+    hashFloat(hash, request.evsmVarianceBias);
+    hashUint(hash, request.evsmBlurPasses);
     hashFloat(hash, request.minFilterSize);
     hashUint(hash, static_cast<uint32_t>(request.filter));
 
@@ -1373,6 +1438,10 @@ uint64_t ShadowManager::buildCacheHash(const RenderScene& scene, const LightBuil
         hashFloat(hash, shadow.softness);
         hashUint(hash, shadow.blockerSamples);
         hashUint(hash, shadow.filterSamples);
+        hashFloat(hash, shadow.evsmExponent);
+        hashFloat(hash, shadow.evsmLightLeakBias);
+        hashFloat(hash, shadow.evsmVarianceBias);
+        hashUint(hash, shadow.evsmBlurPasses);
     }
 
     hashUint(hash, m_settings.maxRequests);
@@ -1457,13 +1526,17 @@ void ShadowManager::buildContextData() {
         m_contextData.texels[base + 8] =
             Vec4(request.fadeScale, request.fadeBias, static_cast<float>(request.cascadeIndex),
                  request.isCached ? 1.0f : 0.0f);
-        // IMS uses the PCSS parameter texel for per-cascade soft-shadow
-        // parameters; HDRP carries these in HDShadowData per request.
-        m_contextData.texels[base + 9] =
-            request.filter == ShadowFilter::Ims
-                ? computeImsParams(request)
-                : Vec4(static_cast<float>(request.blockerSamples), static_cast<float>(request.filterSamples),
-                       request.minFilterSize, request.farPlane);
+        if (request.filter == ShadowFilter::Ims) {
+            m_contextData.texels[base + 9] = computeImsParams(request);
+        } else if (request.filter == ShadowFilter::Evsm) {
+            m_contextData.texels[base + 9] =
+                Vec4(request.evsmExponent, request.evsmLightLeakBias, request.evsmVarianceBias,
+                     static_cast<float>(request.evsmBlurPasses));
+        } else {
+            m_contextData.texels[base + 9] =
+                Vec4(static_cast<float>(request.blockerSamples), static_cast<float>(request.filterSamples),
+                     request.minFilterSize, request.farPlane);
+        }
     }
     m_contextData.requestCount = static_cast<uint32_t>(std::min<std::size_t>(m_requests.size(), kMaxShadowRequests));
 }

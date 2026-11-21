@@ -9,6 +9,7 @@
 
 #if ((HBG_VARIANT_MATERIAL_FLAGS & 0x7eu) != 0)
 #define HBG_ADVANCED_MATERIAL 1
+#define HBG_SHADOW_ADVANCED_DEPTH_FILTERS 1
 #endif
 
 $input v_texcoord0

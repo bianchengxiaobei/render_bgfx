@@ -108,6 +108,8 @@ enum class PassId : uint8_t {
     DebugShadowCascade,
     DebugShadowFilter,
     Ui,
+    ShadowEvsmBlur,
+    ShadowEvsmBlurMoments,
 };
 
 enum MaterialVariant : uint32_t {

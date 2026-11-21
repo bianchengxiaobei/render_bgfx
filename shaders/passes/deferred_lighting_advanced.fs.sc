@@ -1,4 +1,5 @@
 #define HBG_ADVANCED_MATERIAL 1
+#define HBG_SHADOW_ADVANCED_DEPTH_FILTERS 1
 
 $input v_texcoord0
 

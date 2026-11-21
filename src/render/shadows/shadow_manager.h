@@ -19,7 +19,8 @@ class Encoder;
 namespace hbg::render {
 
 constexpr uint32_t kDirectionalCascadeCount = kMaxDirectionalCascades;
-// texel 9 stores PCSS parameters, or IMS (kernelSize, lightX, lightY, maxDepthBias).
+// texel 9 stores PCSS parameters, IMS (kernelSize, lightX, lightY, maxDepthBias), or EVSM
+// (exponent, leak, variance, blurPasses).
 constexpr uint32_t kShadowContextTexels = 10;
 constexpr uint32_t kPointShadowResolution = 256;
 constexpr uint32_t kSpotShadowResolution = 512;
@@ -69,6 +70,10 @@ struct ShadowRequest {
     uint32_t imsKernelSize = 5;
     uint32_t blockerSamples = 16;
     uint32_t filterSamples = 24;
+    float evsmExponent = 15.0f * kEvsmLog2e;
+    float evsmLightLeakBias = 0.0f;
+    float evsmVarianceBias = 1.0e-5f;
+    uint32_t evsmBlurPasses = 0;
     float minFilterSize = 0.01f;
     ShadowFilter filter = ShadowFilter::Pcf5x5;
     bool isCached = false;
@@ -116,6 +121,9 @@ class ShadowManager {
     uint32_t cachedAreaRequestCount() const { return m_cachedAreaRequestCount; }
 
     bool imsActive() const { return m_imsActive; }
+    bool areaEvsmBlurActive() const { return m_areaEvsmActive; }
+    gfx::TextureHandle areaEvsmMomentTexture() const { return m_areaEvsmMomentTexture; }
+    gfx::TextureHandle areaEvsmMomentCopyTexture() const { return m_areaEvsmMomentCopyTexture; }
     gfx::TextureHandle directionalMomentTexture() const { return m_directionalMomentTexture; }
     gfx::TextureHandle directionalMomentSatTexture() const { return m_directionalMomentSatTexture; }
     gfx::TextureHandle directionalTexture() const { return m_directionalTexture; }
@@ -136,6 +144,10 @@ class ShadowManager {
             return m_areaTexture;
         }
         return m_cachedAreaTexture.valid() ? m_cachedAreaTexture : m_areaTexture;
+    }
+    gfx::TextureHandle activeAreaSamplingTexture() const {
+        return m_areaEvsmActive && m_areaEvsmMomentTexture.valid() ? m_areaEvsmMomentTexture
+                                                                   : activeAreaTexture();
     }
     uint16_t directionalAtlasSize() const { return m_directionalAtlasSize; }
     uint16_t punctualAtlasSize() const { return m_punctualAtlasSize; }
@@ -201,6 +213,8 @@ class ShadowManager {
     gfx::TextureHandle m_cachedPunctualTexture;
     gfx::TextureHandle m_areaTexture;
     gfx::TextureHandle m_cachedAreaTexture;
+    gfx::TextureHandle m_areaEvsmMomentTexture;
+    gfx::TextureHandle m_areaEvsmMomentCopyTexture;
     gfx::BufferHandle m_contextBuffer;
     gfx::BufferHandle m_contextAreaBuffer;
     std::vector<ShadowRequest> m_requests;
@@ -230,6 +244,7 @@ class ShadowManager {
     bool m_sortedPackingWarningLogged = false;
     bool m_imsActive = false;
     bool m_imsWarningLogged = false;
+    bool m_areaEvsmActive = false;
     uint16_t m_directionalAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);
     uint16_t m_punctualAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);
     uint16_t m_areaAtlasSize = static_cast<uint16_t>(kDefaultAreaShadowAtlasSize);

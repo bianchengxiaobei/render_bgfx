@@ -718,6 +718,12 @@
       "shadowSatVertical": {
         "compute": "build/dxbc/shadow_sat_vertical.cs.bin"
       },
+      "shadowEvsmBlur": {
+        "compute": "build/dxbc/shadow_evsm_blur.cs.bin"
+      },
+      "shadowEvsmBlurMoments": {
+        "compute": "build/dxbc/shadow_evsm_blur_moments.cs.bin"
+      },
       "bakedGI": {
         "vertex": "build/dxbc/forward.vs.bin",
         "fragments": [
@@ -1462,6 +1468,12 @@
       },
       "shadowSatVertical": {
         "compute": "build/spirv/shadow_sat_vertical.cs.bin"
+      },
+      "shadowEvsmBlur": {
+        "compute": "build/spirv/shadow_evsm_blur.cs.bin"
+      },
+      "shadowEvsmBlurMoments": {
+        "compute": "build/spirv/shadow_evsm_blur_moments.cs.bin"
       },
       "bakedGI": {
         "vertex": "build/spirv/forward.vs.bin",

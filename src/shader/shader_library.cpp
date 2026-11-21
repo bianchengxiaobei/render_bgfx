@@ -183,6 +183,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto shadowMoments = backend->find("shadowMoments");
     const auto shadowSatHorizontal = backend->find("shadowSatHorizontal");
     const auto shadowSatVertical = backend->find("shadowSatVertical");
+    const auto shadowEvsmBlur = backend->find("shadowEvsmBlur");
+    const auto shadowEvsmBlurMoments = backend->find("shadowEvsmBlurMoments");
     const auto prepass = backend->find("prepass");
     const auto motionVectors = backend->find("motionVectors");
     const auto cameraMotionVectors = backend->find("cameraMotionVectors");
@@ -252,7 +254,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         tonemap == backend->end() ||
         shadow == backend->end() || shadowInstanced == backend->end() || shadowCull == backend->end() ||
         shadowMoments == backend->end() || shadowSatHorizontal == backend->end() ||
-        shadowSatVertical == backend->end() || prepass == backend->end() ||
+        shadowSatVertical == backend->end() || shadowEvsmBlur == backend->end() ||
+        shadowEvsmBlurMoments == backend->end() || prepass == backend->end() ||
         motionVectors == backend->end() || cameraMotionVectors == backend->end() ||
         depthPyramidCopy == backend->end() || depthPyramidDownsample == backend->end() || sky == backend->end() ||
         volumetricFog == backend->end() || volumetricFogComposite == backend->end() ||
@@ -379,6 +382,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.shadowMoments = readCompute(*shadowMoments);
     m_files.shadowSatHorizontal = readCompute(*shadowSatHorizontal);
     m_files.shadowSatVertical = readCompute(*shadowSatVertical);
+    m_files.shadowEvsmBlur = readCompute(*shadowEvsmBlur);
+    m_files.shadowEvsmBlurMoments = readCompute(*shadowEvsmBlurMoments);
     m_files.prepass = readFiles(*prepass, true);
     m_files.motionVectors = readFiles(*motionVectors, false);
     m_files.cameraMotionVectors = readFiles(*cameraMotionVectors, false);
@@ -511,8 +516,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.ssgiComposite.fragments.empty() && !m_files.debugSsgi.vertex.empty() &&
               !m_files.debugSsgi.fragments.empty() && !m_files.debugSsgiRaw.vertex.empty() &&
               !m_files.debugSsgiRaw.fragments.empty() && !m_files.contactShadows.compute.empty() &&
-              !m_files.shadowCull.compute.empty() && !m_files.shadowMoments.compute.empty() &&
-              !m_files.shadowSatHorizontal.compute.empty() && !m_files.shadowSatVertical.compute.empty() &&
+               !m_files.shadowCull.compute.empty() && !m_files.shadowMoments.compute.empty() &&
+               !m_files.shadowSatHorizontal.compute.empty() && !m_files.shadowSatVertical.compute.empty() &&
+               !m_files.shadowEvsmBlur.compute.empty() && !m_files.shadowEvsmBlurMoments.compute.empty() &&
               !m_files.debugContactShadows.vertex.empty() && !m_files.debugContactShadows.fragments.empty() &&
               !m_files.debugShadowCascade.vertex.empty() && !m_files.debugShadowCascade.fragments.empty() &&
               !m_files.debugShadowFilter.vertex.empty() && !m_files.debugShadowFilter.fragments.empty() &&
@@ -744,6 +750,14 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::ShadowSatVertical:
         files = &m_files.shadowSatVertical;
+        variant = 0;
+        break;
+    case PassId::ShadowEvsmBlur:
+        files = &m_files.shadowEvsmBlur;
+        variant = 0;
+        break;
+    case PassId::ShadowEvsmBlurMoments:
+        files = &m_files.shadowEvsmBlurMoments;
         variant = 0;
         break;
     case PassId::Prepass:

@@ -356,6 +356,7 @@ class ForwardRenderer {
                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                        const RenderScene& scene);
     void addShadowMomentPasses(RenderGraph& graph, RenderGraphTextureHandle directionalShadow);
+    void addAreaEvsmMomentPasses(RenderGraph& graph, RenderGraphTextureHandle areaShadow);
     void bindShadowMomentSat(gfx::Encoder& encoder, gfx::TextureHandle directionalShadow) const;
     void addGpuLightListPasses(RenderGraph& graph, const FramePassResources& resources);
     RenderGraphTextureHandle addContactShadowPass(RenderGraph& graph, const FramePassResources& resources,
@@ -758,6 +759,7 @@ class ForwardRenderer {
     uint32_t m_shadowGpuCullDispatches = 0;
     uint32_t m_shadowIndirectDraws = 0;
     bool m_shadowGpuWarningLogged = false;
+    bool m_areaEvsmBlurWarningLogged = false;
     uint32_t m_shadowDrawnItems = 0;
     uint32_t m_shadowCulledItems = 0;
     uint16_t m_contactShadowWidth = 0;

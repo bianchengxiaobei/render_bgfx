@@ -580,7 +580,11 @@ bool applyLightShadow(render::RenderScene& scene, const nlohmann::json& object, 
         !readBool(*shadow, "contactShadows", settings.contactShadows, error) ||
         !readNumber(*shadow, "softness", settings.softness, error) ||
         !readUint(*shadow, "blockerSamples", settings.blockerSamples, error) ||
-        !readUint(*shadow, "filterSamples", settings.filterSamples, error)) {
+        !readUint(*shadow, "filterSamples", settings.filterSamples, error) ||
+        !readNumber(*shadow, "evsmExponent", settings.evsmExponent, error) ||
+        !readNumber(*shadow, "evsmLightLeakBias", settings.evsmLightLeakBias, error) ||
+        !readNumber(*shadow, "evsmVarianceBias", settings.evsmVarianceBias, error) ||
+        !readUint(*shadow, "evsmBlurPasses", settings.evsmBlurPasses, error)) {
         return false;
     }
 

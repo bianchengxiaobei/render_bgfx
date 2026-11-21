@@ -10,6 +10,13 @@ SAMPLER2D(s_shadowMapPunctual, 9);
 #ifdef HBG_SHADOW_POINT_SAMPLER
 #define HBG_SHADOW_AREA_SAMPLER
 #endif
+// Advanced-material shaders cannot bind the point/IMS stage 12 (it carries
+// GBuffer4), but their directional (stage 6), point (stage 9) and area
+// (stage 13) raw-depth textures are available, so PCF/PCSS/EVSM/VSM/MSM
+// remain usable there. Only IMS still falls back because its SAT uses stage 12.
+#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_ADVANCED_DEPTH_FILTERS)
+#define HBG_SHADOW_LOCAL_DEPTH_FILTERS 1
+#endif
 #ifdef HBG_SHADOW_POINT_SAMPLER
 USAMPLER2D(s_shadowMapPoint, 12);
 #endif
@@ -27,9 +34,9 @@ float hbgShadowPunctualCompare(vec2 uv, float depth)
     return texture2DLod(s_shadowMapPunctual, uv, 0.0).x >= depth ? 1.0 : 0.0;
 }
 
-// HDRP defaults: EVSM exponent 15 (base-two), leak bias 0, variance bias 1e-5.
-// The project has no moment atlas yet, so this v1 gathers a local 3x3 moment
-// window from the existing raw shadow depth instead of the HDRP blurred atlas.
+// HDRP defaults: EVSM light exponent 15 (base-two 15*log2e), leak bias 0,
+// variance bias 1e-5. Area reads the blurred moment atlas; directional and
+// punctual still gather a local 3x3 moment window from raw shadow depth.
 float hbgShadowMomentRawDepth(vec2 uv, int space)
 {
     if (space == 1)
@@ -42,7 +49,7 @@ float hbgShadowMomentRawDepth(vec2 uv, int space)
         return texture2DLod(s_shadowMapPointPunctual, uv, 0.0).x;
     }
 #endif
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
     if (space == 0)
     {
         return texture2DLod(s_shadowMap, uv, 0.0).x;
@@ -87,11 +94,38 @@ float hbgSampleVsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax
     return max(probability, depth <= moment1 ? 1.0 : 0.0);
 }
 
-float hbgSampleEvsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space)
+#ifdef HBG_SHADOW_AREA_SAMPLER
+float hbgSampleEvsmMoments(vec2 atlasUV, float depth, vec2 uvMin, vec2 uvMax, vec4 evsmParams)
 {
-    const float exponent = 21.640392f;
-    const float lightLeakBias = 0.0;
-    const float varianceBias = 1.0e-5;
+    const float exponent = max(evsmParams.x, 1.0e-3);
+    const float lightLeakBias = clamp(evsmParams.y, 0.0, 1.0);
+    const float varianceBias = max(evsmParams.z, 0.0);
+    const vec2 moments = texture2DLod(s_shadowMapPointPunctual, clamp(atlasUV, uvMin, uvMax), 0.0).xy;
+    const float warpedDepth = hbgShadowEvsmWarp(depth, exponent);
+    const float depthScale = exponent * warpedDepth;
+    const float minVariance = depthScale * depthScale * varianceBias;
+    const float variance = max(moments.y - moments.x * moments.x, minVariance);
+    const float delta = warpedDepth - moments.x;
+    float probability = variance / max(variance + delta * delta, 1.0e-20);
+    probability = hbgSaturate((probability - lightLeakBias) / max(1.0 - lightLeakBias, 1.0e-6));
+    return max(probability, warpedDepth <= moments.x ? 1.0 : 0.0);
+}
+#endif
+
+float hbgSampleEvsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space, vec4 evsmParams)
+{
+    if (space == 2)
+    {
+#ifdef HBG_SHADOW_AREA_SAMPLER
+        return hbgSampleEvsmMoments(atlasUV, depth, uvMin, uvMax, evsmParams);
+#else
+        return 1.0;
+#endif
+    }
+
+    const float exponent = max(evsmParams.x, 1.0e-3);
+    const float lightLeakBias = clamp(evsmParams.y, 0.0, 1.0);
+    const float varianceBias = max(evsmParams.z, 0.0);
     float moment1 = 0.0;
     float moment2 = 0.0;
     float weightSum = 0.0;
@@ -637,6 +671,13 @@ vec4 hbgLoadShadowImsParams(int request)
     return hbgLoadShadowContextTexel(9, request);
 }
 
+// For EVSM requests texel 9 stores (base-two exponent, lightLeakBias,
+// varianceBias, blurPasses), matching HDRP's evsmParams.
+vec4 hbgLoadShadowEvsmParams(int request)
+{
+    return hbgLoadShadowContextTexel(9, request);
+}
+
 void hbgTentAreas3(float offset, out vec4 area, out vec4 uncut)
 {
     const float offset01SquaredHalved = (offset + 0.5) * (offset + 0.5) * 0.5;
@@ -861,7 +902,7 @@ float hbgSampleTent7(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvM
     return visibility;
 }
 
-#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_AREA_SAMPLER)
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
 float hbgPcssNoise(vec2 pixel)
 {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
@@ -876,7 +917,7 @@ vec2 hbgPcssDiskSample(int index, int count, float radius, float jitter)
 }
 #endif
 
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
 float hbgPcssRawDepth(vec2 uv, bool punctual)
 {
     if (punctual)
@@ -1018,7 +1059,7 @@ float hbgSampleDirectionalRequest(int request, vec3 worldPosition, vec3 normalWS
     }
     if (filterMode == 7)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
         return hbgSampleMsm(atlasUV, depth, texel, uvMin, uvMax, 0);
 #else
         return hbgSampleTent7(atlasUV, depth, texel, uvMin, uvMax, false);
@@ -1026,7 +1067,7 @@ float hbgSampleDirectionalRequest(int request, vec3 worldPosition, vec3 normalWS
     }
     if (filterMode == 6)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
         return hbgSampleVsm(atlasUV, depth, texel, uvMin, uvMax, 0);
 #else
         return hbgSampleTent7(atlasUV, depth, texel, uvMin, uvMax, false);
@@ -1034,15 +1075,15 @@ float hbgSampleDirectionalRequest(int request, vec3 worldPosition, vec3 normalWS
     }
     if (filterMode == 5)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
-        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 0);
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
+        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 0, hbgLoadShadowEvsmParams(request));
 #else
         return hbgSampleTent7(atlasUV, depth, texel, uvMin, uvMax, false);
 #endif
     }
     if (filterMode == 4)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
         const vec4 pcssParams = hbgLoadShadowPcssParams(request);
         return hbgSamplePcss(atlasUV, depth, texel, uvMin, uvMax, false, filterParams.x, pcssParams.z,
                              int(pcssParams.x + 0.5), int(pcssParams.y + 0.5), filterParams.z,
@@ -1123,11 +1164,11 @@ float hbgSamplePunctualRequest(int request, vec3 worldPosition, vec3 normalWS)
     }
     if (filterMode == 5)
     {
-        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 1);
+        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 1, hbgLoadShadowEvsmParams(request));
     }
     if (filterMode == 4)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
         const vec4 pcssParams = hbgLoadShadowPcssParams(request);
         return hbgSamplePcss(atlasUV, depth, texel, uvMin, uvMax, punctual, filterParams.x, pcssParams.z,
                              int(pcssParams.x + 0.5), int(pcssParams.y + 0.5), filterParams.z,
@@ -1151,17 +1192,126 @@ float hbgSamplePunctualRequest(int request, vec3 worldPosition, vec3 normalWS)
     return hbgShadowPunctualCompare(atlasUV, depth);
 }
 
+#ifdef HBG_SHADOW_AREA_SAMPLER
+vec2 hbgAreaPcssDirection(int index)
+{
+    const float goldenAngle = 2.39996322972865332;
+    const float angle = float(index) * goldenAngle;
+    return vec2(cos(angle), sin(angle));
+}
+
+void hbgAreaPcssFilterScaleOffset(vec3 shadowCoord, float maxSampleZDistance, float atlasScale,
+                                  out vec2 filterScalePos, out vec2 filterScaleNeg,
+                                  out vec2 filterOffset)
+{
+    const float d = atlasScale * maxSampleZDistance / max(shadowCoord.z, 1.0e-6);
+    const vec2 target = (shadowCoord.xy + 0.5) * 0.5;
+    filterScalePos = (1.0 - target) * d;
+    filterScaleNeg = target * d;
+    filterOffset = (target - shadowCoord.xy) * d;
+}
+
+float hbgSampleAreaPcss(vec2 atlasUV, vec2 tileUV, vec2 screenPixel, float depth, vec2 texel,
+                        vec4 atlasRect, vec2 uvMin, vec2 uvMax, float softness,
+                        float minFilterSize, int blockerCount, int filterCount)
+{
+    const vec2 atlasSize = 1.0 / max(texel, vec2(1.0e-8, 1.0e-8));
+    const float tileResolution = max(atlasRect.x * atlasSize.x, 1.0);
+    const float maxConeDistance =
+        min(depth, max(softness * 65.0 * 4096.0 / tileResolution, 0.0));
+    const vec2 frameOffset =
+        u_global_taaFrameInfo.z * vec2(2.083, 4.867);
+    const float jitterAngle = hbgPcssNoise(screenPixel + frameOffset) * 6.28318530718;
+    const vec2 jitter = vec2(sin(jitterAngle), cos(jitterAngle));
+
+    vec2 filterScalePos;
+    vec2 filterScaleNeg;
+    vec2 filterOffset;
+    hbgAreaPcssFilterScaleOffset(vec3(tileUV, depth), maxConeDistance, atlasRect.x,
+                                 filterScalePos, filterScaleNeg, filterOffset);
+
+    float closestBlocker = 1.0;
+    const int blockers = clamp(blockerCount, 1, 64);
+    const float blockerInverse = 1.0 / float(blockers);
+    for (int i = 0; i < blockers; ++i)
+    {
+        float sampleDistNorm = float(i) * blockerInverse;
+        sampleDistNorm = sampleDistNorm * sampleDistNorm * sampleDistNorm;
+        const vec2 direction = hbgAreaPcssDirection(i);
+        const vec2 rotated = vec2(direction.x * jitter.y + direction.y * jitter.x,
+                                  -direction.x * jitter.x + direction.y * jitter.y);
+        const vec2 offset =
+            rotated * vec2(rotated.x > 0.0 ? filterScalePos.x : filterScaleNeg.x,
+                           rotated.y > 0.0 ? filterScalePos.y : filterScaleNeg.y) +
+            filterOffset * sampleDistNorm;
+        const vec2 position = atlasUV + offset;
+        const float zOffset = maxConeDistance * sampleDistNorm;
+        const float coneDepth = max(depth - zOffset, 0.0);
+        if (all(greaterThanEqual(position, uvMin)) && all(lessThanEqual(position, uvMax)))
+        {
+            const float rawDepth = texture2DLod(s_shadowMapPointPunctual, position, 0.0).x;
+            if (rawDepth < coneDepth && rawDepth < closestBlocker)
+            {
+                closestBlocker = rawDepth;
+            }
+        }
+    }
+    if (closestBlocker >= 1.0)
+    {
+        return 1.0;
+    }
+
+    float filterCone =
+        maxConeDistance * abs((depth - closestBlocker) / max(closestBlocker, 1.0e-6));
+    filterCone = min(filterCone, max((depth - closestBlocker) * 0.9, 0.0));
+    filterCone = max(filterCone, minFilterSize * 10.0);
+    hbgAreaPcssFilterScaleOffset(vec3(tileUV, depth), filterCone, atlasRect.x,
+                                 filterScalePos, filterScaleNeg, filterOffset);
+
+    const int filters = clamp(filterCount, 1, 64);
+    const float sampleInverse = 1.0 / float(filters + 1);
+    const float sampleBias = sampleInverse;
+    float visibility = 0.0;
+    for (int i = 0; i < filters; ++i)
+    {
+        const float sampleDistNorm = sqrt(float(i) * sampleInverse + sampleBias);
+        const vec2 direction = hbgAreaPcssDirection(i);
+        const vec2 rotated = vec2(direction.x * jitter.y + direction.y * jitter.x,
+                                  -direction.x * jitter.x + direction.y * jitter.y);
+        const vec2 offset =
+            rotated * vec2(rotated.x > 0.0 ? filterScalePos.x : filterScaleNeg.x,
+                           rotated.y > 0.0 ? filterScalePos.y : filterScaleNeg.y) +
+            filterOffset * sampleDistNorm;
+        const vec2 position = atlasUV + offset;
+        const float coneDepth = max(depth - maxConeDistance * sampleDistNorm, 0.0);
+        if (all(greaterThanEqual(position, uvMin)) && all(lessThanEqual(position, uvMax)))
+        {
+            const float rawDepth = texture2DLod(s_shadowMapPointPunctual, position, 0.0).x;
+            visibility += rawDepth >= coneDepth ? 1.0 : 0.0;
+        }
+        else
+        {
+            visibility += 1.0;
+        }
+    }
+    return visibility / float(filters);
+}
+#endif
+
 float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
 {
 #ifdef HBG_SHADOW_AREA_SAMPLER
     const vec4 requestParams = hbgLoadShadowRequestParams(request);
     const vec4 requestInfo = hbgLoadShadowRequestInfo(request);
     const vec4 filterParams = hbgLoadShadowFilterParams(request);
+    const vec4 evsmParams = hbgLoadShadowEvsmParams(request);
     if (requestInfo.w < 0.5)
     {
         return 1.0;
     }
 
+    const int filterMode = int(requestInfo.z + 0.5);
+    const bool areaEvsm = filterMode == 5;
     const vec4 atlasRect = hbgLoadShadowAtlasRect(request);
     const mat4 shadowMatrix = transpose(hbgLoadShadowMatrix(request));
     const vec4 rawShadowCoord = mul(shadowMatrix, vec4(worldPosition, 1.0));
@@ -1171,8 +1321,8 @@ float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
     }
 
     const float distanceScale = max(rawShadowCoord.w, 1.0e-4);
-    const vec3 biasedPosition =
-        worldPosition + normalWS * requestParams.y * filterParams.z * distanceScale;
+    const float normalBiasScale = areaEvsm ? 0.0 : requestParams.y * filterParams.z;
+    const vec3 biasedPosition = worldPosition + normalWS * normalBiasScale * distanceScale;
     const vec4 shadowCoord = mul(shadowMatrix, vec4(biasedPosition, 1.0));
     if (shadowCoord.w <= 0.0)
     {
@@ -1188,16 +1338,26 @@ float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
     }
 
     const vec2 atlasUV = tileUV * atlasRect.xy + atlasRect.zw;
-    if (any(lessThan(atlasUV, atlasRect.zw)) ||
-        any(greaterThan(atlasUV, atlasRect.zw + atlasRect.xy)))
+    const vec2 texel = atlasRect.xy * requestParams.zw;
+    const float blurPassesScale = areaEvsm ? 1.0 + min(4.0, evsmParams.w) * 4.0 : 1.0;
+    const vec2 uvMin = areaEvsm ? atlasRect.zw + texel * blurPassesScale
+                                : atlasRect.zw + texel * 0.5;
+    const vec2 uvMax = areaEvsm ? atlasRect.zw + atlasRect.xy -
+                                      texel * (0.5 * blurPassesScale)
+                                : atlasRect.zw + atlasRect.xy - texel * 0.5;
+    if (areaEvsm)
+    {
+        if (any(lessThan(atlasUV, uvMin)) || any(greaterThan(atlasUV, uvMax)))
+        {
+            return 1.0;
+        }
+    }
+    else if (any(lessThan(atlasUV, atlasRect.zw)) ||
+             any(greaterThan(atlasUV, atlasRect.zw + atlasRect.xy)))
     {
         return 1.0;
     }
 
-    const vec2 texel = atlasRect.xy * requestParams.zw;
-    const vec2 uvMin = atlasRect.zw + texel * 0.5;
-    const vec2 uvMax = atlasRect.zw + atlasRect.xy - texel * 0.5;
-    const int filterMode = int(requestInfo.z + 0.5);
     if (filterMode == 7)
     {
         return hbgSampleMsm(atlasUV, depth, texel, uvMin, uvMax, 2);
@@ -1208,7 +1368,7 @@ float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
     }
     if (filterMode == 5)
     {
-        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 2);
+        return hbgSampleEvsm(atlasUV, depth, texel, uvMin, uvMax, 2, evsmParams);
     }
     if (filterMode != 4)
     {
@@ -1226,62 +1386,12 @@ float hbgSampleAreaShadow(int request, vec3 worldPosition, vec3 normalWS)
     }
 
     const vec4 pcssParams = hbgLoadShadowPcssParams(request);
-    const int blockers = clamp(int(pcssParams.x + 0.5), 1, 32);
-    const int filters = clamp(int(pcssParams.y + 0.5), 1, 32);
-    const float softness = max(filterParams.x, 1.0e-3);
-    const float jitter = hbgPcssNoise(atlasUV * 4096.0 +
-                                      u_global_taaFrameInfo.z * 17.0 * u_global_taaFrameInfo.w) * 6.2831853;
-    const float blockerRadius = clamp(softness * 12.0, 1.0, 24.0);
-    const float blockerZExtent = clamp(softness * 0.05, 1.0e-4, 0.5);
-    float closestBlocker = 1.0;
-    for (int blockerIndex = 0; blockerIndex < blockers; ++blockerIndex)
-    {
-        const float radial = sqrt((float(blockerIndex) + 0.5) / float(blockers));
-        const float angle = float(blockerIndex) * 2.39996323 + jitter;
-        const vec2 uv =
-            atlasUV + vec2(cos(angle), sin(angle)) * radial * blockerRadius * texel;
-        if (all(greaterThanEqual(uv, uvMin)) && all(lessThanEqual(uv, uvMax)))
-        {
-            const float rawDepth = texture2DLod(s_shadowMapPointPunctual, uv, 0.0).x;
-            if (rawDepth < depth + blockerZExtent * radial)
-            {
-                closestBlocker = min(closestBlocker, rawDepth);
-            }
-        }
-    }
-    if (closestBlocker >= 1.0)
-    {
-        return 1.0;
-    }
-
-    const float nearZ = max(filterParams.y, 1.0e-4);
-    const float farZ = max(pcssParams.w, nearZ + 1.0e-3);
-    const float zScale = (farZ - nearZ) / (nearZ * farZ);
-    const float zBias = 1.0 / farZ;
-    const float receiverDistance = 1.0 / max(zScale * (1.0 - depth) + zBias, 1.0e-6);
-    const float blockerDistance = 1.0 / max(zScale * (1.0 - closestBlocker) + zBias, 1.0e-6);
-    const float penumbra = abs(receiverDistance - blockerDistance) / max(blockerDistance, 1.0e-4);
-    const float minFilterRadius = max(1.0, pcssParams.z * 64.0);
-    const float filterRadius = clamp(penumbra * softness * 96.0, minFilterRadius, 24.0);
-
-    float visibility = 0.0;
-    for (int filterIndex = 0; filterIndex < filters; ++filterIndex)
-    {
-        const float radial = sqrt((float(filterIndex) + 0.5) / float(filters));
-        const float angle = float(filterIndex) * 2.39996323 + jitter * 1.37;
-        const vec2 uv =
-            atlasUV + vec2(cos(angle), sin(angle)) * radial * filterRadius * texel;
-        if (all(greaterThanEqual(uv, uvMin)) && all(lessThanEqual(uv, uvMax)))
-        {
-            const float rawDepth = texture2DLod(s_shadowMapPointPunctual, uv, 0.0).x;
-            visibility += rawDepth >= depth ? 1.0 : 0.0;
-        }
-        else
-        {
-            visibility += 1.0;
-        }
-    }
-    return visibility / float(filters);
+    const vec4 screenClip = mul(u_global_nonJitteredViewProj, vec4(worldPosition, 1.0));
+    const vec2 screenPixel = floor(
+        (screenClip.xy / max(screenClip.w, 1.0e-6) * 0.5 + 0.5) * u_global_screenSize.xy);
+    return hbgSampleAreaPcss(atlasUV, tileUV, screenPixel, depth, texel, atlasRect, uvMin, uvMax,
+                             filterParams.x, pcssParams.z,
+                             int(pcssParams.x + 0.5), int(pcssParams.y + 0.5));
 #else
     return 1.0;
 #endif

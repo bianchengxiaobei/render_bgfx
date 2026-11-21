@@ -16,6 +16,15 @@ constexpr uint32_t kMaxShadowRequests = 128;
 constexpr uint32_t kDefaultShadowAtlasSize = 2048;
 constexpr uint32_t kDefaultAreaShadowAtlasSize = 1024;
 constexpr uint32_t kDefaultAreaShadowResolution = 512;
+constexpr float kEvsmLog2e = 1.4426950408889634f;
+constexpr float kEvsmMinExponent = 5.0f;
+constexpr float kEvsmMaxExponent = 42.0f;
+constexpr float kEvsmMinLeakBias = 0.0f;
+constexpr float kEvsmMaxLeakBias = 1.0f;
+constexpr float kEvsmMinVarianceBias = 0.0f;
+constexpr float kEvsmMaxVarianceBias = 0.001f;
+constexpr uint32_t kEvsmMinBlurPasses = 0;
+constexpr uint32_t kEvsmMaxBlurPasses = 8;
 
 enum class ShadowFilter : uint8_t {
     Off,

@@ -80,6 +80,8 @@ class ShaderLibrary {
         PassFiles shadowMoments;
         PassFiles shadowSatHorizontal;
         PassFiles shadowSatVertical;
+        PassFiles shadowEvsmBlur;
+        PassFiles shadowEvsmBlurMoments;
         PassFiles prepass;
         PassFiles motionVectors;
         PassFiles cameraMotionVectors;

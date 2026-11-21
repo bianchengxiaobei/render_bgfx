@@ -501,8 +501,8 @@ gfx::TextureFormat ForwardRenderer::selectMotionVectorFormat() const {
 }
 
 gfx::TextureFormat ForwardRenderer::selectDepthPyramidFormat() const {
-    if (framebufferFormatSupported(gfx::TextureFormat::RG32F)) {
-        return gfx::TextureFormat::RG32F;
+    if (framebufferFormatSupported(gfx::TextureFormat::RGBA32F)) {
+        return gfx::TextureFormat::RGBA32F;
     }
     HBG_LOGW("RG32F depth pyramid is not framebuffer-capable; using RGBA32F");
     return gfx::TextureFormat::RGBA32F;
@@ -573,6 +573,7 @@ void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, cons
     m_formatWarningLogged = false;
     m_deferredFallbackLogged = false;
     m_decalFallbackLogged = false;
+    m_areaEvsmBlurWarningLogged = false;
     HBG_LOGI("frame settings: lit={} shadows={} opaque={} transparent={} postprocess={} motionVectors={} "
              "lightLayers={}",
              m_frameSettings.litShaderMode() == LitShaderMode::Deferred ? "deferred" : "forward",
@@ -879,7 +880,8 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
         !m_lightScreenBoundsSampler.valid() || !m_lightBigTileSampler.valid() ||
         !m_lightViewRowsSampler.valid() || !m_lightViewRowsTexture.valid() ||
         !m_shadowSampler.valid() || !m_shadowPunctualSampler.valid() || !m_shadowPointSampler.valid() ||
-        !m_shadowPointPunctualSampler.valid() || !m_shadowMomentSlotUniform.valid() ||
+        !m_shadowPointPunctualSampler.valid() ||
+        !m_shadowMomentSlotUniform.valid() ||
         !m_shadowMomentParamsUniform.valid() || !m_shadowMomentDepthSampler.valid() ||
         !m_shadowMomentSampler.valid() ||
         !m_shadowMomentSatFallback.valid() ||
@@ -3237,6 +3239,116 @@ void ForwardRenderer::addShadowMomentPasses(RenderGraph& graph, RenderGraphTextu
     }
 }
 
+void ForwardRenderer::addAreaEvsmMomentPasses(RenderGraph& graph, RenderGraphTextureHandle areaShadow) {
+    if (!m_shadowManager.areaEvsmBlurActive() || !areaShadow.valid()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::ShadowEvsmBlur, 0, 0});
+    const gfx::ProgramHandle momentBlurProgram =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::ShadowEvsmBlurMoments, 0, 0});
+    const gfx::TextureHandle momentTexture = m_shadowManager.areaEvsmMomentTexture();
+    const gfx::TextureHandle momentCopyTexture = m_shadowManager.areaEvsmMomentCopyTexture();
+    if (!program.valid() || !momentTexture.valid() || !momentCopyTexture.valid()) {
+        return;
+    }
+
+    const RenderGraphTextureHandle moment0 =
+        graph.importTexture(momentTexture, "shadow.areaEvsmMoments");
+    const RenderGraphTextureHandle moment1 =
+        graph.importTexture(momentCopyTexture, "shadow.areaEvsmMomentsCopy");
+    bool warnedMissingBlur = false;
+
+    for (const ShadowRequest& request : m_shadowManager.requests()) {
+        if (!request.enabled || request.atlas != ShadowAtlasType::Area ||
+            request.filter != ShadowFilter::Evsm) {
+            continue;
+        }
+        const Vec4 slot(static_cast<float>(request.viewportWidth),
+                        static_cast<float>(request.viewportHeight),
+                        static_cast<float>(request.viewportX),
+                        static_cast<float>(request.viewportY));
+        const Vec4 params(request.evsmExponent, request.evsmLightLeakBias, request.evsmVarianceBias, 0.0f);
+        const uint16_t atlasSize = request.atlasSize;
+        const uint32_t halfWidth = (request.viewportWidth + 1u) / 2u;
+        const uint32_t halfHeight = (request.viewportHeight + 1u) / 2u;
+        const uint32_t groupsX = std::max<uint32_t>((halfWidth + 7u) / 8u, 1u);
+        const uint32_t groupsY = std::max<uint32_t>((halfHeight + 7u) / 8u, 1u);
+        const std::string suffix = std::to_string(request.requestIndex);
+
+        graph.addComputePass("Shadow Area EVSM " + suffix)
+            .readTexture(areaShadow)
+            .writeTexture(moment0)
+            .allowCulling(false)
+            .setRenderFunc([this, program, moment0, areaShadow, slot, params, atlasSize, groupsX,
+                            groupsY](RenderGraphContext& context) {
+                gfx::Encoder& encoder = context.encoder();
+                const bgfx::ViewId view = context.viewId();
+                encoder.setViewRect(view, 0, 0, atlasSize, atlasSize);
+                encoder.setViewFrameBuffer(view, {});
+                encoder.setUniform(m_shadowMomentSlotUniform, &slot.x);
+                encoder.setUniform(m_shadowMomentParamsUniform, &params.x);
+                encoder.setTexture(0, m_shadowMomentDepthSampler, context.texture(areaShadow),
+                                   BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                encoder.setImage(1, context.texture(moment0), 0, bgfx::Access::Write,
+                                 gfx::TextureFormat::RGBA32F);
+                encoder.dispatch(view, program, groupsX, groupsY, 1);
+            });
+
+        const uint32_t blurPasses =
+            std::min<uint32_t>(request.evsmBlurPasses, kEvsmMaxBlurPasses);
+        if (blurPasses == 0) {
+            continue;
+        }
+        if (!momentBlurProgram.valid()) {
+            if (!warnedMissingBlur && !m_areaEvsmBlurWarningLogged) {
+                HBG_LOGW("shadow area EVSM: blur-pass shader unavailable; ignoring evsmBlurPasses");
+                m_areaEvsmBlurWarningLogged = true;
+            }
+            warnedMissingBlur = true;
+            continue;
+        }
+
+        const Vec4 halfSlot(static_cast<float>(halfWidth), static_cast<float>(halfHeight),
+                            static_cast<float>(request.viewportX / 2u),
+                            static_cast<float>(request.viewportY / 2u));
+        const auto addMomentBlurPass = [&](const std::string& name, RenderGraphTextureHandle source,
+                                           RenderGraphTextureHandle target, bool copy) {
+            const Vec4 mode(copy ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+            graph.addComputePass(name)
+                .readTexture(source)
+                .writeTexture(target)
+                .allowCulling(false)
+                .setRenderFunc([this, momentBlurProgram, source, target, halfSlot, mode, atlasSize,
+                                groupsX, groupsY](RenderGraphContext& context) {
+                    gfx::Encoder& encoder = context.encoder();
+                    const bgfx::ViewId view = context.viewId();
+                    encoder.setViewRect(view, 0, 0, atlasSize, atlasSize);
+                    encoder.setViewFrameBuffer(view, {});
+                    encoder.setUniform(m_shadowMomentSlotUniform, &halfSlot.x);
+                    encoder.setUniform(m_shadowMomentParamsUniform, &mode.x);
+                    encoder.setTexture(0, m_shadowMomentSampler, context.texture(source),
+                                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                    encoder.setImage(1, context.texture(target), 0, bgfx::Access::Write,
+                                     gfx::TextureFormat::RGBA32F);
+                    encoder.dispatch(view, momentBlurProgram, groupsX, groupsY, 1);
+                });
+        };
+
+        uint32_t surface = 0;
+        for (uint32_t pass = 0; pass < blurPasses; ++pass) {
+            const RenderGraphTextureHandle source = surface == 0 ? moment0 : moment1;
+            const RenderGraphTextureHandle target = surface == 0 ? moment1 : moment0;
+            addMomentBlurPass("Shadow Area EVSM Blur " + suffix + "." + std::to_string(pass), source,
+                              target, false);
+            surface ^= 1u;
+        }
+        if (surface != 0) {
+            addMomentBlurPass("Shadow Area EVSM Copy " + suffix, moment1, moment0, true);
+        }
+    }
+}
+
 void ForwardRenderer::bindShadowMomentSat(gfx::Encoder& encoder, gfx::TextureHandle directionalShadow) const {
     if (!m_shadowPointSampler.valid()) {
         return;
@@ -4565,8 +4677,11 @@ void ForwardRenderer::addDeferredLightingComputePass(RenderGraph& graph,
                            resources.environment.valid() ? BGFX_SAMPLER_V_CLAMP : BGFX_SAMPLER_UVW_CLAMP);
         bindCookieAtlas(encoder, 11);
         if (resources.areaShadow.valid() && m_shadowManager.areaRequestCount() > 0) {
-            encoder.setTexture(13, m_shadowPointPunctualSampler, context.texture(resources.areaShadow),
-                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                       ? BGFX_SAMPLER_UVW_CLAMP
+                                       : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            encoder.setTexture(13, m_shadowPointPunctualSampler,
+                               m_shadowManager.activeAreaSamplingTexture(), flags);
         }
         bindProbeTextures(encoder, false);
         const gfx::TextureHandle ssaoTexture =
@@ -5655,11 +5770,13 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
         bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
     }
     const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
-                                            ? m_shadowManager.activeAreaTexture()
+                                            ? m_shadowManager.activeAreaSamplingTexture()
                                             : m_shadowManager.activePunctualTexture();
     if (areaDepth.valid()) {
-        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
     }
     bindLightList(encoder, clusterList);
     encoder.setTexture(11, m_contactShadowSampler,
@@ -6209,7 +6326,7 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
     m_objectBinder.upload(m_objectUniforms);
 
     const gfx::TextureHandle variantAreaDepth = m_shadowManager.areaRequestCount() > 0
-                                            ? m_shadowManager.activeAreaTexture()
+                                            ? m_shadowManager.activeAreaSamplingTexture()
                                             : punctualShadow;
     const gfx::TextureHandle variantEnvironmentTexture = environment.valid() ? environment : m_environmentFallback;
     if (m_litVariantsActive) {
@@ -6239,8 +6356,10 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
             encoder.setTexture(11, m_ssaoSampler, ssao.valid() ? ssao : m_ssaoFallback,
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
             if (variantAreaDepth.valid()) {
-                encoder.setTexture(13, m_shadowPointPunctualSampler, variantAreaDepth,
-                                   BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                           ? BGFX_SAMPLER_UVW_CLAMP
+                                           : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                encoder.setTexture(13, m_shadowPointPunctualSampler, variantAreaDepth, flags);
             }
             bindProbeTextures(encoder);
         };
@@ -6298,11 +6417,13 @@ void ForwardRenderer::renderDeferredLighting(gfx::Encoder& encoder, bgfx::ViewId
         }
     }
     const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
-                                            ? m_shadowManager.activeAreaTexture()
+                                            ? m_shadowManager.activeAreaSamplingTexture()
                                             : punctualShadow;
     if (areaDepth.valid()) {
-        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
-                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
     }
     const gfx::TextureHandle environmentTexture = environment.valid() ? environment : m_environmentFallback;
     encoder.setTexture(10, m_environmentSampler, environmentTexture,
@@ -6630,11 +6751,13 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
                                BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         }
         const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
-                                                ? m_shadowManager.activeAreaTexture()
+                                                ? m_shadowManager.activeAreaSamplingTexture()
                                                 : m_shadowManager.activePunctualTexture();
         if (areaDepth.valid()) {
-            encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth,
-                               BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                       ? BGFX_SAMPLER_UVW_CLAMP
+                                       : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
         }
         bindLightList(encoder, useCluster);
         encoder.setTexture(11, m_contactShadowSampler,
@@ -7826,6 +7949,7 @@ void ForwardRenderer::render(const RenderScene& scene, uint16_t width, uint16_t 
     addShadowAtlasClearPass(m_renderGraph, areaShadow, m_shadowManager.areaAtlasSize(), clearShadowAtlases);
     addGpuShadowCullPass(m_renderGraph, resources);
     addShadowPass(m_renderGraph, directionalShadow, punctualShadow, areaShadow, scene);
+    addAreaEvsmMomentPasses(m_renderGraph, areaShadow);
     addShadowMomentPasses(m_renderGraph, directionalShadow);
     addClearPass(m_renderGraph, color, depth, materialDebug || (deferred && isGbufferDebug(debugMode)));
     addPrepassPass(m_renderGraph, normal, depth, scene, deferred);

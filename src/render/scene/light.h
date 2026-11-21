@@ -32,6 +32,10 @@ struct LightShadowSettings {
     float softness = 0.5f;
     uint32_t blockerSamples = 16;
     uint32_t filterSamples = 24;
+    float evsmExponent = 15.0f;
+    float evsmLightLeakBias = 0.0f;
+    float evsmVarianceBias = 1.0e-5f;
+    uint32_t evsmBlurPasses = 0;
 };
 
 struct Light {

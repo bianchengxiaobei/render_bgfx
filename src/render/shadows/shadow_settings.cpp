@@ -304,6 +304,14 @@ void sanitizeLightShadowSettings(LightShadowSettings& settings) {
     settings.softness = std::clamp(finiteOr(settings.softness, 0.5f), 0.0f, 4.0f);
     settings.blockerSamples = std::clamp(settings.blockerSamples, 1u, 64u);
     settings.filterSamples = std::clamp(settings.filterSamples, 1u, 64u);
+    settings.evsmExponent =
+        std::clamp(finiteOr(settings.evsmExponent, 15.0f), kEvsmMinExponent, kEvsmMaxExponent);
+    settings.evsmLightLeakBias =
+        std::clamp(finiteOr(settings.evsmLightLeakBias, 0.0f), kEvsmMinLeakBias, kEvsmMaxLeakBias);
+    settings.evsmVarianceBias = std::clamp(finiteOr(settings.evsmVarianceBias, 1.0e-5f),
+                                           kEvsmMinVarianceBias, kEvsmMaxVarianceBias);
+    settings.evsmBlurPasses =
+        std::clamp(settings.evsmBlurPasses, kEvsmMinBlurPasses, kEvsmMaxBlurPasses);
 }
 
 LightShadowSettings resolveLightShadow(const Light& light, const ShadowSettings& settings) {

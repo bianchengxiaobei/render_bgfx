@@ -147,7 +147,11 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
                 "contactShadows":false,
                 "softness":0.8,
                 "blockerSamples":12,
-                "filterSamples":20
+                "filterSamples":20,
+                "evsmExponent":28.0,
+                "evsmLightLeakBias":0.2,
+                "evsmVarianceBias":0.0005,
+                "evsmBlurPasses":3
             }
         }]
     })";
@@ -232,6 +236,10 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(scene.lights[0].shadow.softness == doctest::Approx(0.8f));
     CHECK(scene.lights[0].shadow.blockerSamples == 12);
     CHECK(scene.lights[0].shadow.filterSamples == 20);
+    CHECK(scene.lights[0].shadow.evsmExponent == doctest::Approx(28.0f));
+    CHECK(scene.lights[0].shadow.evsmLightLeakBias == doctest::Approx(0.2f));
+    CHECK(scene.lights[0].shadow.evsmVarianceBias == doctest::Approx(0.0005f));
+    CHECK(scene.lights[0].shadow.evsmBlurPasses == 3u);
 }
 
 TEST_CASE("scene sidecar converts a punctual light to an area light") {

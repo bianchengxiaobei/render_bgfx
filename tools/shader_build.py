@@ -773,6 +773,8 @@ def main() -> int:
         shadow_moments_compute = backend_root / "shadow_moments.cs.bin"
         shadow_sat_horizontal_compute = backend_root / "shadow_sat_horizontal.cs.bin"
         shadow_sat_vertical_compute = backend_root / "shadow_sat_vertical.cs.bin"
+        shadow_evsm_blur_compute = backend_root / "shadow_evsm_blur.cs.bin"
+        shadow_evsm_blur_moments_compute = backend_root / "shadow_evsm_blur_moments.cs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_cull.cs.sc",
                        shadow_cull_compute, "compute", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_moments.cs.sc",
@@ -781,6 +783,10 @@ def main() -> int:
                        shadow_sat_horizontal_compute, "compute", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_sat_vertical.cs.sc",
                        shadow_sat_vertical_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_evsm_blur.cs.sc",
+                       shadow_evsm_blur_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_evsm_blur_moments.cs.sc",
+                       shadow_evsm_blur_moments_compute, "compute", backend, [], args.force, newest_input)
 
         debug_vertex = backend_root / "debug_light_data.vs.bin"
         debug_fragment = backend_root / "debug_light_data.fs.bin"
@@ -997,6 +1003,12 @@ def main() -> int:
             },
             "shadowSatVertical": {
                 "compute": shadow_sat_vertical_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "shadowEvsmBlur": {
+                "compute": shadow_evsm_blur_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "shadowEvsmBlurMoments": {
+                "compute": shadow_evsm_blur_moments_compute.relative_to(root / "shaders").as_posix(),
             },
             "prepass": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),

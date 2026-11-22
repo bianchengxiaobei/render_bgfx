@@ -89,7 +89,7 @@ RenderScene ──▶ FSceneInfo + FBakingJobInputs ──▶ Dawn job dir ─�
 | 阶段 | 主题 | 交付物 | 验收 | 估时 |
 |---|---|---|---|---|
 | D0 | Spike & 基础设施 | job dir 黄金样本、`hbg_dawnbake` 骨架、`--dawn-proto-test` | Dawn.exe 能否直启有结论；黄金样本入库 | 3–5 天 |
-| D1 | 协议层（已完成，除 gzip） | `tools/dawnbake/include/hbg/dawn/*`、`tools/dawnbake/src/dawn_serialize.cpp` | 与 C# 黄金样本逐字节一致（`.scene` 1516B / `.jobs` 800B，round-trip 0 diff） | 1.5–2 周 |
+| D1 | 协议层（已完成，gzip deflate） | `tools/dawnbake/include/hbg/dawn/*`、`tools/dawnbake/src/dawn_serialize.cpp` | 与 C# 黄金样本逐字节一致（`.scene` 1516B / `.jobs` 800B，round-trip 0 diff） | 1.5–2 周 |
 | D2 | 场景转换（D2.1–D2.10 完成；`.lmgz` 出口已由 D4.5 打通） | `convert/` + 材质贴图化 + light/sky 映射 | 简单场景能生成完整 job；Dawn 能读 | 2–3 周 |
 | D3 | UV2 + Atlas（D3.1–D3.9 完成；运行时 sidecar 读取待 D6） | `unwrap/` + `pack/` + sidecar 输出 | 100 块无重叠、无越界、padding 正确 | 1–2 周 |
 | D4 | 作业驱动（D4.1–D4.7 完成；OnlyLocal + 本地 Coordinator mock 实跑打通） | `submit/`（直启或 gRPC） | 一条命令完成 烘→等→收 | 3 天–3 周（取决于 D0） |
@@ -338,12 +338,11 @@ Dawn.exe -local -localdirectory <dir>\ <guid32hex> [-lm 0 -1 1]
 - D4.7 已实现 CI 进度行 `DAWN_PROGRESS phase=... completed=N total=M percent=P`；`runDawnJob()` 的 `onProgress` 在结果文件数变化时触发，值为新 `.lmgz` 数 / `lightmap2DJobs` 数。原版 BUILDING 用 `m_RecieveTaskCount/NumOfTaskExported`、IMPORTING 用 `NumOfTaskImported/NumOfTask`（`Dawn4UnityWindow.cs:216-234`）。
 - 2026-11-19 直启实测（D0 CUDA workaround exe）：D2.8 raw scene/jobs 启动 6.79s、退出码 0、日志含 `Lighting complete`；仍未生成 `.lmgz`，`--bake` 报 `RESULT_IMPORT_FAILURE(-20)`。结果通道仍需 Agent 或其他 local 输出参数，D5 导入要等该阻塞解除。
 
-> **D0 阻塞**：Dawn 1.3.5.20241220 在本机 `DeviceResource` 创建 OIDN 设备时静默失败，
-> 随后因 `spdlog::warn("create OIDN denoiser msg:{},Error:{}")` 传入空指针触发 fmt 异常退出；
-> 且其 Vulkan 校验回调也存在同类空字符串日志风险。详见 `docs/dawn-gi-checklist.md` 的「D0 阻塞记录」。
-> 2026-11-19 验证 workaround：临时把 `oidnNewDevice(CPU=1)` 改为 `CUDA=3` 后，D2.8 场景可被 Dawn
-> 读取并完成 64×64 lightmap 烘焙（`Lighting complete`，退出码 0）；该 patch 仅用于验证，不入库。
-> 协议/数据侧已全部通过 Dawn 解析，阻塞与我们的 golden 无关。local 模式未落盘 `.lmgz`，结果通道归 D4/D5。
+> **D0.8 已在本机解除（2026-11-22）**：官方未打补丁 `Dawn.exe` 直启 5/5 exit=0、`Lighting complete`，
+> Agent 路径 1/1 产出 `.lmgz`。日志仍出现 OIDN CPU 的 `string pointer is null`，但随后回退
+> `launch optix denoiser` 并正常结束，不再触发致命崩溃。2026-11-19 的 `oidnNewDevice(CPU=1)`→`CUDA=3`
+> patch 仅保留作历史记录。CPU OIDN（`denoiserMode=2`）已实测产出 `.lmgz`；仍需 D0.9 干净机复测，D0.10 仅剩日志清理。
+> local 模式仍未落盘 `.lmgz`，结果通道归 D4/D5。
 
 ### 7.2 Agent gRPC（备选）
 
@@ -358,6 +357,8 @@ BeginMission(V2) → RunJob(JobFullDesc+TaskDescList) → GetJobResult(stream) �
 
 > D4.4–D4.7 进展（2026-11-20）：vcpkg 已装 grpc 1.81.1 / protobuf 6.33 / abseil / c-ares / re2。关键坑：vcpkg 自带 Ninja 1.13.2 在 c-ares try_compile 卡死，换 Ninja 1.11.1 后通过。`HBG_BUILD_DAWN_GRPC=ON` 已编译 `dawn_agent_client` 并生成 C++ proto；CTest 17/17。
 > `DawnDeamon` 5009 拉起 `DAWNAgent` 5011；本地 mock Coordinator 5010 返回 `BeginMissionV2/CheckJob`，Dawn 产出真实 `v2.00000000000000000000000000000005.lmgz`（约 43KB，64×64，4096 samples），client `GetJobResult` 收到 `D.O.N.E`，`DAWN_PROGRESS ... done`。
+
+2026-11-21 进一步验证 gz-only：删除 job 目录 raw `.scene/.jobs`，仅保留 deflated `.scenegz`/`.jobgz`，Agent/Dawn 仍完成并 `Dawn results: validated`。同时修复 `spec.jobId` 大小写：原版 `JobManagement.cs:38` 使用 `%08X` 大写，之前小写化会使含 A-F 的 GUID 被 DawnAgent 拒绝；`taskID` 继续使用 `guidHex` 大写。`buildAgentJobSpec()` 与 `expectedLightmapResults()` 现在都会回退读取 `.jobgz`。D4.6 的 `BatchUploadFileInServerCache` 已按原版 `Agent.proto:49-50,127-138` 实现：请求只含 `hash/filePath`、不含 `fileData`，ack 数量必须匹配，`Done/DoneInCache` 为成功；`--agent-cache-test` 用进程内 fake Agent 覆盖成功、cache miss、per-file fail。`UploadFile` 已按原版修复：首包必须带 `jobID/filePath/fileSize/hash`（SHA1 大写），先等 `NotInCache` 再发数据，空文件不发数据包，3 MiB 分块；新增 `dawnbake_agent_upload`，真实 Agent 上传 `hbg_upload_probe.txt` 成功，并在官方 active T6 job 上完成 6 MiB 上传/`DownloadFile` 回读 SHA-256 一致。`UploadMultiFiles`（`Agent.proto:143-152`）、`DownloadFile`（`:58,155-173`）和 `UploadJobFilesToAnotherAgent`（`:61,176-180`）也已实现并有 fake Agent 测试；`DownloadFile` 必须写 `DataDone.fileData`（原版短文件只在最后一条 `DataDone` 带 payload），真实 active Agent 下载 184,476B 与源文件 SHA-256 一致。`--bake --agent --agent-files --agent-download-results` 在 `EndMission` 前下载缺失结果，优先 `DownloadMultiFiles`、失败回退 `DownloadFile`，本地已有结果跳过，`--agent-force-download` 可强制重下；真实 Agent 强制重下 190,301B，Agent 日志 `Got DownloadMultiFiles 1 files`，SHA1 校验通过；原版 Agent 的 `DownloadFile` 只服务 current job，作业结束后调用会报 `doesn't match current job`。 另按 DAWNAgent 2.4.5 实际 DLL 补齐 `DownloadMultiFiles`（Editor 旧 proto 缺失）：`DownloadFileAck.filename=5`、`DownloadMultiFilesReq/Ack`，支持同一 ack 内多文件 Data/DataDone、逐文件 SHA1 大写 hex 校验和 `.part` 原子提交；新增 `dawnbake_agent_multi_download` 与 `dawnbake_agent_download_files`（批量成功 + 不支持回退）。
 > 关键修正：任务 GUID 必须是 `(0,0,LightmapTask,5)`，`TaskDesc.Parameters="LIGHTMAP2D"`；否则 Dawn 立即 `Job Not Processed`，不会写结果。
 
 ### 7.3 CLI
@@ -387,7 +388,7 @@ hbg_dawnbake --scene=<gltf> --sidecar=<hdrp.json> --out=<dir>
    - `filter=linear`、`wrap=clamp` 不是 DDS 文件元数据，由 D6 上传采样器设置。`--sh-atlas-dds-test` 覆盖 2 atlas / 6 文件、RGBA16F、无 mip、尺寸和 raw bytes 比对；D5.7 后 CTest **22/22**。
 6. **逐 texel 校验**：D5.6 已完成。`lightmap_dds.h/.cpp` 新增 `verifyLightmapAtlasDds()`，D7.2 后按层 0 `IncidentLighting`、层 1 `SHVectorR`、层 2 零值对每个 `bIsMapped != 0` texel 的 4 个分量做 half-bit 精确比对；DDS target 原点由调用方给出（原版 `rect - padding` 规则）；v1 暂不校验 `PrtHQ/PrtLQ`（真实 D4.5 样本 `prtHQ=0`）。
    - 只校验 mapped 源 texel，避免 D5.4 膨胀改变 unmapped texel 导致误报；原版行序/块循环参考 `DawnLightmap2DImporter.cs:46-57,74`，`ToColor` 保留 `.w` 参考 `DawnImporter.cs:249-252`，`SetPixels` 参考 `DawnEncodeTextures.cs:257-265`。
-   - `--sh-atlas-dds-verify-test` 写合成 `.lmgz` → DDS → 解码比对；`--verify-sh-atlas-dds <lmgz> <dir> <atlas> <x> <y> <size>` 支持真实文件手工校验（target 传 DDS 原点）。CTest 新增 `dawnbake_sh_atlas_dds_verify`，当前 **22/22**。
+   - `--sh-atlas-dds-verify-test` 写合成 `.lmgz` → DDS → 解码比对；`--verify-sh-atlas-dds <lmgz> <dir> <atlas> <x> <y> <size>` 支持真实文件手工校验（target 传 DDS 原点）。CTest 新增 `dawnbake_sh_atlas_dds_verify`，当前 **23/23**。
 7. **更新 sidecar**：D5.7 已完成。`dawn_package` 新增 `mergeLightmapSidecar()`，读取已有 `.hdrp.json` 与 D3 lightmap fragment，校验 `version/texelPerUnit/atlases/objects` 与 rect 边界后，用 `ordered_json` 保留原有 `hdrp/materials/lights/objects/custom` 字段并替换/新增根 `lightmap`。CLI `--merge-sidecar <scene.hdrp.json> <lightmap.json> [<out.hdrp.json>]` 默认原地更新；`--sidecar-merge-test` 覆盖字段保留、stale 段替换、原地/幂等和错误输入；CTest **22/22**。原版结果字段参考 `DawnBakingResult.cs:94-104,777-778` 和 `DawnLightDataAsset.cs:331-379`。
 
 > D7.2 已确认保留 `IncidentLighting`，直接复用现有 3 层布局，不新增 DDS 文件。
@@ -494,9 +495,11 @@ vec3 hbgSampleBakedGI(vec2 lmUV, vec3 nWS) {
 
 1. **UV2 V 轴**：非对称场景（+X 红灯、+Z 绿灯、白地板），对比 Dawn 结果与预期；决定 `uv2.y` 是否取 `1-v`。**实测结论：不翻转。** Dawn `IncidentLighting` 红峰在 `u=127,v=63`、绿峰在 `u=64,v=127`；640×360 运行时 debug 为右红、上绿，DDS/UV 行序一致。原版普通 mesh 的 `LightmapScaleOffset` y 为正（`DawnPackLightmapAtlas.cs:324`），只有 landscape 分支才用负 y（`:320`）；importer 也按 Y 行写 `SetPixels`（`DawnLightmap2DImporter.cs:46-57`）。
 2. **方向贴图归一化**：单面 + 单平行光（强度已知）+ albedo=1，确认 `IncidentLighting` + `SHVectorR` 解码的缩放；D7.2 实测 `u_pass_lightmapParams2.x=1.0`。
-3. **灯光单位**：点光距离 1/2/4m 的亮度比，校准 `Attenuation/FalloffExponent/LightPower`。
+3. **灯光单位**：点光距离 1/2/4m 的亮度比，校准 `Attenuation/FalloffExponent/LightPower`。**实测结论：法线正上方三个点光在 1/2/4m 的中心亮比为 0.253/0.0616（理论 0.25/0.0625），有效辐射为 `Color * intensity / d²`；`Attenuation=1/range` 只用于 LightGrid，`FalloffExponent=1` 在 inverse-square 路径忽略，`LightPower` 为元数据，不额外乘亮度。**
 
-校准结果写入本文档 §10 的"校准记录"表，并固化到 `config/dawn.json`（新增）而不是散落在代码里。
+校准结果写入本文档 §15 的"校准记录"表，并固化到 `config/dawn.json`（D7.7）；`hbg_dawnbake --dawn-config-test` 校验配置与验收常量一致，T2/T6 fixture 直接从该配置读取 UV 翻转、atlas/padding、方向层数、线性色空间和灯光单位系数。
+
+D7.8 参考路径对比见 [`dawn-gi-unity-comparison.md`](dawn-gi-unity-comparison.md)：同一 T2 Dawn 实烘结果分别按原版 Unity 导入语义（Incident RGBAHalf、Direction RGBA32）和 HBG 运行时（RGBA16F）解码。按 `Color32` 截断 + 线性采样模型，方向 8-bit 量化引起解码最大绝对差 0.019798、PSNR 58.39 dB；runtime 仅 3.76% 像素不同、最大 2 LSB。原版方向纹理导出 PNG 后按默认路径以 Unity `DirectionalLightmap` 导入，该类型资源 meta 为 `sRGBTexture: 0`，线性采样分支有强证据但依赖 Unity type setter 默认；自定义 preset 需单独核对，PNG 字节路径与实机同场景截图仍受 D0.12 阻塞。D8.1/D8.2/D8.3/D8.4/D8.5 已完成：CLI/README、缺 DLL/磁盘满/协议版本错误、dawnbake 31/31、Dawn/非 VFX 33/33；全量测试集当前 101 项，待空闲复跑；D8.6 仍受 D0.9/D0.12 与 D7.8 阻塞；D0.10 仅日志清理。
 
 ---
 
@@ -505,12 +508,12 @@ vec3 hbgSampleBakedGI(vec2 lmUV, vec3 nWS) {
 | 编号 | 用例 | 通过标准 |
 |---|---|---|
 | T0 | 协议 byte-diff | 所有 golden 文件 round-trip 0 差异 |
-| T1 | 单面单平行光 | 与解析解/参考图色差 < 5%；无漏光 |
+| T1 | 单面单平行光 | 与解析解/参考图色差 < 5%；无漏光（D7.4 ΔE76=0.0032） |
 | T2 | UV 朝向 | 非对称场景方向正确 |
-| T3 | 接缝 | 多块地板拼 atlas，边界无黑缝/串色 |
+| T3 | 接缝 | 多块地板拼 atlas，边界无黑缝/串色（D7.5：邻边最大相对差 0.0129%，18,496 padded texel mapped） |
 | T4 | forward/deferred | 同一视角两路径 PSNR ≥ 40 dB |
 | T5 | SSGI 互斥 | 静态物体开/关 SSGI 的间接项差异 < 2% |
-| T6 | 性能 | 100 静态物件：打包 < 2s，烘焙总耗时记录；显存 < 100MB |
+| T6 | 性能 | 100 静态物件：打包 < 2s，烘焙总耗时记录；显存 < 100MB（D7.6：pack 约 1–4ms，Agent wall 55.5s，96MiB） |
 | T7 | 回归 | `ctest` 全绿 + `idl_gen --check` + shader build |
 
 ---
@@ -519,7 +522,7 @@ vec3 hbgSampleBakedGI(vec2 lmUV, vec3 nWS) {
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| Dawn 1.3.5 运行时 OIDN/Vulkan 日志空指针崩溃 | 本机无法完成烘焙 | D0 已定位；优先在干净机器复测、向提供方要修复版；测试期可用 NOP 日志的 exe 副本（仅验证，不交付） |
+| Dawn 1.3.5 运行时 OIDN/Vulkan 日志空指针崩溃 | D0.8 本地已解除；官方 exe 可回退 OptiX 完成烘焙 | 干净机器复测 D0.9；CPU OIDN 已实测可用，D0.10 仅清理日志 |
 | `Dawn.exe` 必须挂 Agent | D4 +2–3 周 | D0 已排除：`-local -localdirectory` 直启可用 |
 | 本仓库二进制缺 OptiX DLL | 完全跑不起来 | D0 已排除：OptiX 走驱动 `nvoptix.dll`，无 `optix*.dll` 依赖 |
 | xatlas `resolution=0` 语义与预期不符 | D3 返工 | **已实测**：输出为 texel 单位，自动 atlas；统一按 raw span 归一化，D3.1 关闭 |
@@ -590,7 +593,46 @@ docs/dawn-gi-checklist.md              # 配套清单
 |---|---|---|---|
 | UV2 V 轴 | 不翻转（0） | T2 非对称场景；Dawn 实烘 + 运行时 640×360 | 2026-11-20 |
 | 方向贴图/缩放 | 1.0 | T1 单面单平行光；`IncidentLighting=1`、`SHVectorR=(0.5,1.0,0.5,1.0)` | 2026-11-20 |
-| 灯光单位系数 | 待定 | 1/2/4m 衰减 | |
-| atlas 默认尺寸 | 2048 | 100 物件试包 | |
-| texelsPerUnit 默认 | 6.0 | 视觉验收 | |
+| 灯光单位系数 | 1.0（无额外系数） | D7.3 法线正上方点光 1/2/4m；`IncidentLighting` 比值 0.253/0.0616，理论 0.25/0.0625 | 2026-11-20 |
+| T1 线性色差 | ΔE76=0.0032（max 通道误差 0.0259%） | D7.4 sRGB `(0.8,0.6,0.4)`、intensity 0.5，对比解析线性值 | 2026-11-20 |
+| T3 接缝 | 邻边最大相对差 0.0129%，ring 18,496 texel 全映射 | D7.5 四块 2m 地板逐块 bake，atlas 256、edgePadding=2 | 2026-11-21 |
+| T6 100 物件 | pack 约 1–4ms；100/100 Agent wall 55,491ms；VRAM 96MiB | 10×10 个 2m 白地板、64² lightmap、2048 atlas、100 unique jobs；D7.6 | 2026-11-21 |
+| atlas 默认尺寸 | 2048 | 100 物件试包；`config/dawn.json.lightmap.atlasSize` | 2026-11-21 |
+| texelsPerUnit 默认 | 6.0 | 视觉验收；`config/dawn.json.lightmap.texelsPerUnit` | 2026-11-21 |
+| 配置入口 | `config/dawn.json` v1 | D7.7；`--dawn-config-test` 校验 | 2026-11-21 |
+| Unity 参考路径（D7.8） | 方向 8-bit 解码 max 0.019798、PSNR 58.39 dB；runtime max 2 LSB | 同一 T2 Dawn 实烘；原版方向导出 PNG + `DirectionalLightmap` 导入（meta `sRGBTexture:0`）+ Unity `SampleDirectionalLightmap`；PNG 字节路径与实机截图待 D0.12 | 2026-11-21 |
+
+### 15.1 固化配置
+
+`config/dawn.json` 是 D7 校准值的配置入口：
+
+```json
+{
+  "version": 1,
+  "lightmap": {
+    "uv2VFlip": false,
+    "texelsPerUnit": 6.0,
+    "maxLightmapSize": 1024,
+    "atlasSize": 2048,
+    "maxAtlases": 2,
+    "padding": 2,
+    "dilationIterations": 4,
+    "directional": true,
+    "format": "rgba16f",
+    "layers": 3
+  },
+  "lighting": {
+    "colorSpace": "linear",
+    "directionalLightmapScale": 1.0,
+    "lightUnitScale": 1.0,
+    "pointFalloff": "inverse-square",
+    "lightPowerAffectsRadiance": false
+  }
+}
+```
+
+- 原版字段对应：`MaxLightmapSize/TexelPerUnit/Padding` 见 `DawnSettings.cs:122-131,827-834`；尺寸公式见 `DawnLightmapSizeCalculate.cs:11-17,32-44`；UV2 普通 mesh 的 y 为正见 `DawnPackLightmapAtlas.cs:320-324`；方向标志见 `DawnLightmap2DExporter.cs:193`；`IncidentLighting/SHVectorR` 层见 `DawnLightmap2DImporter.cs:53,74`；RGBAHalf/线性见 `DawnEncodeTextures.cs:148-149`；点光 inverse-square/Attenuation/LightPower 见 `DawnLightExporter.cs:275-280,328,351-375`。
+- 本项目 `maxLightmapSize=1024` 是单块上限，`atlasSize=2048` 是打包图集尺寸；两者语义分开，避免把原版同名 `MaxLightmapSize` 混用。
+- `edgePadding` 仍由 `--write-tile-atlas <out> <atlas-size> <edge-padding> ...` 显式传入（D7.5 用 2），不作为全局默认，避免改变 D5.4 的 `LightmapAtlasOptions` 旧行为。
+- 校验：`hbg_dawnbake --dawn-config-test [path]` 读取并检查 schema/取值，同时断言 UV2 不翻转、灯光单位系数 1.0、方向缩放 1.0、RGBA16F/3 层、`LightmapUvOptions`/`LightmapSizeSettings`/`LightmapPackingSettings` 及 `LightmapAtlasOptions::dilationIterations` 默认值与配置一致；CTest `dawnbake_config`。
 

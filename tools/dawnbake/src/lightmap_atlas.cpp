@@ -208,26 +208,34 @@ bool buildLightmapAtlasImages(const SceneInfo& scene, const BakingJobInputs& job
         const AtlasRect target{
             static_cast<uint64_t>(placement.x - padding), static_cast<uint64_t>(placement.y - padding),
             static_cast<uint64_t>(output.header.size.x), static_cast<uint64_t>(output.header.size.y)};
-        if (target.width == 0u || target.height == 0u || target.x + target.width > atlasSizes[placement.atlasIndex] ||
-            target.y + target.height > atlasSizes[placement.atlasIndex]) {
+        const uint32_t edgePadding = options.edgePadding;
+        if (target.width == 0u || target.height == 0u || target.x < edgePadding || target.y < edgePadding ||
+            target.x + target.width + edgePadding > atlasSizes[placement.atlasIndex] ||
+            target.y + target.height + edgePadding > atlasSizes[placement.atlasIndex]) {
             setError(error, "lightmap result " + formatGuid(output.header.jobId) + " target rect " +
                                 sizeText(static_cast<uint32_t>(target.width), static_cast<uint32_t>(target.height)) +
                                 " at " + std::to_string(target.x) + "," + std::to_string(target.y) +
-                                " is outside atlas " + std::to_string(placement.atlasIndex));
+                                " is outside atlas " + std::to_string(placement.atlasIndex) +
+                                " (does not fit with edge padding " + std::to_string(edgePadding) + ")");
             return false;
         }
+        const AtlasRect footprint{target.x - edgePadding, target.y - edgePadding, target.width + 2u * edgePadding,
+                                  target.height + 2u * edgePadding};
         for (const AtlasRect& used : occupied[placement.atlasIndex]) {
-            if (overlaps(target, used)) {
+            if (overlaps(footprint, used)) {
                 setError(error, "lightmap result " + formatGuid(output.header.jobId) +
-                                    " overlaps another result in atlas " + std::to_string(placement.atlasIndex));
+                                    " overlaps another result in atlas " + std::to_string(placement.atlasIndex) +
+                                    " including edge padding");
                 return false;
             }
         }
-        occupied[placement.atlasIndex].push_back(target);
+        occupied[placement.atlasIndex].push_back(footprint);
 
         const uint32_t width = static_cast<uint32_t>(target.width);
         const uint32_t height = static_cast<uint32_t>(target.height);
-        const std::size_t blockPixels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        const uint32_t blockWidth = width + 2u * edgePadding;
+        const uint32_t blockHeight = height + 2u * edgePadding;
+        const std::size_t blockPixels = static_cast<std::size_t>(blockWidth) * static_cast<std::size_t>(blockHeight);
         std::array<std::vector<uint16_t>, 3> block;
         for (std::vector<uint16_t>& channel : block) {
             channel.assign(blockPixels * 4u, uint16_t{0});
@@ -235,9 +243,11 @@ bool buildLightmapAtlasImages(const SceneInfo& scene, const BakingJobInputs& job
         std::vector<uint8_t> valid(blockPixels, uint8_t{0});
         for (uint32_t y = 0; y < height; ++y) {
             for (uint32_t x = 0; x < width; ++x) {
-                const std::size_t index = static_cast<std::size_t>(y) * width + x;
-                const Lightmap2DSample& sample = output.lightmapData[index];
-                const std::size_t texel = index * 4u;
+                const std::size_t sourceIndex = static_cast<std::size_t>(y) * width + x;
+                const Lightmap2DSample& sample = output.lightmapData[sourceIndex];
+                const std::size_t blockIndex =
+                    static_cast<std::size_t>(y + edgePadding) * blockWidth + static_cast<std::size_t>(x + edgePadding);
+                const std::size_t texel = blockIndex * 4u;
                 for (std::size_t channel = 0; channel < block.size(); ++channel) {
                     const Float4 value = lightmapAtlasTexel(sample, channel);
                     block[channel][texel + 0u] = bx::halfFromFloat(value.x);
@@ -245,21 +255,21 @@ bool buildLightmapAtlasImages(const SceneInfo& scene, const BakingJobInputs& job
                     block[channel][texel + 2u] = bx::halfFromFloat(value.z);
                     block[channel][texel + 3u] = bx::halfFromFloat(value.w);
                 }
-                valid[index] = sample.bIsMapped != 0u ? uint8_t{1} : uint8_t{0};
+                valid[blockIndex] = sample.bIsMapped != 0u ? uint8_t{1} : uint8_t{0};
             }
         }
 
-        dilateBlock(&block, &valid, width, height, options.dilationIterations);
+        dilateBlock(&block, &valid, blockWidth, blockHeight, options.dilationIterations);
 
         LightmapAtlasImage& image = images->atlases[placement.atlasIndex];
         const uint64_t atlasSize = atlasSizes[placement.atlasIndex];
-        for (uint32_t y = 0; y < height; ++y) {
-            for (uint32_t x = 0; x < width; ++x) {
-                const std::size_t index = static_cast<std::size_t>(y) * width + x;
+        for (uint32_t y = 0; y < blockHeight; ++y) {
+            for (uint32_t x = 0; x < blockWidth; ++x) {
+                const std::size_t index = static_cast<std::size_t>(y) * blockWidth + x;
                 const std::size_t sourceTexel = index * 4u;
                 const std::size_t targetIndex =
-                    static_cast<std::size_t>(target.y + y) * static_cast<std::size_t>(atlasSize) +
-                    static_cast<std::size_t>(target.x + x);
+                    static_cast<std::size_t>(target.y - edgePadding + y) * static_cast<std::size_t>(atlasSize) +
+                    static_cast<std::size_t>(target.x - edgePadding + x);
                 const std::size_t targetTexel = targetIndex * 4u;
                 for (std::size_t channel = 0; channel < image.sh.size(); ++channel) {
                     for (std::size_t component = 0; component < 4u; ++component) {

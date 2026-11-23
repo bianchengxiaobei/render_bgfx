@@ -57,6 +57,9 @@ service AgentService {
 	//下载文件
 	rpc DownloadFile(DownloadFileReq) returns (stream DownloadFileAck);
 
+	//批量下载文件（DAWNAgent 2.4.5 实际服务；Editor 旧 proto 未含此项）
+	rpc DownloadMultiFiles(DownloadMultiFilesReq) returns (stream DownloadMultiFilesAck);
+
 	//接受请求，将本地的某个job相关的文件上传到另一个Agent。接收即返回，不等传输完成。
 	rpc UploadJobFilesToAnotherAgent(UploadToAnotherAgentReq) returns (GeneralAck);
 
@@ -78,6 +81,9 @@ message ClientAgentBeginJobAck
 {
 	GeneralAck generalAck = 1;
 	bool requireUploadExecutable = 2;		//是否需要客户端上传可执行程序
+	bool isUseCFS = 3;					//DAWNAgent 2.4.5 实际字段
+	string CFSID = 4;
+	bool isSupportDownloadMultiFiles = 5;
 }
 
 message ClientAgentBeginExecReq
@@ -171,6 +177,19 @@ message DownloadFileAck
 	optional string message = 2;
 	optional bytes fileData = 3;
 	optional string fileHash = 4;	//随最后一个DataDone消息发出
+	optional string filename = 5;	//DownloadMultiFiles 用于标识文件；DAWNAgent 2.4.5 实际字段
+}
+
+message DownloadMultiFilesReq
+{
+	string jobID = 1;
+	repeated string filePathes = 2;
+}
+
+message DownloadMultiFilesAck
+{
+	optional string errMsg = 1;
+	repeated DownloadFileAck items = 2;
 }
 
 message UploadToAnotherAgentReq

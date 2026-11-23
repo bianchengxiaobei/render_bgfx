@@ -112,7 +112,14 @@ std::wstring commandLine(const std::filesystem::path& executable, const std::vec
 
 std::string windowsError(const char* what) {
     const DWORD code = GetLastError();
-    return std::string(what) + ": " + std::error_code(static_cast<int>(code), std::system_category()).message();
+    std::string message =
+        std::string(what) + ": " + std::error_code(static_cast<int>(code), std::system_category()).message();
+    if (code == ERROR_MOD_NOT_FOUND) {
+        message += " (a required DLL is missing next to the executable)";
+    } else if (code == ERROR_DISK_FULL || code == ERROR_HANDLE_DISK_FULL) {
+        message += " (disk full)";
+    }
+    return message;
 }
 
 #endif

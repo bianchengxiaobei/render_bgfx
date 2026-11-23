@@ -2,6 +2,7 @@
 
 #include "hbg/dawn/dawn_gzip.h"
 
+#include <cerrno>
 #include <fstream>
 #include <stdexcept>
 #include <utility>
@@ -206,6 +207,9 @@ std::vector<uint8_t> readFile(const std::filesystem::path& path) {
         throw std::runtime_error("failed to open " + path.string());
     }
     const std::streamsize size = stream.tellg();
+    if (size < 0) {
+        throw std::runtime_error("failed to size " + path.string());
+    }
     stream.seekg(0, std::ios::beg);
     std::vector<uint8_t> bytes(static_cast<size_t>(size));
     if (size > 0 && !stream.read(reinterpret_cast<char*>(bytes.data()), size)) {
@@ -215,17 +219,40 @@ std::vector<uint8_t> readFile(const std::filesystem::path& path) {
 }
 
 void writeFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+    errno = 0;
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        throw std::runtime_error("failed to open " + path.string());
+        std::string message = "failed to open " + path.string();
+        if (errno == ENOSPC) {
+            message += " (disk full)";
+        }
+        throw std::runtime_error(message);
     }
     if (!bytes.empty()) {
+        errno = 0;
         stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        stream.flush();
     }
     if (!stream) {
-        throw std::runtime_error("failed to write " + path.string());
+        std::string message = "failed to write " + path.string();
+        if (errno == ENOSPC) {
+            message += " (disk full)";
+        }
+        throw std::runtime_error(message);
     }
 }
+
+namespace {
+
+void requireSupportedVersion(int32_t version, const char* kind) {
+    if (version < kExportVersion1000 || version > kExportVersion) {
+        throw std::runtime_error(std::string(kind) + " version " + std::to_string(version) +
+                                 " is not supported (expected " + std::to_string(kExportVersion1000) + ".." +
+                                 std::to_string(kExportVersion) + ")");
+    }
+}
+
+}  // namespace
 
 void writeMesh(Writer& writer, const MeshInfo& mesh, int32_t version) {
     writeMeshInfo(writer, mesh, version);
@@ -345,7 +372,14 @@ void writeBakingJobInputs(Writer& writer, const BakingJobInputs& jobs, int32_t v
     writer.u32(jobs.visibilityBucketGuidsCount);
     writer.u32(jobs.volumetricLightmapTaskGuidsCount);
     writer.u32(jobs.customVolumetricLightmapJobsCount);
-    writer.u32(jobs.mappingGroupJobsCount);
+    writer.u32(static_cast<uint32_t>(jobs.mappingGroupJobs.size()));
+    for (const MappingGroupInput& group : jobs.mappingGroupJobs) {
+        writer.pod(group.jobId);
+        writer.i32(group.groupedSize);
+        writer.i32(group.scenePartitionIndex);
+        writer.i32(static_cast<int32_t>(group.mappingOffsets.size()));
+        writer.podArray(group.mappingOffsets);
+    }
     writer.u32(jobs.mappingSplitJobsCount);
     writer.u32(jobs.seamFixGroupJobsCount);
     writer.u32(jobs.scenePartitionTasksCount);
@@ -389,7 +423,16 @@ void readBakingJobInputs(Reader& reader, BakingJobInputs& jobs, int32_t version)
     expectZero("VisibilityBucketGuids");
     expectZero("VolumetricLightmapTaskGuids");
     expectZero("CustomVolumetricLightmapJobs");
-    expectZero("MappingGroupJobs");
+    jobs.mappingGroupJobsCount = reader.u32();
+    if (jobs.mappingGroupJobsCount != 0u) {
+        jobs.mappingGroupJobs.resize(jobs.mappingGroupJobsCount);
+        for (MappingGroupInput& group : jobs.mappingGroupJobs) {
+            group.jobId = reader.pod<Guid>();
+            group.groupedSize = reader.i32();
+            group.scenePartitionIndex = reader.i32();
+            group.mappingOffsets = reader.array<Int3>();
+        }
+    }
     expectZero("MappingSplitJobs");
     expectZero("SeamFixGroupJobs");
     expectZero("ScenePartitionTasks");
@@ -419,6 +462,7 @@ SceneInfo readSceneFile(const std::filesystem::path& path) {
         const std::vector<uint8_t> bytes = readDawnObjectBytes(path);
         Reader reader(bytes);
         const int32_t version = reader.version();
+        requireSupportedVersion(version, "scene");
         SceneInfo scene;
         readScene(reader, scene, version);
         if (reader.remaining() != 0u) {
@@ -435,6 +479,7 @@ BakingJobInputs readBakingJobInputsFile(const std::filesystem::path& path) {
         const std::vector<uint8_t> bytes = readDawnObjectBytes(path);
         Reader reader(bytes);
         const int32_t version = reader.version();
+        requireSupportedVersion(version, "jobs");
         BakingJobInputs jobs;
         readBakingJobInputs(reader, jobs, version);
         if (reader.remaining() != 0u) {

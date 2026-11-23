@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -55,6 +56,47 @@ uint32_t crc32(std::span<const uint8_t> bytes) {
 }
 
 }  // namespace
+
+std::vector<uint8_t> gzipCompress(std::span<const uint8_t> data) {
+#ifdef HBG_DAWN_HAVE_ZLIB
+    if (data.size() > static_cast<std::size_t>(std::numeric_limits<uInt>::max())) {
+        throw std::runtime_error("gzip input is too large for zlib");
+    }
+
+    z_stream stream{};
+    if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        throw std::runtime_error("zlib deflateInit2 failed");
+    }
+
+    std::vector<uint8_t> result;
+    result.reserve(data.size() + data.size() / 1024u + 32u);
+    result.insert(result.end(), {0x1Fu, 0x8Bu, 0x08u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x04u, 0x00u});
+
+    stream.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(data.data()));
+    stream.avail_in = static_cast<uInt>(data.size());
+    std::array<uint8_t, 64 * 1024> buffer{};
+    int status = Z_OK;
+    while (status != Z_STREAM_END) {
+        stream.next_out = buffer.data();
+        stream.avail_out = static_cast<uInt>(buffer.size());
+        status = deflate(&stream, Z_FINISH);
+        if (status != Z_OK && status != Z_STREAM_END) {
+            const std::string message = stream.msg != nullptr ? stream.msg : "unknown zlib error";
+            deflateEnd(&stream);
+            throw std::runtime_error("gzip deflate failed: " + message);
+        }
+        const std::size_t produced = buffer.size() - stream.avail_out;
+        result.insert(result.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(produced));
+    }
+    deflateEnd(&stream);
+
+    appendLe32(result, crc32(data));
+    appendLe32(result, static_cast<uint32_t>(data.size() & 0xFFFFFFFFu));
+    return result;
+#else
+    return gzipCompressStored(data);
+#endif
+}
 
 std::vector<uint8_t> gzipCompressStored(std::span<const uint8_t> data) {
     std::vector<uint8_t> result;
@@ -199,15 +241,26 @@ std::vector<uint8_t> gzipDecompress(std::span<const uint8_t> data) {
 }
 
 void writeGzipFile(const std::filesystem::path& path, std::span<const uint8_t> data) {
-    const std::vector<uint8_t> compressed = gzipCompressStored(data);
+    const std::vector<uint8_t> compressed = gzipCompress(data);
+    errno = 0;
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        throw std::runtime_error("failed to open gzip file: " + path.string());
+        std::string message = "failed to open gzip file: " + path.string();
+        if (errno == ENOSPC) {
+            message += " (disk full)";
+        }
+        throw std::runtime_error(message);
     }
+    errno = 0;
     stream.write(reinterpret_cast<const char*>(compressed.data()),
                  static_cast<std::streamsize>(compressed.size()));
+    stream.flush();
     if (!stream) {
-        throw std::runtime_error("failed to write gzip file: " + path.string());
+        std::string message = "failed to write gzip file: " + path.string();
+        if (errno == ENOSPC) {
+            message += " (disk full)";
+        }
+        throw std::runtime_error(message);
     }
 }
 

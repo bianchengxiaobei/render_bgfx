@@ -32,6 +32,9 @@ struct AgentJobSpec {
     int32_t exeVersionSub = 1;
     std::string exeDirectory = "./";
     std::string fileCacheDirectory;
+    std::string agentFileAddress;
+    std::filesystem::path downloadDirectory;
+    bool forceDownloadResults = false;
     std::vector<std::string> jobFiles;
     std::vector<std::string> exeFiles;
     std::vector<AgentTaskSpec> tasks;
@@ -43,6 +46,22 @@ struct AgentJobResult {
     std::string message;
     std::size_t completedTasks = 0;
     std::size_t totalTasks = 0;
+};
+
+struct AgentCacheFile {
+    std::string hash;
+    std::string remotePath;
+};
+
+struct AgentUploadFile {
+    std::string hash;
+    std::string remotePath;
+    std::vector<uint8_t> data;
+};
+
+struct AgentDownloadFile {
+    std::string remotePath;
+    std::filesystem::path localPath;
 };
 
 class AgentClient {
@@ -58,6 +77,31 @@ class AgentClient {
 
     bool uploadFile(const std::string& agentAddress, const std::string& jobId, const std::filesystem::path& localPath,
                     const std::string& remotePath, std::chrono::milliseconds timeout, std::string* error = nullptr);
+
+    bool batchUploadFileInServerCache(const std::string& agentAddress, const std::string& jobId,
+                                      const std::vector<AgentCacheFile>& files, std::chrono::milliseconds timeout,
+                                      std::string* error = nullptr);
+
+    bool downloadFile(const std::string& agentAddress, const std::string& jobId, const std::string& remotePath,
+                      const std::filesystem::path& localPath, std::chrono::milliseconds timeout,
+                      std::string* error = nullptr);
+
+    bool downloadMultiFiles(const std::string& agentAddress, const std::string& jobId,
+                            const std::vector<AgentDownloadFile>& files, std::chrono::milliseconds timeout,
+                            std::string* error = nullptr);
+
+    bool downloadFiles(const std::string& agentAddress, const std::string& jobId,
+                       const std::vector<AgentDownloadFile>& files, std::chrono::milliseconds timeout,
+                       std::string* error = nullptr);
+
+    bool uploadMultiFiles(const std::string& agentAddress, const std::string& jobId,
+                          const std::vector<AgentUploadFile>& files, std::chrono::milliseconds timeout,
+                          std::string* error = nullptr);
+
+    bool uploadJobFilesToAnotherAgent(const std::string& agentAddress, const std::string& jobId,
+                                      const std::string& anotherAgentAddress,
+                                      const std::vector<std::string>& filePaths, std::chrono::milliseconds timeout,
+                                      std::string* error = nullptr);
 
   private:
     struct Impl;

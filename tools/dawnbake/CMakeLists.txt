@@ -6,6 +6,7 @@ add_executable(hbg_dawnbake
     src/dawn_serialize.cpp
     src/dawn_atlas.cpp
     src/dawn_launch.cpp
+    src/dawn_config.cpp
     src/dawn_uv_dump.cpp
     src/dawn_unwrap.cpp
     src/lightmap_atlas.cpp
@@ -14,6 +15,7 @@ add_executable(hbg_dawnbake
 )
 
 target_include_directories(hbg_dawnbake PRIVATE include)
+target_compile_definitions(hbg_dawnbake PRIVATE HBG_DAWN_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 target_link_libraries(hbg_dawnbake PRIVATE hbg_asset hbg_xatlas ${HBG_NLOHMANN_JSON_TARGET} bimg_encode bimg bx)
 if(MSVC)
     target_compile_options(hbg_dawnbake PRIVATE /wd4324)

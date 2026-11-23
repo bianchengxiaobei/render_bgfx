@@ -757,6 +757,13 @@ struct Lightmap2DOutputHeader {
 static_assert(sizeof(Lightmap2DOutputHeader) == 48);
 static_assert(offsetof(Lightmap2DOutputHeader, executionTime) == 40);
 
+struct MappingGroupInput {
+    Guid jobId;
+    int32_t groupedSize = 0;
+    int32_t scenePartitionIndex = 0;
+    std::vector<Int3> mappingOffsets;
+};
+
 struct Lightmap2DOutput {
     Lightmap2DOutputHeader header;
     int32_t jobInputIndex = 0;
@@ -775,6 +782,7 @@ struct BakingJobInputs {
     PrecomputedVisibilityParameters precomputedVisibilityParameter;
     BakingDebugInput debugInput;
     std::vector<Lightmap2DInput> lightmap2DJobs;
+    std::vector<MappingGroupInput> mappingGroupJobs;
 
     // Arrays unused by the v1 lightmap path. They are serialized as counts and
     // must stay zero; non-zero data from a real Dawn job is rejected by the reader.

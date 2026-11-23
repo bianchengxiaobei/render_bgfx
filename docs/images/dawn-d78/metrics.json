@@ -1,0 +1,39 @@
+{
+  "dds_dir": "C:\\Users\\chenfuling\\AppData\\Local\\Temp\\hbg_t2",
+  "atlas_index": 0,
+  "atlas_size": 2048,
+  "rect": [
+    2,
+    2,
+    128,
+    128
+  ],
+  "normal": [
+    0.0,
+    1.0,
+    0.0
+  ],
+  "atlas_layers_rgba16f": true,
+  "unity_direction_format": "RGBA32 PNG -> DirectionalLightmap (textureType 12, sRGBTexture 0)",
+  "direction_quantization": "floor(clamp(x, 0, 1) * 255) / 255",
+  "encoded_direction": {
+    "max_abs": 0.0039167702198028564,
+    "mean_abs": 0.001954063307493925
+  },
+  "decoded_radiance": {
+    "max_abs": 0.01979827880859375,
+    "mean_abs": 0.0005639614537358284,
+    "rmse": 0.001847327154580322,
+    "psnr_db": 58.39381084287494,
+    "pixels_gt_1_255_percent": 8.880615234375
+  },
+  "runtime": {
+    "different_pixels": 8668,
+    "total_pixels": 230400,
+    "different_percent": 3.7621527777777777,
+    "max_abs_8bit": 2.0,
+    "mean_abs_8bit": 0.013064236380159855,
+    "pixels_gt_1_lsb": 1,
+    "psnr_db": 66.96900149132306
+  }
+}

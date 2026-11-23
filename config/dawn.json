@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "lightmap": {
+    "uv2VFlip": false,
+    "texelsPerUnit": 6.0,
+    "maxLightmapSize": 1024,
+    "atlasSize": 2048,
+    "maxAtlases": 2,
+    "padding": 2,
+    "dilationIterations": 4,
+    "directional": true,
+    "format": "rgba16f",
+    "layers": 3
+  },
+  "lighting": {
+    "colorSpace": "linear",
+    "directionalLightmapScale": 1.0,
+    "lightUnitScale": 1.0,
+    "pointFalloff": "inverse-square",
+    "lightPowerAffectsRadiance": false
+  }
+}

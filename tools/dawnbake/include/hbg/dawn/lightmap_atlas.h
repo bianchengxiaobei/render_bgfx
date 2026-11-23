@@ -36,6 +36,7 @@ struct LightmapAtlasImageSet {
 
 struct LightmapAtlasOptions {
     uint32_t dilationIterations = 4;
+    uint32_t edgePadding = 0;
 };
 
 Float4 lightmapAtlasTexel(const Lightmap2DSample& sample, std::size_t channel);

@@ -1,6 +1,21 @@
 #include "hbg/dawn/dawn_atlas.h"
+#include "hbg/dawn/dawn_config.h"
 #ifdef HBG_DAWN_GRPC
 #include "hbg/dawn/dawn_agent_client.h"
+
+#include "Agent.grpc.pb.h"
+
+#include <grpcpp/grpcpp.h>
+
+#ifdef GetMessage
+#undef GetMessage
+#endif
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 #endif
 #include "hbg/dawn/dawn_export.h"
 #include "hbg/dawn/dawn_gzip.h"
@@ -35,6 +50,8 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -74,8 +91,24 @@ void printUsage() {
               << "  hbg_dawnbake --bake <job-dir> <guid32hex> [--dawn <Dawn.exe>] [--timeout <seconds>] "
                  "[--result-grace <ms>] [--keep-job]\n"
               << "  hbg_dawnbake --bake <guid32hex> --job-dir <dir> [--dawn <Dawn.exe>] [--timeout <seconds>]\n"
-              << "  hbg_dawnbake --bake <job-dir> <guid32hex> --agent <http://127.0.0.1:5009>\n"
+              << "  hbg_dawnbake --bake <job-dir> <guid32hex> --agent <http://127.0.0.1:5009> "
+                 "[--agent-files <http://127.0.0.1:5011>] [--agent-download-results] [--agent-force-download]\n"
               << "  hbg_dawnbake --agent-upload <agent-address> <job-id> <local-file> <remote-path>\n"
+              << "  hbg_dawnbake --agent-cache-upload <agent-address> <job-id> <hash> <remote-path> "
+                 "[<hash> <remote-path> ...]\n"
+              << "  hbg_dawnbake --agent-multi-upload <agent-address> <job-id> <hash> <remote-path> <local-file> "
+                 "[<hash> <remote-path> <local-file> ...]\n"
+              << "  hbg_dawnbake --agent-transfer-job <agent-address> <job-id> <another-agent-address> "
+                 "<remote-path> ...\n"
+              << "  hbg_dawnbake --agent-download <agent-address> <job-id> <remote-path> <local-file>\n"
+              << "  hbg_dawnbake --agent-spec-test\n"
+              << "  hbg_dawnbake --agent-upload-test\n"
+              << "  hbg_dawnbake --agent-cache-test\n"
+              << "  hbg_dawnbake --agent-multi-upload-test\n"
+              << "  hbg_dawnbake --agent-transfer-test\n"
+              << "  hbg_dawnbake --agent-download-test\n"
+              << "  hbg_dawnbake --agent-multi-download-test\n"
+              << "  hbg_dawnbake --agent-download-files-test\n"
               << "  hbg_dawnbake --result-test <fake-dawn.exe>\n"
               << "  hbg_dawnbake --job-lifecycle-test\n"
               << "  hbg_dawnbake --dump-uv=<out.png>\n"
@@ -83,6 +116,15 @@ void printUsage() {
               << "  hbg_dawnbake --export-min <dir> [guid32hex]\n"
               << "  hbg_dawnbake --export-t2 <dir> [guid32hex]\n"
               << "  hbg_dawnbake --export-t1 <dir> [guid32hex]\n"
+              << "  hbg_dawnbake --export-falloff <dir> [guid32hex]\n"
+              << "  hbg_dawnbake --export-t1-color <dir> [guid32hex]\n"
+              << "  hbg_dawnbake --export-t3-tile <dir> <tile-index-0..3> [guid32hex]\n"
+              << "  hbg_dawnbake --export-t6 <dir> [guid32hex]\n"
+              << "  hbg_dawnbake --t6-test\n"
+              << "  hbg_dawnbake --dawn-config-test [path]\n"
+              << "  hbg_dawnbake --protocol-version-test\n"
+              << "  hbg_dawnbake --write-tile-atlas <out-dir> <atlas-size> <edge-padding> "
+                 "<file.lmgz> <x> <y> ...\n"
               << "  hbg_dawnbake --write-lightmap-dds <file.lmgz> <out-dir> <atlas-size> <x> <y>\n"
               << "  hbg_dawnbake --write-empty <dir> <guid32hex>\n"
               << "  hbg_dawnbake --write-min <dir> <guid32hex>\n"
@@ -99,8 +141,8 @@ void printUsage() {
               << "  hbg_dawnbake --inspect-lmgz <file.lmgz>\n"
               << "  hbg_dawnbake --verify-lmgz <job-dir> <guid32hex>\n"
               << "  hbg_dawnbake --inspect <file.scene|scenegz|jobs|jobgz|mesh|meshgz|mat|matgz>\n\n"
-              << "The tool writes protocol version 1002: raw .scene/.jobs and stored-gzip\n"
-              << "v2.<guid>.scenegz/.jobgz plus meshgz/matgz packages.\n";
+              << "The tool writes protocol version 1002: raw .scene/.jobs and gzip\n"
+              << "v2.<guid>.scenegz/.jobgz (deflate when zlib is linked) plus meshgz/matgz packages.\n";
 }
 
 bool isHexGuid(const std::string& value) {
@@ -455,9 +497,149 @@ ExportedSceneBundle buildExportedScene() {
     return bundle;
 }
 
-ExportedSceneBundle buildUvAxisScene() {
+ExportedSceneBundle buildUvAxisScene(const DawnConfig& config) {
     asset::Mesh mesh;
     mesh.name = "T2Floor";
+    mesh.vertices.resize(4);
+
+    const hbg::Vec3 positions[4] = {
+        {-2.0f, 0.0f, -2.0f},
+        {-2.0f, 0.0f, 2.0f},
+        {2.0f, 0.0f, 2.0f},
+        {2.0f, 0.0f, -2.0f},
+    };
+    const hbg::Vec2 uvs[4] = {
+        {0.0f, 0.0f},
+        {0.0f, 1.0f},
+        {1.0f, 1.0f},
+        {1.0f, 0.0f},
+    };
+    for (std::size_t index = 0; index < 4; ++index) {
+        asset::MeshVertex& vertex = mesh.vertices[index];
+        vertex.position = positions[index];
+        vertex.normal = hbg::Vec3{0.0f, 1.0f, 0.0f};
+        vertex.tangent = hbg::Vec4{1.0f, 0.0f, 0.0f, 1.0f};
+        vertex.texcoord0 = uvs[index];
+        vertex.texcoord1 = hbg::Vec2{uvs[index].x, config.lightmap.uv2VFlip ? 1.0f - uvs[index].y : uvs[index].y};
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    mesh.submeshes.push_back(asset::SubMesh{0, 6, 0});
+    mesh.hasNormals = true;
+    mesh.hasTangents = true;
+    mesh.hasUv0 = true;
+    mesh.hasUv1 = true;
+    mesh.recomputeBounds();
+
+    asset::Material material;
+    material.name = "T2White";
+    material.baseColorFactor = hbg::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    material.metallic = 0.0f;
+    material.roughness = 1.0f;
+
+    render::RenderScene imageScene;
+    render::RenderObject object;
+    object.name = "T2Floor";
+    object.meshIndex = 0;
+    object.world = hbg::Mat4::identity();
+    object.worldBounds = mesh.bounds;
+
+    const uint32_t lightmapSize = 128u;
+    MeshExportOptions meshOptions;
+    meshOptions.castShadows = true;
+    meshOptions.normalizeUv2 = false;
+    meshOptions.uv2MapSize = UInt2{lightmapSize, lightmapSize};
+
+    LightmapPackingSettings packingSettings;
+    packingSettings.atlasSize = config.lightmap.atlasSize;
+    packingSettings.maxAtlases = config.lightmap.maxAtlases;
+    packingSettings.padding = config.lightmap.padding;
+    LightmapPackingResult packingResult;
+    if (!packLightmapAtlases({lightmapSize}, packingSettings, packingResult)) {
+        throw std::runtime_error("failed to pack the T2 lightmap atlas");
+    }
+    const LightmapPlacement& placement = packingResult.placements[0];
+    meshOptions.uv2Offset = UInt2{placement.rect.x, placement.rect.y};
+
+    MaterialExportOptions materialOptions;
+    materialOptions.srgbToLinear = config.lighting.colorSpace == "linear";
+    const MeshInfo meshInfo = exportMesh(mesh, 0, makeMeshGuid(0), meshOptions);
+    const MaterialInfo materialInfo = exportMaterial(material, imageScene, materialOptions);
+    const MeshInstanceInfo instance = exportMeshInstance(mesh, object, 0, 0, meshOptions);
+
+    ExportedSceneBundle bundle;
+    bundle.scene.meshes.push_back(meshInfo);
+    bundle.scene.materials.push_back(materialInfo);
+    bundle.scene.meshInstances.push_back(instance);
+    bundle.scene.meshGuids.push_back(instance.header.guid);
+    bundle.scene.header.numMeshes = 1;
+    bundle.scene.header.numMaterials = 1;
+    bundle.scene.header.numMeshInstances = 1;
+    bundle.scene.header.numMeshGuids = 1;
+    bundle.scene.header.bounds =
+        SceneBounds{Float3{0.0f, 0.0f, 0.0f}, Float3{-2.0f, 0.0f, -2.0f}, Float3{2.0f, 2.0f, 2.0f}, 3.0f};
+    bundle.scene.header.importanceBounds = bundle.scene.header.bounds;
+
+    const auto addPointLight = [&](const char* name, hbg::Vec3 position, hbg::Vec3 color, uint32_t index) {
+        render::Light light;
+        light.name = name;
+        light.type = render::LightType::Point;
+        light.color = color;
+        light.intensity = 24.0f * config.lighting.lightUnitScale;
+        light.range = 7.0f;
+        light.castShadows = false;
+        light.world = hbg::Mat4::identity();
+        light.world[12] = position.x;
+        light.world[13] = position.y;
+        light.world[14] = position.z;
+        LightExportOptions lightOptions;
+        lightOptions.srgbToLinear = config.lighting.colorSpace == "linear";
+        const LightFullInfo lightInfo = exportLight(light, lightOptions, index);
+        bundle.scene.lights.push_back(lightInfo.lightData);
+        bundle.scene.lightGuids.push_back(lightInfo.lightGuid);
+        bundle.scene.lightPowers.push_back(lightInfo.lightPower);
+    };
+    addPointLight("T2Red", hbg::Vec3{2.5f, 2.0f, 0.0f}, hbg::Vec3{1.0f, 0.0f, 0.0f}, 0);
+    addPointLight("T2Green", hbg::Vec3{0.0f, 2.0f, 2.5f}, hbg::Vec3{0.0f, 1.0f, 0.0f}, 1);
+    bundle.scene.header.numLights = 2;
+
+    asset::ImageAsset skyImage;
+    skyImage.name = "T2Sky";
+    skyImage.width = 2;
+    skyImage.height = 1;
+    skyImage.format = gfx::TextureFormat::RGBA32F;
+    const float skyPixel[4] = {0.01f, 0.01f, 0.01f, 1.0f};
+    skyImage.pixels.resize(sizeof(skyPixel) * 2u);
+    std::memcpy(skyImage.pixels.data(), skyPixel, sizeof(skyPixel));
+    std::memcpy(skyImage.pixels.data() + sizeof(skyPixel), skyPixel, sizeof(skyPixel));
+    SkyLightExportOptions skyOptions;
+    skyOptions.cubeSize = 8;
+    skyOptions.srgbToLinear = false;
+    bundle.scene.skyLight = exportSkyLight(&skyImage, skyOptions);
+
+    bundle.jobs = buildMinimalJobs();
+    bundle.jobs.lightmap2DJobs[0].meshId = instance.header.guid;
+    bundle.jobs.lightmap2DJobs[0].size = Int2{static_cast<int32_t>(lightmapSize), static_cast<int32_t>(lightmapSize)};
+    bundle.jobs.lightmap2DJobs[0].lightmapUVIndex = 1;
+    const uint32_t directionFlag = config.lightmap.directional ? kLightmapFlagDirection : 0u;
+    bundle.jobs.lightmap2DJobs[0].flags = kLightmapFlagDirect | kLightmapFlagIndirect | directionFlag |
+                                          kLightmapFlagBilinearFilter | kLightmapFlagBmStatic;
+    bundle.jobs.partialJobsTotalNum.numLightmap2DJobs = 1;
+
+    bundle.lightmap.texelPerUnit = 32.0f;
+    for (std::size_t index = 0; index < packingResult.atlases.size(); ++index) {
+        const LightmapAtlasPlan& atlas = packingResult.atlases[index];
+        bundle.lightmap.atlases.push_back(LightmapSidecarAtlas{"lm" + std::to_string(index), atlas.size,
+                                                               config.lightmap.layers, config.lightmap.format});
+    }
+    bundle.lightmap.objects.push_back(LightmapSidecarObject{
+        object.name, placement.atlasIndex, placement.rect.x, placement.rect.y, placement.rect.size, placement.scale,
+        true});
+    return bundle;
+}
+
+ExportedSceneBundle buildPointFalloffScene() {
+    asset::Mesh mesh;
+    mesh.name = "D73Floor";
     mesh.vertices.resize(4);
 
     const hbg::Vec3 positions[4] = {
@@ -489,14 +671,14 @@ ExportedSceneBundle buildUvAxisScene() {
     mesh.recomputeBounds();
 
     asset::Material material;
-    material.name = "T2White";
+    material.name = "D73White";
     material.baseColorFactor = hbg::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
     material.metallic = 0.0f;
     material.roughness = 1.0f;
 
     render::RenderScene imageScene;
     render::RenderObject object;
-    object.name = "T2Floor";
+    object.name = "D73Floor";
     object.meshIndex = 0;
     object.world = hbg::Mat4::identity();
     object.worldBounds = mesh.bounds;
@@ -510,7 +692,7 @@ ExportedSceneBundle buildUvAxisScene() {
     LightmapPackingSettings packingSettings;
     LightmapPackingResult packingResult;
     if (!packLightmapAtlases({lightmapSize}, packingSettings, packingResult)) {
-        throw std::runtime_error("failed to pack the T2 lightmap atlas");
+        throw std::runtime_error("failed to pack the D7.3 lightmap atlas");
     }
     const LightmapPlacement& placement = packingResult.placements[0];
     meshOptions.uv2Offset = UInt2{placement.rect.x, placement.rect.y};
@@ -529,7 +711,7 @@ ExportedSceneBundle buildUvAxisScene() {
     bundle.scene.header.numMeshInstances = 1;
     bundle.scene.header.numMeshGuids = 1;
     bundle.scene.header.bounds =
-        SceneBounds{Float3{0.0f, 0.0f, 0.0f}, Float3{-2.0f, 0.0f, -2.0f}, Float3{2.0f, 2.0f, 2.0f}, 3.0f};
+        SceneBounds{Float3{0.0f, 0.0f, 0.0f}, Float3{0.0f, 0.0f, 0.0f}, Float3{2.0f, 4.0f, 2.0f}, 4.89897949f};
     bundle.scene.header.importanceBounds = bundle.scene.header.bounds;
 
     const auto addPointLight = [&](const char* name, hbg::Vec3 position, hbg::Vec3 color, uint32_t index) {
@@ -538,7 +720,7 @@ ExportedSceneBundle buildUvAxisScene() {
         light.type = render::LightType::Point;
         light.color = color;
         light.intensity = 24.0f;
-        light.range = 7.0f;
+        light.range = 10.0f;
         light.castShadows = false;
         light.world = hbg::Mat4::identity();
         light.world[12] = position.x;
@@ -549,16 +731,17 @@ ExportedSceneBundle buildUvAxisScene() {
         bundle.scene.lightGuids.push_back(lightInfo.lightGuid);
         bundle.scene.lightPowers.push_back(lightInfo.lightPower);
     };
-    addPointLight("T2Red", hbg::Vec3{2.5f, 2.0f, 0.0f}, hbg::Vec3{1.0f, 0.0f, 0.0f}, 0);
-    addPointLight("T2Green", hbg::Vec3{0.0f, 2.0f, 2.5f}, hbg::Vec3{0.0f, 1.0f, 0.0f}, 1);
-    bundle.scene.header.numLights = 2;
+    addPointLight("D73Red1m", hbg::Vec3{0.0f, 1.0f, 0.0f}, hbg::Vec3{1.0f, 0.0f, 0.0f}, 0);
+    addPointLight("D73Green2m", hbg::Vec3{0.0f, 2.0f, 0.0f}, hbg::Vec3{0.0f, 1.0f, 0.0f}, 1);
+    addPointLight("D73Blue4m", hbg::Vec3{0.0f, 4.0f, 0.0f}, hbg::Vec3{0.0f, 0.0f, 1.0f}, 2);
+    bundle.scene.header.numLights = 3;
 
     asset::ImageAsset skyImage;
-    skyImage.name = "T2Sky";
+    skyImage.name = "D73BlackSky";
     skyImage.width = 2;
     skyImage.height = 1;
     skyImage.format = gfx::TextureFormat::RGBA32F;
-    const float skyPixel[4] = {0.01f, 0.01f, 0.01f, 1.0f};
+    const float skyPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     skyImage.pixels.resize(sizeof(skyPixel) * 2u);
     std::memcpy(skyImage.pixels.data(), skyPixel, sizeof(skyPixel));
     std::memcpy(skyImage.pixels.data() + sizeof(skyPixel), skyPixel, sizeof(skyPixel));
@@ -571,7 +754,7 @@ ExportedSceneBundle buildUvAxisScene() {
     bundle.jobs.lightmap2DJobs[0].meshId = instance.header.guid;
     bundle.jobs.lightmap2DJobs[0].size = Int2{static_cast<int32_t>(lightmapSize), static_cast<int32_t>(lightmapSize)};
     bundle.jobs.lightmap2DJobs[0].lightmapUVIndex = 1;
-    bundle.jobs.lightmap2DJobs[0].flags = kLightmapFlagDirect | kLightmapFlagIndirect | kLightmapFlagDirection |
+    bundle.jobs.lightmap2DJobs[0].flags = kLightmapFlagDirect | kLightmapFlagDirection |
                                           kLightmapFlagBilinearFilter | kLightmapFlagBmStatic;
     bundle.jobs.partialJobsTotalNum.numLightmap2DJobs = 1;
 
@@ -586,7 +769,8 @@ ExportedSceneBundle buildUvAxisScene() {
     return bundle;
 }
 
-ExportedSceneBundle buildDirectionalScene() {
+ExportedSceneBundle buildDirectionalScene(hbg::Vec3 lightColor = hbg::Vec3{1.0f, 1.0f, 1.0f},
+                                         float lightIntensity = 1.0f, bool srgbToLinear = false) {
     asset::Mesh mesh;
     mesh.name = "T1Floor";
     mesh.vertices.resize(4);
@@ -666,15 +850,17 @@ ExportedSceneBundle buildDirectionalScene() {
     render::Light light;
     light.name = "T1PlusY";
     light.type = render::LightType::Directional;
-    light.color = hbg::Vec3{1.0f, 1.0f, 1.0f};
-    light.intensity = 1.0f;
+    light.color = lightColor;
+    light.intensity = lightIntensity;
     light.castShadows = false;
     light.world = hbg::Mat4::identity();
     light.world[5] = 0.0f;
     light.world[6] = -1.0f;
     light.world[9] = 1.0f;
     light.world[10] = 0.0f;
-    const LightFullInfo lightInfo = exportLight(light, LightExportOptions{}, 0);
+    LightExportOptions lightOptions;
+    lightOptions.srgbToLinear = srgbToLinear;
+    const LightFullInfo lightInfo = exportLight(light, lightOptions, 0);
     bundle.scene.lights.push_back(lightInfo.lightData);
     bundle.scene.lightGuids.push_back(lightInfo.lightGuid);
     bundle.scene.lightPowers.push_back(lightInfo.lightPower);
@@ -713,6 +899,339 @@ ExportedSceneBundle buildDirectionalScene() {
     return bundle;
 }
 
+ExportedSceneBundle buildSeamTileScene(uint32_t tileIndex) {
+    constexpr uint32_t kLightmapSize = 64u;
+    const hbg::Vec3 centers[4] = {
+        {-1.0f, 0.0f, -1.0f},
+        {1.0f, 0.0f, -1.0f},
+        {-1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, 1.0f},
+    };
+    if (tileIndex >= 4u) {
+        throw std::runtime_error("tile index must be in 0..3");
+    }
+
+    asset::Mesh mesh;
+    mesh.name = "T3Tile";
+    mesh.vertices.resize(4);
+    const hbg::Vec3 positions[4] = {
+        {-1.0f, 0.0f, -1.0f},
+        {-1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, -1.0f},
+    };
+    const hbg::Vec2 uvs[4] = {
+        {0.0f, 0.0f},
+        {0.0f, 1.0f},
+        {1.0f, 1.0f},
+        {1.0f, 0.0f},
+    };
+    for (std::size_t index = 0; index < 4; ++index) {
+        asset::MeshVertex& vertex = mesh.vertices[index];
+        vertex.position = positions[index];
+        vertex.normal = hbg::Vec3{0.0f, 1.0f, 0.0f};
+        vertex.tangent = hbg::Vec4{1.0f, 0.0f, 0.0f, 1.0f};
+        vertex.texcoord0 = uvs[index];
+        vertex.texcoord1 = uvs[index];
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    mesh.submeshes.push_back(asset::SubMesh{0, 6, 0});
+    mesh.hasNormals = true;
+    mesh.hasTangents = true;
+    mesh.hasUv0 = true;
+    mesh.hasUv1 = true;
+    mesh.recomputeBounds();
+
+    asset::Material material;
+    material.name = "T1White";
+    material.baseColorFactor = hbg::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    material.metallic = 0.0f;
+    material.roughness = 1.0f;
+
+    render::RenderScene imageScene;
+    MeshExportOptions meshOptions;
+    meshOptions.castShadows = true;
+    meshOptions.normalizeUv2 = false;
+    meshOptions.uv2MapSize = UInt2{kLightmapSize, kLightmapSize};
+    meshOptions.uv2Offset = UInt2{2u, 2u};
+    const MeshInfo meshInfo = exportMesh(mesh, 0, makeMeshGuid(0), meshOptions);
+
+    render::RenderObject object;
+    object.name = "T3Tile" + std::to_string(tileIndex);
+    object.meshIndex = 0;
+    object.world = hbg::Mat4::identity();
+    object.world.values[12] = centers[tileIndex].x;
+    object.world.values[14] = centers[tileIndex].z;
+    object.worldBounds = hbg::Bounds{mesh.bounds.min + centers[tileIndex], mesh.bounds.max + centers[tileIndex]};
+    const MeshInstanceInfo instance = exportMeshInstance(mesh, object, 0, 0, meshOptions);
+
+    ExportedSceneBundle bundle;
+    bundle.scene.meshes.push_back(meshInfo);
+    bundle.scene.materials.push_back(exportMaterial(material, imageScene, MaterialExportOptions{}));
+    bundle.scene.meshInstances.push_back(instance);
+    bundle.scene.meshGuids.push_back(instance.header.guid);
+    bundle.scene.header.numMeshes = 1u;
+    bundle.scene.header.numMaterials = 1u;
+    bundle.scene.header.numMeshInstances = 1u;
+    bundle.scene.header.numMeshGuids = 1u;
+    bundle.scene.header.bounds =
+        SceneBounds{Float3{0.0f, 0.0f, 0.0f}, Float3{-2.0f, 0.0f, -2.0f}, Float3{2.0f, 0.1f, 2.0f}, 3.0f};
+    bundle.scene.header.importanceBounds = bundle.scene.header.bounds;
+
+    render::Light light;
+    light.name = "T3Center";
+    light.type = render::LightType::Point;
+    light.color = hbg::Vec3{1.0f, 1.0f, 1.0f};
+    light.intensity = 24.0f;
+    light.range = 10.0f;
+    light.castShadows = false;
+    light.world = hbg::Mat4::identity();
+    light.world.values[13] = 3.0f;
+    const LightFullInfo lightInfo = exportLight(light, LightExportOptions{}, 0);
+    bundle.scene.lights.push_back(lightInfo.lightData);
+    bundle.scene.lightGuids.push_back(lightInfo.lightGuid);
+    bundle.scene.lightPowers.push_back(lightInfo.lightPower);
+    bundle.scene.header.numLights = 1u;
+
+    asset::ImageAsset skyImage;
+    skyImage.name = "T3BlackSky";
+    skyImage.width = 2;
+    skyImage.height = 1;
+    skyImage.format = gfx::TextureFormat::RGBA32F;
+    const float skyPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    skyImage.pixels.resize(sizeof(skyPixel) * 2u);
+    std::memcpy(skyImage.pixels.data(), skyPixel, sizeof(skyPixel));
+    std::memcpy(skyImage.pixels.data() + sizeof(skyPixel), skyPixel, sizeof(skyPixel));
+    SkyLightExportOptions skyOptions;
+    skyOptions.cubeSize = 8;
+    skyOptions.srgbToLinear = false;
+    bundle.scene.skyLight = exportSkyLight(&skyImage, skyOptions);
+
+    bundle.jobs = buildMinimalJobs();
+    bundle.jobs.lightmap2DJobs.clear();
+    Lightmap2DInput input;
+    input.jobId = Guid{0u, 0u, 0u, 5u};
+    input.meshId = instance.header.guid;
+    input.size = Int2{static_cast<int32_t>(kLightmapSize), static_cast<int32_t>(kLightmapSize)};
+    input.lightmapUVIndex = 1;
+    std::memset(&input.overrideBakingParams, 0, sizeof(input.overrideBakingParams));
+    input.flags = kLightmapFlagDirect | kLightmapFlagDirection | kLightmapFlagBilinearFilter | kLightmapFlagBmStatic;
+    bundle.jobs.lightmap2DJobs.push_back(input);
+    bundle.jobs.partialJobsTotalNum.numLightmap2DJobs = 1u;
+
+    bundle.lightmap.texelPerUnit = 16.0f;
+    bundle.lightmap.atlases.push_back(LightmapSidecarAtlas{"lm0", 128u, 3, "rgba16f"});
+    bundle.lightmap.objects.push_back(LightmapSidecarObject{
+        object.name, 0u, 2u, 2u, kLightmapSize, 1.0f, true});
+    return bundle;
+}
+
+struct T6Metrics {
+    uint32_t objects = 0;
+    uint32_t atlasSize = 0;
+    uint32_t atlasCount = 0;
+    double packMs = 0.0;
+    uint64_t vramBytes = 0;
+};
+
+constexpr uint32_t kT6ObjectCount = 100u;
+constexpr uint32_t kT6LightmapSize = 64u;
+constexpr uint32_t kT6AtlasSize = 2048u;
+constexpr uint32_t kT6GridSize = 10u;
+constexpr float kT6GridSpacing = 2.2f;
+constexpr uint64_t kT6VramLimitBytes = 100ull * 1024ull * 1024ull;
+
+std::filesystem::path defaultDawnConfigPath() {
+#ifdef HBG_DAWN_PROJECT_ROOT
+    return std::filesystem::path(HBG_DAWN_PROJECT_ROOT) / "config" / "dawn.json";
+#else
+    return std::filesystem::path("config") / "dawn.json";
+#endif
+}
+
+DawnConfig loadDawnConfigOrThrow(const std::filesystem::path& path = defaultDawnConfigPath()) {
+    DawnConfig config;
+    std::string error;
+    if (!loadDawnConfig(path, config, error)) {
+        throw std::runtime_error("failed to load dawn config: " + error);
+    }
+    return config;
+}
+
+ExportedSceneBundle buildT6Scene(T6Metrics* metrics, const DawnConfig& config) {
+    asset::Mesh mesh;
+    mesh.name = "T6Floor";
+    mesh.vertices.resize(4);
+    const hbg::Vec3 positions[4] = {
+        {-1.0f, 0.0f, -1.0f},
+        {-1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, -1.0f},
+    };
+    const hbg::Vec2 uvs[4] = {
+        {0.0f, 0.0f},
+        {0.0f, 1.0f},
+        {1.0f, 1.0f},
+        {1.0f, 0.0f},
+    };
+    for (std::size_t index = 0; index < 4; ++index) {
+        asset::MeshVertex& vertex = mesh.vertices[index];
+        vertex.position = positions[index];
+        vertex.normal = hbg::Vec3{0.0f, 1.0f, 0.0f};
+        vertex.tangent = hbg::Vec4{1.0f, 0.0f, 0.0f, 1.0f};
+        vertex.texcoord0 = uvs[index];
+        vertex.texcoord1 = uvs[index];
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    mesh.submeshes.push_back(asset::SubMesh{0, 6, 0});
+    mesh.hasNormals = true;
+    mesh.hasTangents = true;
+    mesh.hasUv0 = true;
+    mesh.hasUv1 = true;
+    mesh.recomputeBounds();
+
+    asset::Material material;
+    material.name = "T6White";
+    material.baseColorFactor = hbg::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    material.metallic = 0.0f;
+    material.roughness = 1.0f;
+    render::RenderScene imageScene;
+    const MaterialInfo materialInfo = exportMaterial(material, imageScene, MaterialExportOptions{});
+
+    std::vector<uint32_t> lightmapSizes(kT6ObjectCount, kT6LightmapSize);
+    LightmapPackingSettings packingSettings;
+    packingSettings.atlasSize = config.lightmap.atlasSize;
+    packingSettings.maxAtlases = config.lightmap.maxAtlases;
+    packingSettings.padding = config.lightmap.padding;
+    LightmapPackingResult packingResult;
+    const auto packStart = std::chrono::steady_clock::now();
+    if (!packLightmapAtlases(lightmapSizes, packingSettings, packingResult)) {
+        throw std::runtime_error("failed to pack the T6 lightmap atlases");
+    }
+    const auto packEnd = std::chrono::steady_clock::now();
+
+    ExportedSceneBundle bundle;
+    bundle.scene.materials.push_back(materialInfo);
+    bundle.jobs = buildMinimalJobs();
+    bundle.jobs.lightmap2DJobs.clear();
+    bundle.jobs.lightmap2DJobs.reserve(kT6ObjectCount);
+
+    const float gridOffset = (static_cast<float>(kT6GridSize - 1u) * 0.5f) * kT6GridSpacing;
+    const float sceneExtent = gridOffset + 1.0f;
+    for (uint32_t index = 0; index < kT6ObjectCount; ++index) {
+        const uint32_t gridX = index % kT6GridSize;
+        const uint32_t gridZ = index / kT6GridSize;
+        const hbg::Vec3 center{static_cast<float>(gridX) * kT6GridSpacing - gridOffset, 0.0f,
+                               static_cast<float>(gridZ) * kT6GridSpacing - gridOffset};
+
+        const LightmapPlacement& placement = packingResult.placements[index];
+        MeshExportOptions meshOptions;
+        meshOptions.castShadows = true;
+        meshOptions.normalizeUv2 = false;
+        meshOptions.uv2MapSize = UInt2{kT6LightmapSize, kT6LightmapSize};
+        meshOptions.uv2Offset = UInt2{placement.rect.x, placement.rect.y};
+        const MeshInfo meshInfo = exportMesh(mesh, 0, makeMeshGuid(index), meshOptions);
+
+        render::RenderObject object;
+        object.name = "T6Object" + std::to_string(index);
+        object.meshIndex = index;
+        object.world = hbg::Mat4::identity();
+        object.world.values[12] = center.x;
+        object.world.values[14] = center.z;
+        object.worldBounds = hbg::Bounds{mesh.bounds.min + center, mesh.bounds.max + center};
+        const MeshInstanceInfo instance = exportMeshInstance(mesh, object, index, index, meshOptions);
+
+        bundle.scene.meshes.push_back(meshInfo);
+        bundle.scene.meshInstances.push_back(instance);
+        bundle.scene.meshGuids.push_back(instance.header.guid);
+
+        Lightmap2DInput input;
+        input.jobId = Guid{0u, 0u, index, 5u};
+        input.meshId = instance.header.guid;
+        input.size = Int2{static_cast<int32_t>(kT6LightmapSize), static_cast<int32_t>(kT6LightmapSize)};
+        input.lightmapUVIndex = 1;
+        std::memset(&input.overrideBakingParams, 0, sizeof(input.overrideBakingParams));
+        const uint32_t directionFlag = config.lightmap.directional ? kLightmapFlagDirection : 0u;
+        input.flags = kLightmapFlagDirect | directionFlag | kLightmapFlagBilinearFilter | kLightmapFlagBmStatic;
+        bundle.jobs.lightmap2DJobs.push_back(input);
+
+        bundle.lightmap.objects.push_back(LightmapSidecarObject{object.name, placement.atlasIndex, placement.rect.x,
+                                                                placement.rect.y, placement.rect.size, placement.scale,
+                                                                true});
+    }
+
+    bundle.scene.header.numMeshes = kT6ObjectCount;
+    bundle.scene.header.numMaterials = 1u;
+    bundle.scene.header.numMeshInstances = kT6ObjectCount;
+    bundle.scene.header.numMeshGuids = kT6ObjectCount;
+    const float sceneRadius = std::sqrt(2.0f * sceneExtent * sceneExtent + 0.01f);
+    bundle.scene.header.bounds = SceneBounds{Float3{0.0f, 0.0f, 0.0f}, Float3{0.0f, 0.0f, 0.0f},
+                                             Float3{sceneExtent, 0.1f, sceneExtent}, sceneRadius};
+    bundle.scene.header.importanceBounds = bundle.scene.header.bounds;
+
+    render::Light light;
+    light.name = "T6Center";
+    light.type = render::LightType::Point;
+    light.color = hbg::Vec3{1.0f, 1.0f, 1.0f};
+    light.intensity = 1000.0f;
+    light.range = 100.0f;
+    light.castShadows = false;
+    light.world = hbg::Mat4::identity();
+    light.world.values[13] = 12.0f;
+    const LightFullInfo lightInfo = exportLight(light, LightExportOptions{}, 0);
+    bundle.scene.lights.push_back(lightInfo.lightData);
+    bundle.scene.lightGuids.push_back(lightInfo.lightGuid);
+    bundle.scene.lightPowers.push_back(lightInfo.lightPower);
+    bundle.scene.header.numLights = 1u;
+
+    asset::ImageAsset skyImage;
+    skyImage.name = "T6BlackSky";
+    skyImage.width = 2;
+    skyImage.height = 1;
+    skyImage.format = gfx::TextureFormat::RGBA32F;
+    const float skyPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    skyImage.pixels.resize(sizeof(skyPixel) * 2u);
+    std::memcpy(skyImage.pixels.data(), skyPixel, sizeof(skyPixel));
+    std::memcpy(skyImage.pixels.data() + sizeof(skyPixel), skyPixel, sizeof(skyPixel));
+    SkyLightExportOptions skyOptions;
+    skyOptions.cubeSize = 8;
+    skyOptions.srgbToLinear = false;
+    bundle.scene.skyLight = exportSkyLight(&skyImage, skyOptions);
+
+    bundle.jobs.partialJobsTotalNum.numLightmap2DJobs = kT6ObjectCount;
+    bundle.lightmap.texelPerUnit = 16.0f;
+    for (std::size_t index = 0; index < packingResult.atlases.size(); ++index) {
+        const LightmapAtlasPlan& atlas = packingResult.atlases[index];
+        bundle.lightmap.atlases.push_back(LightmapSidecarAtlas{"lm" + std::to_string(index), atlas.size,
+                                                               config.lightmap.layers, config.lightmap.format});
+    }
+
+    if (metrics != nullptr) {
+        metrics->objects = kT6ObjectCount;
+        metrics->atlasSize = packingResult.atlases.empty() ? 0u : packingResult.atlases.front().size;
+        metrics->atlasCount = static_cast<uint32_t>(packingResult.atlases.size());
+        metrics->packMs = std::chrono::duration<double, std::milli>(packEnd - packStart).count();
+        metrics->vramBytes = 0u;
+        for (const LightmapAtlasPlan& atlas : packingResult.atlases) {
+            metrics->vramBytes += static_cast<uint64_t>(atlas.size) * atlas.size * config.lightmap.layers * 4u *
+                                  sizeof(uint16_t);
+        }
+    }
+    return bundle;
+}
+
+int exportSeamTilePackage(const std::filesystem::path& directory, uint32_t tileIndex, const std::string& guid) {
+    if (!isHexGuid(guid)) {
+        throw std::runtime_error("guid must be 32 hex characters");
+    }
+    ExportedSceneBundle bundle = buildSeamTileScene(tileIndex);
+    const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
+    std::cout << "wrote " << files.scene.string() << "\n";
+    std::cout << "wrote " << files.jobs.string() << "\n";
+    std::cout << "wrote " << files.lightmap.string() << "\n";
+    return 0;
+}
+
 int exportDirectionalPackage(const std::filesystem::path& directory, const std::string& guid) {
     if (!isHexGuid(guid)) {
         throw std::runtime_error("guid must be 32 hex characters");
@@ -725,11 +1244,134 @@ int exportDirectionalPackage(const std::filesystem::path& directory, const std::
     return 0;
 }
 
+int exportDirectionalColorPackage(const std::filesystem::path& directory, const std::string& guid) {
+    if (!isHexGuid(guid)) {
+        throw std::runtime_error("guid must be 32 hex characters");
+    }
+    ExportedSceneBundle bundle = buildDirectionalScene(hbg::Vec3{0.8f, 0.6f, 0.4f}, 0.5f, true);
+    const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
+    std::cout << "wrote " << files.scene.string() << "\n";
+    std::cout << "wrote " << files.jobs.string() << "\n";
+    std::cout << "wrote " << files.lightmap.string() << "\n";
+    return 0;
+}
+
+int exportPointFalloffPackage(const std::filesystem::path& directory, const std::string& guid) {
+    if (!isHexGuid(guid)) {
+        throw std::runtime_error("guid must be 32 hex characters");
+    }
+    ExportedSceneBundle bundle = buildPointFalloffScene();
+    const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
+    std::cout << "wrote " << files.scene.string() << "\n";
+    std::cout << "wrote " << files.jobs.string() << "\n";
+    std::cout << "wrote " << files.lightmap.string() << "\n";
+    return 0;
+}
+
+int exportT6Package(const std::filesystem::path& directory, const std::string& guid) {
+    if (!isHexGuid(guid)) {
+        throw std::runtime_error("guid must be 32 hex characters");
+    }
+    const DawnConfig config = loadDawnConfigOrThrow();
+    T6Metrics metrics;
+    ExportedSceneBundle bundle = buildT6Scene(&metrics, config);
+    const auto writeStart = std::chrono::steady_clock::now();
+    const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
+    const double writeMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - writeStart).count();
+    std::printf(
+        "T6: objects=%u pack_ms=%.3f package_ms=%.3f jobs=%zu atlas=%u count=%u vram_mib=%.2f vram_bytes=%llu\n",
+        metrics.objects, metrics.packMs, writeMs, bundle.jobs.lightmap2DJobs.size(), metrics.atlasSize,
+        metrics.atlasCount, static_cast<double>(metrics.vramBytes) / (1024.0 * 1024.0),
+        static_cast<unsigned long long>(metrics.vramBytes));
+    std::cout << "wrote " << files.scene.string() << "\n";
+    std::cout << "wrote " << files.jobs.string() << "\n";
+    std::cout << "wrote " << files.lightmap.string() << "\n";
+    return 0;
+}
+
+int t6PerfTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const DawnConfig config = loadDawnConfigOrThrow();
+    T6Metrics metrics;
+    const ExportedSceneBundle bundle = buildT6Scene(&metrics, config);
+    require(metrics.objects == kT6ObjectCount, "T6 object count mismatch");
+    require(metrics.atlasCount == 1u && metrics.atlasSize == kT6AtlasSize, "T6 must fit one configured atlas");
+    require(metrics.atlasSize == config.lightmap.atlasSize, "T6 atlas size does not match dawn config");
+    require(bundle.jobs.lightmap2DJobs.size() == kT6ObjectCount, "T6 lightmap job count mismatch");
+    require(bundle.lightmap.objects.size() == kT6ObjectCount, "T6 sidecar object count mismatch");
+    require(metrics.packMs < 2000.0, "T6 packing exceeded 2 s");
+    require(metrics.vramBytes < kT6VramLimitBytes, "T6 lightmap VRAM exceeded 100 MiB");
+    std::printf("t6 perf test OK: objects=%u pack_ms=%.3f atlas=%u count=%u vram_mib=%.2f vram_bytes=%llu\n",
+                metrics.objects, metrics.packMs, metrics.atlasSize, metrics.atlasCount,
+                static_cast<double>(metrics.vramBytes) / (1024.0 * 1024.0),
+                static_cast<unsigned long long>(metrics.vramBytes));
+    return 0;
+}
+
+int dawnConfigTest(const std::filesystem::path& path) {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const auto near = [](float value, float expected) {
+        return std::fabs(value - expected) <= 1.0e-6f;
+    };
+    DawnConfig config;
+    std::string error;
+    if (!loadDawnConfig(path, config, error)) {
+        throw std::runtime_error("failed to load dawn config: " + error);
+    }
+    require(config.version == 1, "dawn config version mismatch");
+    require(!config.lightmap.uv2VFlip, "dawn config must not flip UV2 V");
+    require(!config.lighting.lightPowerAffectsRadiance, "light power must not scale radiance");
+    require(config.lightmap.format == "rgba16f", "dawn config lightmap format mismatch");
+    require(config.lightmap.layers == 3u, "dawn config lightmap layer count mismatch");
+    require(config.lighting.colorSpace == "linear", "dawn config color space mismatch");
+    require(config.lighting.pointFalloff == "inverse-square", "dawn config point falloff mismatch");
+    require(near(config.lighting.directionalLightmapScale, 1.0f), "directional lightmap scale mismatch");
+    require(near(config.lighting.lightUnitScale, 1.0f), "light unit scale mismatch");
+
+    LightmapUvOptions uvOptions;
+    LightmapSizeSettings sizeSettings;
+    LightmapPackingSettings packingSettings;
+    LightmapAtlasOptions atlasOptions;
+    require(near(config.lightmap.texelsPerUnit, uvOptions.texelsPerUnit), "UV texelsPerUnit mismatch");
+    require(near(config.lightmap.texelsPerUnit, sizeSettings.texelsPerUnit), "size texelsPerUnit mismatch");
+    require(config.lightmap.padding == uvOptions.padding, "UV padding mismatch");
+    require(config.lightmap.maxLightmapSize == sizeSettings.maxLightmapSize, "max lightmap size mismatch");
+    require(config.lightmap.atlasSize == packingSettings.atlasSize, "atlas size mismatch");
+    require(config.lightmap.maxAtlases == packingSettings.maxAtlases, "max atlases mismatch");
+    require(config.lightmap.padding == packingSettings.padding, "packing padding mismatch");
+    require(config.lightmap.dilationIterations == atlasOptions.dilationIterations, "dilation count mismatch");
+    require(config.lightmap.atlasSize == kT6AtlasSize, "dawn config atlas size no longer matches T6");
+    require(config.lightmap.padding == 2u, "dawn config padding no longer matches T6");
+
+    DawnConfig invalid;
+    std::string invalidError;
+    require(!parseDawnConfig("{}", invalid, invalidError), "empty dawn config was accepted");
+    require(!parseDawnConfig(R"({"version":1,"unknown":true})", invalid, invalidError),
+            "unknown dawn config key was accepted");
+    require(!parseDawnConfig(R"({"version":1,"lightmap":{},"lighting":{}})", invalid, invalidError),
+            "incomplete dawn config was accepted");
+
+    std::printf("dawn config OK: path=%s atlas=%u texels_per_unit=%.1f padding=%u layers=%u\n", path.string().c_str(),
+                config.lightmap.atlasSize, config.lightmap.texelsPerUnit, config.lightmap.padding,
+                config.lightmap.layers);
+    return 0;
+}
+
 int exportUvAxisPackage(const std::filesystem::path& directory, const std::string& guid) {
     if (!isHexGuid(guid)) {
         throw std::runtime_error("guid must be 32 hex characters");
     }
-    ExportedSceneBundle bundle = buildUvAxisScene();
+    const DawnConfig config = loadDawnConfigOrThrow();
+    ExportedSceneBundle bundle = buildUvAxisScene(config);
     const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
     std::cout << "wrote " << files.scene.string() << "\n";
     std::cout << "wrote " << files.jobs.string() << "\n";
@@ -1574,8 +2216,11 @@ int packageTest() {
     const std::vector<uint8_t> sceneGz = readFile(files.sceneGz);
     require(sceneGz.size() > 18u && sceneGz[0] == 0x1Fu && sceneGz[1] == 0x8Bu && sceneGz[2] == 0x08u,
             "scenegz gzip header mismatch");
-    const std::vector<uint8_t> sceneBytes = gzipDecompressStored(sceneGz);
+    const std::vector<uint8_t> sceneBytes = gzipDecompress(sceneGz);
     require(sceneBytes == readFile(files.scene), "scenegz payload differs from local scene");
+#ifdef HBG_DAWN_HAVE_ZLIB
+    require(sceneGz.size() < gzipCompressStored(sceneBytes).size(), "scenegz is not deflated");
+#endif
     Reader sceneReader(sceneBytes);
     require(sceneReader.version() == kExportVersion, "scene version mismatch");
     SceneInfo scene;
@@ -1590,8 +2235,11 @@ int packageTest() {
     const std::vector<uint8_t> jobGz = readFile(files.jobsGz);
     require(jobGz.size() > 18u && jobGz[0] == 0x1Fu && jobGz[1] == 0x8Bu && jobGz[2] == 0x08u,
             "jobgz gzip header mismatch");
-    const std::vector<uint8_t> jobBytes = gzipDecompressStored(jobGz);
+    const std::vector<uint8_t> jobBytes = gzipDecompress(jobGz);
     require(jobBytes == readFile(files.jobs), "jobgz payload differs from local jobs");
+#ifdef HBG_DAWN_HAVE_ZLIB
+    require(jobGz.size() < gzipCompressStored(jobBytes).size(), "jobgz is not deflated");
+#endif
     Reader jobReader(jobBytes);
     require(jobReader.version() == kExportVersion, "job version mismatch");
     BakingJobInputs jobs;
@@ -1611,7 +2259,7 @@ int packageTest() {
             "lightmap job mesh id mismatch");
     require(jobs.partialJobsTotalNum.numLightmap2DJobs == 1u, "partial job count mismatch");
 
-    const std::vector<uint8_t> meshBytes = gzipDecompressStored(readFile(files.meshGz[0]));
+    const std::vector<uint8_t> meshBytes = gzipDecompress(readFile(files.meshGz[0]));
     Reader meshReader(meshBytes);
     require(meshReader.version() == kExportVersion, "mesh version mismatch");
     MeshInfo mesh;
@@ -1620,7 +2268,7 @@ int packageTest() {
     require(mesh.header.numTriangles == 2u && mesh.index16.size() == 6u, "mesh triangle/index mismatch");
     require(mesh.elements.size() == 1u && mesh.texcoords.size() == 3u, "mesh element/uv mismatch");
 
-    const std::vector<uint8_t> materialBytes = gzipDecompressStored(readFile(files.materialGz[0]));
+    const std::vector<uint8_t> materialBytes = gzipDecompress(readFile(files.materialGz[0]));
     Reader materialReader(materialBytes);
     require(materialReader.version() == kExportVersion, "material version mismatch");
     MaterialInfo material;
@@ -1851,6 +2499,15 @@ int processDriverTest() {
                 missingInputResult.error.find("scene") != std::string::npos,
             "runDawn did not report missing local scene");
 
+    DawnLaunchOptions missingExe;
+    missingExe.dawnExecutable = directory / "missing-dawn.exe";
+    missingExe.jobDirectory = directory;
+    missingExe.guid = "11111111222222223333333344444444";
+    const ProcessResult missingExeResult = runDawn(missingExe);
+    require(missingExeResult.status == ProcessStatus::Failed &&
+                missingExeResult.error.find("not found") != std::string::npos,
+            "runDawn did not report missing executable");
+
     std::printf("process driver test OK: exit=%u timeout=%llums log=%s\n", result.exitCode,
                 static_cast<unsigned long long>(timedOut.elapsedMs), result.logPath.string().c_str());
     return 0;
@@ -1889,12 +2546,18 @@ DawnLaunchOptions parseDawnLaunchOptions(int argc, char** argv, bool allowResult
             options.dawnExecutable = argv[++index];
         } else if (argument == "--agent" && index + 1 < argc) {
             options.agentAddress = argv[++index];
+        } else if (argument == "--agent-files" && index + 1 < argc) {
+            options.agentFileAddress = argv[++index];
         } else if (argument == "--job-dir" && index + 1 < argc) {
             options.jobDirectory = argv[++index];
         } else if (argument.rfind("--job-dir=", 0) == 0) {
             options.jobDirectory = argument.substr(10);
         } else if (argument == "--keep-job") {
             options.keepJob = true;
+        } else if (argument == "--agent-download-results") {
+            options.downloadAgentResults = true;
+        } else if (argument == "--agent-force-download") {
+            options.forceAgentDownload = true;
         } else if (argument == "--timeout" && index + 1 < argc) {
             const int seconds = std::stoi(argv[++index]);
             if (seconds <= 0) {
@@ -1926,6 +2589,12 @@ DawnLaunchOptions parseDawnLaunchOptions(int argc, char** argv, bool allowResult
     if (options.dawnExecutable.empty() && options.agentAddress.empty()) {
         throw std::runtime_error(
             "Dawn executable is required (--dawn <Dawn.exe> or HBG_DAWN_EXE) unless --agent is used");
+    }
+    if (options.downloadAgentResults && (options.agentAddress.empty() || options.agentFileAddress.empty())) {
+        throw std::runtime_error("--agent-download-results requires --agent <deamon> and --agent-files <agent>");
+    }
+    if (options.forceAgentDownload && !options.downloadAgentResults) {
+        throw std::runtime_error("--agent-force-download requires --agent-download-results");
     }
     return options;
 }
@@ -1972,7 +2641,13 @@ int runDawnCommand(int argc, char** argv) {
 
 std::vector<std::filesystem::path> expectedLightmapResults(const std::filesystem::path& jobDirectory,
                                                            const std::string& guid) {
-    const std::filesystem::path jobsPath = jobDirectory / (guid + ".jobs");
+    std::string lowerGuid = guid;
+    std::transform(lowerGuid.begin(), lowerGuid.end(), lowerGuid.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::filesystem::path rawJobs = jobDirectory / (lowerGuid + ".jobs");
+    const std::filesystem::path gzipJobs = jobDirectory / ("v2." + lowerGuid + ".jobgz");
+    const std::filesystem::path jobsPath =
+        std::filesystem::is_regular_file(rawJobs) ? rawJobs : gzipJobs;
     const BakingJobInputs jobs = readBakingJobInputsFile(jobsPath);
 
     std::vector<std::filesystem::path> results;
@@ -2063,20 +2738,25 @@ bool verifyLightmap2DResultSet(const std::filesystem::path& jobDirectory, const 
 
 #ifdef HBG_DAWN_GRPC
 AgentJobSpec buildAgentJobSpec(const DawnLaunchOptions& options, const std::string& guid) {
-    const std::filesystem::path jobsPath = options.jobDirectory / (guid + ".jobs");
-    const std::vector<uint8_t> bytes = readFile(jobsPath);
-    Reader reader(bytes);
-    const int32_t version = reader.version();
-    BakingJobInputs jobs;
-    readBakingJobInputs(reader, jobs, version);
+    const std::filesystem::path jobsPath =
+        findJobObjectFile(options.jobDirectory, guid, ".jobs", ".jobgz");
+    const BakingJobInputs jobs = readBakingJobInputsFile(jobsPath);
 
     AgentJobSpec spec;
     spec.address = options.agentAddress;
+    std::string jobId = guid;
+    std::transform(jobId.begin(), jobId.end(), jobId.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     spec.missionId = guid;
-    spec.jobId = guid;
+    spec.jobId = jobId;
     spec.jobDirectory = std::filesystem::absolute(options.jobDirectory);
     spec.localExecutablePath = options.dawnExecutable;
     spec.fileCacheDirectory = spec.jobDirectory.string();
+    spec.agentFileAddress = options.agentFileAddress;
+    if (options.downloadAgentResults) {
+        spec.downloadDirectory = spec.jobDirectory;
+        spec.forceDownloadResults = options.forceAgentDownload;
+    }
 
     const std::filesystem::path executableName = options.dawnExecutable.filename();
     if (!executableName.empty()) {
@@ -2109,8 +2789,12 @@ AgentJobSpec buildAgentJobSpec(const DawnLaunchOptions& options, const std::stri
 #ifdef HBG_DAWN_GRPC
 int runAgentBake(const DawnLaunchOptions& options, const std::string& guid) {
     const AgentJobSpec spec = buildAgentJobSpec(options, guid);
+    const auto bakeStart = std::chrono::steady_clock::now();
     AgentClient client(options.agentAddress);
     const AgentJobResult result = client.runJob(spec, options.timeout, options.onProgress);
+    const auto bakeElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - bakeStart)
+                                   .count();
 
     std::size_t available = 0;
     for (const AgentTaskSpec& task : spec.tasks) {
@@ -2122,6 +2806,7 @@ int runAgentBake(const DawnLaunchOptions& options, const std::string& guid) {
         }
     }
     const std::size_t total = spec.tasks.size();
+    std::cout << "Dawn bake total: elapsed_ms=" << bakeElapsedMs << " tasks=" << total << "\n";
     const double percent = total > 0u ? 100.0 * static_cast<double>(available) / static_cast<double>(total) : 0.0;
     std::cout << "DAWN_PROGRESS phase=" << (result.error == DawnBakeError::None ? "done" : "failed")
               << " completed=" << available << " total=" << total << " percent=" << std::fixed << std::setprecision(1)
@@ -2157,6 +2842,84 @@ int agentUploadCommand(int argc, char** argv) {
         throw std::runtime_error(error.empty() ? "agent upload failed" : error);
     }
     std::cout << "agent upload OK: " << argv[4] << " -> " << argv[5] << "\n";
+    return 0;
+}
+
+int agentCacheUploadCommand(int argc, char** argv) {
+    if (argc < 6 || (argc - 4) % 2 != 0) {
+        throw std::runtime_error(
+            "--agent-cache-upload requires <agent-address> <job-id> <hash> <remote-path> [<hash> <remote-path> ...]");
+    }
+    const std::string address = argv[2];
+    const std::string jobId = argv[3];
+    std::vector<AgentCacheFile> files;
+    for (int i = 4; i < argc; i += 2) {
+        files.push_back(AgentCacheFile{argv[i], argv[i + 1]});
+    }
+    AgentClient client(address);
+    std::string error;
+    if (!client.batchUploadFileInServerCache(address, jobId, files, std::chrono::minutes(10), &error)) {
+        throw std::runtime_error(error.empty() ? "agent cache upload failed" : error);
+    }
+    std::cout << "agent cache upload OK: " << files.size() << " file(s)\n";
+    return 0;
+}
+
+int agentTransferCommand(int argc, char** argv) {
+    if (argc < 6) {
+        throw std::runtime_error(
+            "--agent-transfer-job requires <agent-address> <job-id> <another-agent-address> <remote-path> ...");
+    }
+    const std::string address = argv[2];
+    const std::string jobId = argv[3];
+    const std::string anotherAgent = argv[4];
+    std::vector<std::string> paths(argv + 5, argv + argc);
+    AgentClient client(address);
+    std::string error;
+    if (!client.uploadJobFilesToAnotherAgent(address, jobId, anotherAgent, paths, std::chrono::minutes(10), &error)) {
+        throw std::runtime_error(error.empty() ? "agent job transfer failed" : error);
+    }
+    std::cout << "agent job transfer OK: " << paths.size() << " file(s)\n";
+    return 0;
+}
+
+int agentMultiUploadCommand(int argc, char** argv) {
+    if (argc < 7 || (argc - 4) % 3 != 0) {
+        throw std::runtime_error(
+            "--agent-multi-upload requires <agent-address> <job-id> <hash> <remote-path> <local-file> "
+            "[<hash> <remote-path> <local-file> ...]");
+    }
+    const std::string address = argv[2];
+    const std::string jobId = argv[3];
+    std::vector<AgentUploadFile> files;
+    for (int i = 4; i < argc; i += 3) {
+        AgentUploadFile file;
+        file.hash = argv[i];
+        file.remotePath = argv[i + 1];
+        file.data = readFile(argv[i + 2]);
+        files.push_back(std::move(file));
+    }
+    AgentClient client(address);
+    std::string error;
+    if (!client.uploadMultiFiles(address, jobId, files, std::chrono::minutes(10), &error)) {
+        throw std::runtime_error(error.empty() ? "agent multi upload failed" : error);
+    }
+    std::cout << "agent multi upload OK: " << files.size() << " file(s)\n";
+    return 0;
+}
+
+int agentDownloadCommand(int argc, char** argv) {
+    if (argc != 6) {
+        throw std::runtime_error("--agent-download requires <agent-address> <job-id> <remote-path> <local-file>");
+    }
+    const std::string address = argv[2];
+    const std::string jobId = argv[3];
+    AgentClient client(address);
+    std::string error;
+    if (!client.downloadFile(address, jobId, argv[4], argv[5], std::chrono::minutes(10), &error)) {
+        throw std::runtime_error(error.empty() ? "agent download failed" : error);
+    }
+    std::cout << "agent download OK: " << argv[4] << " -> " << argv[5] << "\n";
     return 0;
 }
 #endif
@@ -2256,7 +3019,7 @@ int resultPollTest(const std::filesystem::path& fakeDawn) {
     options.jobDirectory = directory;
     options.guid = guid;
     options.expectedResults = {resultPath};
-    options.timeout = std::chrono::seconds(5);
+    options.timeout = std::chrono::seconds(15);
     options.resultGrace = std::chrono::milliseconds(500);
 
     setEnvironmentValue("HBG_FAKE_DAWN_RESULT", resultPath.string());
@@ -2436,6 +3199,927 @@ struct GoldenChecks {
         }
     }
 };
+
+int protocolVersionTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_protocol_version_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+
+    const auto requireUnsupported = [&](int32_t version, const char* kind) {
+        Writer writer;
+        writer.version(version);
+        const std::filesystem::path path = directory / (std::string(kind) + ".bin");
+        writeFile(path, writer.bytes());
+
+        bool rejected = false;
+        std::string message;
+        try {
+            if (std::strcmp(kind, "scene") == 0) {
+                readSceneFile(path);
+            } else {
+                readBakingJobInputsFile(path);
+            }
+        } catch (const std::exception& error) {
+            rejected = true;
+            message = error.what();
+        }
+        require(rejected, std::string(kind) + " version " + std::to_string(version) + " was accepted");
+        require(message.find(std::string(kind) + " version " + std::to_string(version) + " is not supported") !=
+                    std::string::npos,
+                std::string(kind) + " version error is not actionable: " + message);
+    };
+
+    requireUnsupported(kExportVersion1000 - 1, "scene");
+    requireUnsupported(kExportVersion + 1, "scene");
+    requireUnsupported(kExportVersion1000 - 1, "jobs");
+    requireUnsupported(kExportVersion + 1, "jobs");
+
+    std::error_code ec;
+    std::filesystem::remove_all(directory, ec);
+    std::printf("protocol version test OK: supported=%d..%d\n", kExportVersion1000, kExportVersion);
+    return 0;
+}
+
+#ifdef HBG_DAWN_GRPC
+int agentSpecTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_agent_spec_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    const std::string guid = "55556666777788889999aaaabbbbcccc";
+    ExportedSceneBundle bundle = buildExportedScene();
+    const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
+    std::filesystem::remove(files.scene);
+    std::filesystem::remove(files.jobs);
+    require(!std::filesystem::exists(files.scene) && !std::filesystem::exists(files.jobs),
+            "agent spec fixture still has raw scene/jobs");
+
+    DawnLaunchOptions options;
+    options.jobDirectory = directory;
+    options.agentAddress = "http://127.0.0.1:5009";
+    const AgentJobSpec spec = buildAgentJobSpec(options, guid);
+
+    std::string expectedJobId = guid;
+    std::transform(expectedJobId.begin(), expectedJobId.end(), expectedJobId.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    require(spec.missionId == guid, "agent mission id should stay lower-case");
+    require(spec.jobId == expectedJobId, "agent job id must use original %08X upper-case form");
+    require(spec.tasks.size() == 1u, "agent task count mismatch");
+    require(spec.tasks[0].taskId == "00000000000000000000000000000005",
+            "agent task id must use upper-case guidHex form");
+
+    bool hasSceneGz = false;
+    bool hasJobsGz = false;
+    for (const std::string& file : spec.jobFiles) {
+        hasSceneGz = hasSceneGz || file.find(".scenegz") != std::string::npos;
+        hasJobsGz = hasJobsGz || file.find(".jobgz") != std::string::npos;
+    }
+    require(hasSceneGz && hasJobsGz, "agent job files must include scenegz/jobgz");
+    require(spec.jobFiles.size() == 4u, "agent job files should only contain gzip side/cache files");
+
+    const std::vector<std::filesystem::path> results = expectedLightmapResults(directory, guid);
+    require(results.size() == 1u, "agent expected result count mismatch");
+    require(results[0].filename().string() == "v2.00000000000000000000000000000005.lmgz",
+            "agent expected result name mismatch");
+
+    std::printf("agent spec test OK: job=%s tasks=%zu files=%zu\n", spec.jobId.c_str(), spec.tasks.size(),
+                spec.jobFiles.size());
+    return 0;
+}
+
+class FakeAgentService final : public DAWNProto::AgentService::Service {
+  public:
+    grpc::Status UploadFile(grpc::ServerContext*,
+                            grpc::ServerReaderWriter<DAWNProto::UploadFileAck, DAWNProto::UploadFileReq>* stream) override {
+        DAWNProto::UploadFileReq header;
+        if (!stream->Read(&header)) {
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "missing upload header");
+        }
+        if (!header.has_jobid() || !header.has_filepath() || !header.has_filesize() || !header.has_hash()) {
+            DAWNProto::UploadFileAck ack;
+            ack.set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+            ack.set_message("upload header missing required field");
+            stream->Write(ack);
+            return grpc::Status::OK;
+        }
+
+        const bool fromCache = header.filepath() == "cached";
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_uploadJobId = header.jobid();
+            m_uploadPath = header.filepath();
+            m_uploadHash = header.hash();
+            m_uploadSize = header.filesize();
+            m_uploadData.clear();
+            m_uploadFromCache = fromCache;
+        }
+        if (header.filepath() == "fail") {
+            DAWNProto::UploadFileAck ack;
+            ack.set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+            ack.set_message("upload failure");
+            stream->Write(ack);
+            return grpc::Status::OK;
+        }
+
+        DAWNProto::UploadFileAck ready;
+        ready.set_type(fromCache ? DAWNProto::UploadFileAck_UploadFileAckType_DoneInCache
+                                 : DAWNProto::UploadFileAck_UploadFileAckType_NotInCache);
+        if (!stream->Write(ready)) {
+            return grpc::Status::OK;
+        }
+        if (fromCache) {
+            return grpc::Status::OK;
+        }
+
+        std::string data;
+        DAWNProto::UploadFileReq chunk;
+        while (stream->Read(&chunk)) {
+            if (!chunk.has_filedata() || !chunk.has_filedatadone() || chunk.filedata().empty()) {
+                DAWNProto::UploadFileAck ack;
+                ack.set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+                ack.set_message("invalid upload data message");
+                stream->Write(ack);
+                return grpc::Status::OK;
+            }
+            data.append(chunk.filedata());
+            if (chunk.filedatadone()) {
+                break;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_uploadData = data;
+        }
+        DAWNProto::UploadFileAck done;
+        if (data.size() != header.filesize()) {
+            done.set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+            done.set_message("uploaded size mismatch");
+        } else {
+            done.set_type(DAWNProto::UploadFileAck_UploadFileAckType_Done);
+        }
+        stream->Write(done);
+        return grpc::Status::OK;
+    }
+
+    grpc::Status BatchUploadFileInServerCache(grpc::ServerContext*,
+                                               const DAWNProto::BatchUploadFilesInServerCacheReq* request,
+                                               DAWNProto::BatchUploadFilesInServerCacheAck* response) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_jobId = request->jobid();
+        m_files.clear();
+        for (const DAWNProto::UploadFileInfo& file : request->files()) {
+            m_files.push_back(AgentCacheFile{file.hash(), file.filepath()});
+            DAWNProto::UploadFileAck* ack = response->add_acks();
+            if (file.hash() == "miss") {
+                ack->set_type(DAWNProto::UploadFileAck_UploadFileAckType_NotInCache);
+            } else if (file.hash() == "fail") {
+                ack->set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+                ack->set_message("cache failure");
+            } else {
+                ack->set_type(DAWNProto::UploadFileAck_UploadFileAckType_DoneInCache);
+            }
+        }
+        return grpc::Status::OK;
+    }
+
+    grpc::Status UploadMultiFiles(grpc::ServerContext*, const DAWNProto::UploadMultiFilesReq* request,
+                                  DAWNProto::UploadMultiFilesAck* response) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_multiJobId = request->jobid();
+        m_multiFiles.clear();
+        for (const DAWNProto::UploadFileInfo& file : request->files()) {
+            AgentUploadFile upload;
+            upload.hash = file.hash();
+            upload.remotePath = file.filepath();
+            upload.data.assign(file.filedata().begin(), file.filedata().end());
+            m_multiFiles.push_back(std::move(upload));
+            DAWNProto::UploadFileAck* ack = response->add_acks();
+            if (file.hash() == "fail") {
+                ack->set_type(DAWNProto::UploadFileAck_UploadFileAckType_Fail);
+                ack->set_message("multi upload failure");
+            } else {
+                ack->set_type(DAWNProto::UploadFileAck_UploadFileAckType_Done);
+            }
+        }
+        return grpc::Status::OK;
+    }
+
+    grpc::Status UploadJobFilesToAnotherAgent(grpc::ServerContext*,
+                                               const DAWNProto::UploadToAnotherAgentReq* request,
+                                               DAWNProto::GeneralAck* response) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_transferJobId = request->jobid();
+        m_transferAgent = request->anotheragentaddress();
+        m_transferPaths.assign(request->filepaths().begin(), request->filepaths().end());
+        response->set_code(DAWNProto::OK);
+        for (const std::string& path : m_transferPaths) {
+            if (path == "fail") {
+                response->set_code(DAWNProto::Fail);
+                response->set_message("transfer failure");
+            }
+        }
+        return grpc::Status::OK;
+    }
+
+    grpc::Status DownloadFile(grpc::ServerContext*, const DAWNProto::DownloadFileReq* request,
+                              grpc::ServerWriter<DAWNProto::DownloadFileAck>* writer) override {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_downloadJobId = request->jobid();
+            m_downloadPath = request->filepath();
+        }
+        if (request->filepath() == "missing") {
+            DAWNProto::DownloadFileAck ack;
+            ack.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Fail_FileNotFound);
+            ack.set_message("download file not found");
+            writer->Write(ack);
+            return grpc::Status::OK;
+        }
+        if (request->filepath() == "fail") {
+            DAWNProto::DownloadFileAck ack;
+            ack.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Fail);
+            ack.set_message("download failed");
+            writer->Write(ack);
+            return grpc::Status::OK;
+        }
+        if (request->filepath() == "short") {
+            DAWNProto::DownloadFileAck ack;
+            ack.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+            ack.set_filedata("short");
+            ack.set_filehash("A0F4EA7D91495DF92BBAC2E2149DFB850FE81396");
+            writer->Write(ack);
+            return grpc::Status::OK;
+        }
+
+        DAWNProto::DownloadFileAck first;
+        first.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Data);
+        first.set_filedata(request->filepath() == "empty" ? "" : "hello ");
+        if (!writer->Write(first)) {
+            return grpc::Status::OK;
+        }
+        if (request->filepath() != "empty") {
+            DAWNProto::DownloadFileAck second;
+            second.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Data);
+            second.set_filedata("world");
+            if (!writer->Write(second)) {
+                return grpc::Status::OK;
+            }
+        }
+        DAWNProto::DownloadFileAck done;
+        done.set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+        done.set_filehash(request->filepath() == "empty" ? "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"
+                                                         : "2AAE6C35C94FCFB415DBE95F408B9CE91EE846ED");
+        writer->Write(done);
+        return grpc::Status::OK;
+    }
+
+    std::pair<std::string, std::vector<AgentCacheFile>> snapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_jobId, m_files};
+    }
+
+    grpc::Status DownloadMultiFiles(grpc::ServerContext*,
+                                    const DAWNProto::DownloadMultiFilesReq* request,
+                                    grpc::ServerWriter<DAWNProto::DownloadMultiFilesAck>* writer) override {
+        if (request->jobid() == "MULTI_UNSUPPORTED_JOB") {
+            return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "multi download is not supported");
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_multiDownloadJobId = request->jobid();
+            m_multiDownloadPaths.assign(request->filepathes().begin(), request->filepathes().end());
+        }
+        DAWNProto::DownloadMultiFilesAck ack;
+        for (const std::string& path : request->filepathes()) {
+            if (path == "missing") {
+                DAWNProto::DownloadFileAck* item = ack.add_items();
+                item->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Fail_FileNotFound);
+                item->set_filename(path);
+                item->set_message("multi download file not found");
+                writer->Write(ack);
+                return grpc::Status::OK;
+            }
+            if (path == "fail") {
+                DAWNProto::DownloadFileAck* item = ack.add_items();
+                item->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Fail);
+                item->set_filename(path);
+                item->set_message("multi download failed");
+                writer->Write(ack);
+                return grpc::Status::OK;
+            }
+            if (path == "errmsg") {
+                ack.set_errmsg("multi download stream failure");
+                writer->Write(ack);
+                return grpc::Status::OK;
+            }
+            if (path == "badhash") {
+                DAWNProto::DownloadFileAck* item = ack.add_items();
+                item->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+                item->set_filename(path);
+                item->set_filedata("hello world");
+                item->set_filehash("0000000000000000000000000000000000000000");
+                continue;
+            }
+            if (path == "empty") {
+                DAWNProto::DownloadFileAck* item = ack.add_items();
+                item->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+                item->set_filename(path);
+                item->set_filehash("DA39A3EE5E6B4B0D3255BFEF95601890AFD80709");
+                continue;
+            }
+            if (path == "short") {
+                DAWNProto::DownloadFileAck* item = ack.add_items();
+                item->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+                item->set_filename(path);
+                item->set_filedata("short");
+                item->set_filehash("A0F4EA7D91495DF92BBAC2E2149DFB850FE81396");
+                continue;
+            }
+            DAWNProto::DownloadFileAck* data = ack.add_items();
+            data->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_Data);
+            data->set_filename(path);
+            data->set_filedata("hello ");
+            DAWNProto::DownloadFileAck* done = ack.add_items();
+            done->set_type(DAWNProto::DownloadFileAck_DownloadFileAckType_DataDone);
+            done->set_filename(path);
+            done->set_filedata("world");
+            done->set_filehash("2AAE6C35C94FCFB415DBE95F408B9CE91EE846ED");
+        }
+        writer->Write(ack);
+        return grpc::Status::OK;
+    }
+
+    struct UploadSnapshot {
+        std::string jobId;
+        std::string path;
+        std::string hash;
+        uint64_t size = 0;
+        std::string data;
+        bool fromCache = false;
+    };
+
+    UploadSnapshot uploadSnapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_uploadJobId, m_uploadPath, m_uploadHash, m_uploadSize, m_uploadData, m_uploadFromCache};
+    }
+
+    std::pair<std::string, std::string> downloadSnapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_downloadJobId, m_downloadPath};
+    }
+
+    std::pair<std::string, std::vector<AgentUploadFile>> multiSnapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_multiJobId, m_multiFiles};
+    }
+
+    std::pair<std::string, std::vector<std::string>> multiDownloadSnapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_multiDownloadJobId, m_multiDownloadPaths};
+    }
+
+    struct TransferSnapshot {
+        std::string jobId;
+        std::string anotherAgent;
+        std::vector<std::string> paths;
+    };
+
+    TransferSnapshot transferSnapshot() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return {m_transferJobId, m_transferAgent, m_transferPaths};
+    }
+
+  private:
+    std::mutex m_mutex;
+    std::string m_jobId;
+    std::vector<AgentCacheFile> m_files;
+    std::string m_uploadJobId;
+    std::string m_uploadPath;
+    std::string m_uploadHash;
+    uint64_t m_uploadSize = 0;
+    std::string m_uploadData;
+    bool m_uploadFromCache = false;
+    std::string m_downloadJobId;
+    std::string m_downloadPath;
+    std::string m_multiJobId;
+    std::vector<AgentUploadFile> m_multiFiles;
+    std::string m_multiDownloadJobId;
+    std::vector<std::string> m_multiDownloadPaths;
+    std::string m_transferJobId;
+    std::string m_transferAgent;
+    std::vector<std::string> m_transferPaths;
+};
+
+int agentUploadTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent upload server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_agent_upload_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    const auto writeText = [](const std::filesystem::path& path, const std::string& text) {
+        writeFile(path, std::vector<uint8_t>(text.begin(), text.end()));
+    };
+
+    AgentClient client(address);
+    const std::filesystem::path hello = directory / "hello.txt";
+    writeText(hello, "hello world");
+    std::string error;
+    require(client.uploadFile(address, "UPLOAD_JOB", hello, "remote/hello", std::chrono::seconds(5), &error),
+            "uploadFile should succeed: " + error);
+    auto uploaded = service.uploadSnapshot();
+    require(uploaded.jobId == "UPLOAD_JOB" && uploaded.path == "remote/hello", "upload header metadata mismatch");
+    require(uploaded.hash == "2AAE6C35C94FCFB415DBE95F408B9CE91EE846ED", "upload SHA1 mismatch: " + uploaded.hash);
+    require(uploaded.size == 11u && uploaded.data == "hello world", "upload payload mismatch");
+    require(!uploaded.fromCache, "non-cached upload reported as cache hit");
+
+    const std::filesystem::path empty = directory / "empty.txt";
+    writeText(empty, "");
+    error.clear();
+    require(client.uploadFile(address, "UPLOAD_JOB", empty, "remote/empty", std::chrono::seconds(5), &error),
+            "empty uploadFile should succeed: " + error);
+    uploaded = service.uploadSnapshot();
+    require(uploaded.size == 0u && uploaded.data.empty(), "empty upload payload mismatch");
+    require(uploaded.hash == "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709", "empty SHA1 mismatch");
+
+    const std::filesystem::path large = directory / "large.bin";
+    const std::vector<uint8_t> largeData(3u * 1024u * 1024u + 1024u, static_cast<uint8_t>('A'));
+    writeFile(large, largeData);
+    error.clear();
+    require(client.uploadFile(address, "UPLOAD_JOB", large, "remote/large", std::chrono::seconds(5), &error),
+            "large uploadFile should succeed: " + error);
+    uploaded = service.uploadSnapshot();
+    require(uploaded.size == largeData.size(), "large upload size mismatch");
+    require(uploaded.data.size() == largeData.size(), "large upload data length mismatch");
+    require(uploaded.data == std::string(largeData.begin(), largeData.end()), "large upload payload mismatch");
+
+    const std::filesystem::path cached = directory / "cached.txt";
+    writeText(cached, "short");
+    error.clear();
+    require(client.uploadFile(address, "UPLOAD_JOB", cached, "cached", std::chrono::seconds(5), &error),
+            "cache-hit uploadFile should succeed: " + error);
+    uploaded = service.uploadSnapshot();
+    require(uploaded.fromCache && uploaded.path == "cached", "cache-hit upload metadata mismatch");
+    require(uploaded.data.empty(), "cache-hit upload should not send file data");
+
+    const std::filesystem::path failed = directory / "failed.txt";
+    writeText(failed, "fail");
+    error.clear();
+    require(!client.uploadFile(address, "UPLOAD_JOB", failed, "fail", std::chrono::seconds(5), &error),
+            "server upload failure should fail");
+    require(error.find("upload failure") != std::string::npos, "upload failure message missing: " + error);
+
+    error.clear();
+    require(!client.uploadFile(address, "UPLOAD_JOB", directory / "missing.txt", "remote/missing",
+                               std::chrono::seconds(5), &error),
+            "missing upload source should fail");
+    require(error.find("cannot open upload source") != std::string::npos, "missing upload error missing: " + error);
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    std::printf("agent upload test OK: bytes=11 empty=1 cache=1 fail=1\n");
+    return 0;
+}
+int agentCacheTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    {
+        AgentClient invalidClient("http://127.0.0.1:1");
+        std::string error;
+        require(!invalidClient.batchUploadFileInServerCache("http://127.0.0.1:1", "JOB", {},
+                                                            std::chrono::seconds(1), &error),
+                "empty cache upload should be rejected");
+    }
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent cache server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    {
+    AgentClient cacheClient(address);
+    std::string error;
+    const std::vector<AgentCacheFile> goodFiles{{"ok0", "scene.scenegz"}, {"ok1", "jobs.jobgz"}};
+    error.clear();
+    require(cacheClient.batchUploadFileInServerCache(address, "CACHE_JOB", goodFiles, std::chrono::seconds(5),
+                                                      &error),
+            "cache upload should succeed: " + error);
+
+    const auto snapshot = service.snapshot();
+    require(snapshot.first == "CACHE_JOB", "cache upload job id mismatch");
+    require(snapshot.second.size() == goodFiles.size(), "cache upload file count mismatch");
+    for (std::size_t i = 0; i < goodFiles.size(); ++i) {
+        require(snapshot.second[i].hash == goodFiles[i].hash, "cache upload hash mismatch");
+        require(snapshot.second[i].remotePath == goodFiles[i].remotePath, "cache upload path mismatch");
+    }
+
+    const std::vector<AgentCacheFile> missFiles{{"ok0", "scene.scenegz"}, {"miss", "jobs.jobgz"}};
+    error.clear();
+    require(!cacheClient.batchUploadFileInServerCache(address, "CACHE_JOB", missFiles, std::chrono::seconds(5),
+                                                       &error),
+            "cache miss should fail");
+    require(error.find("jobs.jobgz") != std::string::npos && error.find("NotInCache") != std::string::npos,
+            "cache miss error is not actionable: " + error);
+
+    const std::vector<AgentCacheFile> failFiles{{"fail", "fail.scenegz"}};
+    error.clear();
+    require(!cacheClient.batchUploadFileInServerCache(address, "CACHE_JOB", failFiles, std::chrono::seconds(5),
+                                                       &error),
+            "per-file cache failure should fail");
+    require(error.find("cache failure") != std::string::npos, "cache failure message missing: " + error);
+    std::printf("agent cache test OK: files=%zu\n", goodFiles.size());
+    }
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    return 0;
+}
+
+int agentMultiUploadTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    AgentClient client("http://127.0.0.1:1");
+    std::string error;
+    require(!client.uploadMultiFiles("http://127.0.0.1:1", "JOB", {}, std::chrono::seconds(1), &error),
+            "empty multi upload should be rejected");
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent multi-upload server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    AgentClient uploadClient(address);
+    const std::vector<AgentUploadFile> files{
+        {"ok0", "scene.scenegz", {1u, 2u, 3u}},
+        {"ok1", "jobs.jobgz", {}},
+    };
+    error.clear();
+    require(uploadClient.uploadMultiFiles(address, "MULTI_JOB", files, std::chrono::seconds(5), &error),
+            "multi upload should succeed: " + error);
+    const auto request = service.multiSnapshot();
+    require(request.first == "MULTI_JOB", "multi upload job id mismatch");
+    require(request.second.size() == files.size(), "multi upload file count mismatch");
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        require(request.second[i].hash == files[i].hash, "multi upload hash mismatch");
+        require(request.second[i].remotePath == files[i].remotePath, "multi upload path mismatch");
+        require(request.second[i].data == files[i].data, "multi upload payload mismatch");
+    }
+
+    const std::vector<AgentUploadFile> failFiles{{"fail", "bad.scenegz", {9u}}};
+    error.clear();
+    require(!uploadClient.uploadMultiFiles(address, "MULTI_JOB", failFiles, std::chrono::seconds(5), &error),
+            "per-file multi upload failure should fail");
+    require(error.find("bad.scenegz") != std::string::npos && error.find("multi upload failure") != std::string::npos,
+            "multi upload failure is not actionable: " + error);
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    std::printf("agent multi upload test OK: files=%zu\n", files.size());
+    return 0;
+}
+
+int agentTransferTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    {
+        AgentClient invalidClient("http://127.0.0.1:1");
+        std::string error;
+        require(!invalidClient.uploadJobFilesToAnotherAgent("http://127.0.0.1:1", "JOB", "http://other:5011", {},
+                                                            std::chrono::seconds(1), &error),
+                "empty job transfer should be rejected");
+    }
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent transfer server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    {
+    AgentClient transferClient(address);
+    std::string error;
+    const std::vector<std::string> paths{"scene.scenegz", "jobs.jobgz"};
+    error.clear();
+    require(transferClient.uploadJobFilesToAnotherAgent(address, "TRANSFER_JOB", "http://other:5011", paths,
+                                                         std::chrono::seconds(5), &error),
+            "job transfer should succeed: " + error);
+    const auto request = service.transferSnapshot();
+    require(request.jobId == "TRANSFER_JOB", "transfer job id mismatch");
+    require(request.anotherAgent == "http://other:5011", "transfer target agent mismatch");
+    require(request.paths == paths, "transfer file paths mismatch");
+
+    error.clear();
+    require(!transferClient.uploadJobFilesToAnotherAgent(address, "TRANSFER_JOB", "http://other:5011", {"fail"},
+                                                          std::chrono::seconds(5), &error),
+            "failed job transfer should fail");
+    require(error.find("transfer failure") != std::string::npos, "transfer failure message missing: " + error);
+    std::printf("agent transfer test OK: files=%zu\n", paths.size());
+    }
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    return 0;
+}
+
+int agentDownloadTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent download server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_agent_download_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    AgentClient client(address);
+    std::string error;
+    const std::filesystem::path target = directory / "result.lmgz";
+    require(client.downloadFile(address, "DOWNLOAD_JOB", "remote/result.lmgz", target, std::chrono::seconds(5),
+                                &error),
+            "download should succeed: " + error);
+    require(readTextFile(target) == "hello world", "downloaded payload mismatch");
+    const auto request = service.downloadSnapshot();
+    require(request.first == "DOWNLOAD_JOB", "download job id mismatch");
+    require(request.second == "remote/result.lmgz", "download path mismatch");
+
+    const std::filesystem::path missingTarget = directory / "missing.lmgz";
+    error.clear();
+    require(!client.downloadFile(address, "DOWNLOAD_JOB", "missing", missingTarget, std::chrono::seconds(5), &error),
+            "missing download should fail");
+    require(error.find("download file not found") != std::string::npos, "missing download error is not actionable: " + error);
+    require(!std::filesystem::exists(missingTarget), "failed download left a target file");
+
+    const std::filesystem::path failTarget = directory / "fail.lmgz";
+    error.clear();
+    require(!client.downloadFile(address, "DOWNLOAD_JOB", "fail", failTarget, std::chrono::seconds(5), &error),
+            "failed download should fail");
+    require(error.find("download failed") != std::string::npos, "download failure message missing: " + error);
+    require(!std::filesystem::exists(failTarget), "failed download left a target file");
+
+    const std::filesystem::path emptyTarget = directory / "empty.lmgz";
+    error.clear();
+    require(client.downloadFile(address, "DOWNLOAD_JOB", "empty", emptyTarget, std::chrono::seconds(5), &error),
+            "empty download should succeed: " + error);
+    require(std::filesystem::is_regular_file(emptyTarget) && std::filesystem::file_size(emptyTarget) == 0u,
+            "empty download payload mismatch");
+
+    const std::filesystem::path shortTarget = directory / "short.lmgz";
+    error.clear();
+    require(client.downloadFile(address, "DOWNLOAD_JOB", "short", shortTarget, std::chrono::seconds(5), &error),
+            "short download should succeed: " + error);
+    require(readTextFile(shortTarget) == "short", "DataDone payload was not written");
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    std::printf("agent download test OK: bytes=11\n");
+    return 0;
+}
+
+int agentMultiDownloadTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent multi-download server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_agent_multi_download_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    AgentClient client(address);
+    const std::vector<AgentDownloadFile> downloads = {
+        {"alpha", directory / "alpha.lmgz"},
+        {"empty", directory / "empty.lmgz"},
+        {"short", directory / "short.lmgz"},
+    };
+    std::string error;
+    require(client.downloadMultiFiles(address, "MULTI_DOWNLOAD_JOB", downloads, std::chrono::seconds(5), &error),
+            "multi download should succeed: " + error);
+    require(readTextFile(downloads[0].localPath) == "hello world", "multi download payload mismatch");
+    require(std::filesystem::is_regular_file(downloads[1].localPath) &&
+                std::filesystem::file_size(downloads[1].localPath) == 0u,
+            "multi download empty payload mismatch");
+    require(readTextFile(downloads[2].localPath) == "short", "multi download DataDone payload was not written");
+
+    const auto request = service.multiDownloadSnapshot();
+    require(request.first == "MULTI_DOWNLOAD_JOB", "multi download job id mismatch");
+    require(request.second == std::vector<std::string>{"alpha", "empty", "short"},
+            "multi download file paths mismatch");
+
+    const std::vector<AgentDownloadFile> missing = {
+        {"missing", directory / "missing.lmgz"},
+    };
+    error.clear();
+    require(!client.downloadMultiFiles(address, "MULTI_DOWNLOAD_JOB", missing, std::chrono::seconds(5), &error),
+            "missing multi download should fail");
+    require(error.find("multi download file not found") != std::string::npos,
+            "multi download missing error is not actionable: " + error);
+    require(!std::filesystem::exists(missing[0].localPath), "failed multi download left a target file");
+
+    const std::vector<AgentDownloadFile> failed = {
+        {"fail", directory / "fail.lmgz"},
+    };
+    error.clear();
+    require(!client.downloadMultiFiles(address, "MULTI_DOWNLOAD_JOB", failed, std::chrono::seconds(5), &error),
+            "failed multi download should fail");
+    require(error.find("multi download failed") != std::string::npos,
+            "multi download failure message missing: " + error);
+
+    const std::vector<AgentDownloadFile> streamError = {
+        {"errmsg", directory / "errmsg.lmgz"},
+    };
+    error.clear();
+    require(!client.downloadMultiFiles(address, "MULTI_DOWNLOAD_JOB", streamError, std::chrono::seconds(5), &error),
+            "multi download errMsg should fail");
+    require(error.find("multi download stream failure") != std::string::npos,
+            "multi download errMsg missing: " + error);
+
+    const std::vector<AgentDownloadFile> badHash = {
+        {"badhash", directory / "badhash.lmgz"},
+    };
+    error.clear();
+    require(!client.downloadMultiFiles(address, "MULTI_DOWNLOAD_JOB", badHash, std::chrono::seconds(5), &error),
+            "multi download hash mismatch should fail");
+    require(error.find("fileHash mismatch") != std::string::npos,
+            "multi download hash error missing: " + error);
+    require(!std::filesystem::exists(badHash[0].localPath), "hash mismatch left a target file");
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    std::printf("agent multi-download test OK: files=%zu\n", downloads.size());
+    return 0;
+}
+
+int agentDownloadFilesTest() {
+    const auto require = [](bool condition, const std::string& message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    FakeAgentService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    require(server != nullptr && port != 0, "failed to start fake Agent download-files server");
+    const std::string address = "http://127.0.0.1:" + std::to_string(port);
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawn_agent_download_files_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    AgentClient client(address);
+    const std::vector<AgentDownloadFile> downloads = {
+        {"alpha", directory / "alpha.lmgz"},
+        {"empty", directory / "empty.lmgz"},
+        {"short", directory / "short.lmgz"},
+    };
+    std::string error;
+    require(client.downloadFiles(address, "DOWNLOAD_FILES_JOB", downloads, std::chrono::seconds(5), &error),
+            "batch download should succeed: " + error);
+    require(readTextFile(downloads[0].localPath) == "hello world", "batch download payload mismatch");
+    require(std::filesystem::is_regular_file(downloads[1].localPath) &&
+                std::filesystem::file_size(downloads[1].localPath) == 0u,
+            "batch download empty payload mismatch");
+    require(readTextFile(downloads[2].localPath) == "short", "batch download DataDone payload was not written");
+    const auto request = service.multiDownloadSnapshot();
+    require(request.first == "DOWNLOAD_FILES_JOB", "batch download job id mismatch");
+    require(request.second == std::vector<std::string>{"alpha", "empty", "short"},
+            "batch download file paths mismatch");
+
+    const std::vector<AgentDownloadFile> fallback = {
+        {"short", directory / "fallback_short.lmgz"},
+        {"empty", directory / "fallback_empty.lmgz"},
+    };
+    error.clear();
+    require(client.downloadFiles(address, "MULTI_UNSUPPORTED_JOB", fallback, std::chrono::seconds(5), &error),
+            "single-file fallback should succeed: " + error);
+    require(readTextFile(fallback[0].localPath) == "short", "fallback single download payload mismatch");
+    require(std::filesystem::is_regular_file(fallback[1].localPath) &&
+                std::filesystem::file_size(fallback[1].localPath) == 0u,
+            "fallback single download empty payload mismatch");
+
+    server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
+    server->Wait();
+    std::printf("agent download files test OK: multi=%zu fallback=%zu\n", downloads.size(), fallback.size());
+    return 0;
+}
+#endif
 
 int goldenStructTest(const std::filesystem::path& dir) {
     const nlohmann::json manifest = nlohmann::json::parse(readTextFile(dir / "expected.json"));
@@ -2932,8 +4616,8 @@ int roundtrip(const std::filesystem::path& scenePath, const std::filesystem::pat
     const std::vector<uint8_t> jobsFileBytes = readFile(jobsPath);
     const bool sceneGzip = sceneFileBytes.size() >= 2 && sceneFileBytes[0] == 0x1F && sceneFileBytes[1] == 0x8B;
     const bool jobsGzip = jobsFileBytes.size() >= 2 && jobsFileBytes[0] == 0x1F && jobsFileBytes[1] == 0x8B;
-    const std::vector<uint8_t> sceneBytes = sceneGzip ? gzipDecompressStored(sceneFileBytes) : sceneFileBytes;
-    const std::vector<uint8_t> jobsBytes = jobsGzip ? gzipDecompressStored(jobsFileBytes) : jobsFileBytes;
+    const std::vector<uint8_t> sceneBytes = sceneGzip ? gzipDecompress(sceneFileBytes) : sceneFileBytes;
+    const std::vector<uint8_t> jobsBytes = jobsGzip ? gzipDecompress(jobsFileBytes) : jobsFileBytes;
 
     Reader sceneReader(sceneBytes);
     const int32_t sceneVersion = sceneReader.version();
@@ -2955,17 +4639,17 @@ int roundtrip(const std::filesystem::path& scenePath, const std::filesystem::pat
 
     const bool scenePayloadOk = sceneWriter.bytes() == sceneBytes;
     const bool jobsPayloadOk = jobsWriter.bytes() == jobsBytes;
-    const bool sceneGzipOk = !sceneGzip || gzipCompressStored(sceneBytes) == sceneFileBytes;
-    const bool jobsGzipOk = !jobsGzip || gzipCompressStored(jobsBytes) == jobsFileBytes;
-    const bool sceneOk = scenePayloadOk && sceneGzipOk;
-    const bool jobsOk = jobsPayloadOk && jobsGzipOk;
+    const bool sceneGzipStored = sceneGzip && gzipCompressStored(sceneBytes) == sceneFileBytes;
+    const bool jobsGzipStored = jobsGzip && gzipCompressStored(jobsBytes) == jobsFileBytes;
+    const bool sceneOk = scenePayloadOk;
+    const bool jobsOk = jobsPayloadOk;
     std::printf("%s: version=%d bytes=%zu gzip=%s roundtrip=%s\n", scenePath.filename().string().c_str(), sceneVersion,
-                sceneBytes.size(), sceneGzip ? "stored" : "no", sceneOk ? "OK" : "DIFF");
+                sceneBytes.size(), sceneGzip ? (sceneGzipStored ? "stored" : "deflate") : "no", sceneOk ? "OK" : "DIFF");
     if (!scenePayloadOk) {
         printFirstDiff(sceneBytes, sceneWriter.bytes());
     }
     std::printf("%s: version=%d bytes=%zu gzip=%s roundtrip=%s\n", jobsPath.filename().string().c_str(), jobsVersion,
-                jobsBytes.size(), jobsGzip ? "stored" : "no", jobsOk ? "OK" : "DIFF");
+                jobsBytes.size(), jobsGzip ? (jobsGzipStored ? "stored" : "deflate") : "no", jobsOk ? "OK" : "DIFF");
     if (!jobsPayloadOk) {
         printFirstDiff(jobsBytes, jobsWriter.bytes());
     }
@@ -2979,7 +4663,7 @@ int inspect(const std::filesystem::path& path) {
     Reader reader(bytes);
     const int32_t version = reader.version();
     std::printf("%s: version=%d bytes=%zu gzip=%s\n", path.filename().string().c_str(), version, bytes.size(),
-                gzip ? "stored" : "no");
+                gzip ? "yes" : "no");
     const std::string extension = path.extension().string();
     if (extension == ".scene" || extension == ".scenegz") {
         SceneInfo scene;
@@ -2987,6 +4671,19 @@ int inspect(const std::filesystem::path& path) {
         std::printf("  lights=%u meshes=%u materials=%u instances=%u lightmapInstances=%u\n", scene.header.numLights,
                     scene.header.numMeshes, scene.header.numMaterials, scene.header.numMeshInstances,
                     static_cast<unsigned>(scene.meshInstances.size()));
+        for (std::size_t index = 0; index < scene.meshes.size(); ++index) {
+            const MeshInfo& mesh = scene.meshes[index];
+            std::printf("  mesh[%zu] guid=%s indexInSceneInfo=%u uv=%d texcoords=%zu\n", index,
+                        formatGuid(mesh.header.guid).c_str(), mesh.header.indexInSceneInfo,
+                        mesh.header.lightmapUVIndex, mesh.texcoords.size());
+        }
+        for (std::size_t index = 0; index < scene.meshInstances.size(); ++index) {
+            const MeshInstanceInfo& instance = scene.meshInstances[index];
+            std::printf("  instance[%zu] guid=%s mesh=%u lightmapId=%u uv2Map=%u,%u uv2Offset=%u,%u\n", index,
+                        formatGuid(instance.header.guid).c_str(), instance.header.meshIndex, instance.header.lightmapId,
+                        instance.header.uv2MapSize.x, instance.header.uv2MapSize.y, instance.header.uv2Offset.x,
+                        instance.header.uv2Offset.y);
+        }
         std::printf("  consumed=%zu remaining=%zu\n", reader.offset(), reader.remaining());
     } else if (extension == ".mesh" || extension == ".meshgz") {
         MeshInfo mesh;
@@ -3008,8 +4705,15 @@ int inspect(const std::filesystem::path& path) {
     } else {
         BakingJobInputs jobs;
         readBakingJobInputs(reader, jobs, version);
-        std::printf("  lightmap2DJobs=%zu consumed=%zu remaining=%zu\n", jobs.lightmap2DJobs.size(), reader.offset(),
-                    reader.remaining());
+        std::printf("  lightmap2DJobs=%zu mappingGroupJobs=%zu consumed=%zu remaining=%zu\n", jobs.lightmap2DJobs.size(),
+                    jobs.mappingGroupJobs.size(), reader.offset(), reader.remaining());
+        for (const MappingGroupInput& group : jobs.mappingGroupJobs) {
+            std::printf("  mappingGroup guid=%s size=%d offsets=%zu\n", formatGuid(group.jobId).c_str(),
+                        group.groupedSize, group.mappingOffsets.size());
+            for (const Int3& offset : group.mappingOffsets) {
+                std::printf("    offset=%d,%d,%d\n", offset.x, offset.y, offset.z);
+            }
+        }
     }
     return 0;
 }
@@ -3327,6 +5031,19 @@ int lightmapAtlasImageTest() {
                     bx::halfFromFloat((mappedSource.incidentLighting.w + secondSource.incidentLighting.w) * 0.5f),
             "lightmap atlas dilation did not average valid neighbors");
 
+    LightmapAtlasOptions edgeOptions;
+    edgeOptions.edgePadding = 2u;
+    LightmapAtlasImageSet edgeImages;
+    require(buildLightmapAtlasImages(scene, jobs,
+                                     {LightmapAtlasResult{&output, LightmapAtlasPlacement{0u, 2u, 2u, 4u, 2u}}},
+                                     {8u}, &edgeImages, &error, edgeOptions),
+            "lightmap SH atlas edge padding build failed");
+    require(edgeImages.atlases[0].mapped[0u] == 1u &&
+                edgeImages.atlases[0].mapped[static_cast<std::size_t>(2u) * 8u + 0u] == 1u,
+            "lightmap SH atlas edge padding ring was not filled");
+    require(edgeImages.atlases[0].sh[0][0u] == bx::halfFromFloat(mappedSource.incidentLighting.x),
+            "lightmap SH atlas edge padding value mismatch");
+
     Lightmap2DOutput emptyOutput = output;
     for (Lightmap2DSample& sample : emptyOutput.lightmapData) {
         sample.shVectorR = Float4{};
@@ -3625,6 +5342,60 @@ int writeLightmapDdsCommand(int argc, char** argv) {
     return 0;
 }
 
+int writeTileAtlasCommand(int argc, char** argv) {
+    if (argc < 8 || ((argc - 5) % 3) != 0) {
+        throw std::runtime_error("--write-tile-atlas requires <out-dir> <atlas-size> <edge-padding> "
+                                 "<file.lmgz> <x> <y> ...");
+    }
+    const uint32_t atlasSize = parseUint32Argument(argv[3], "atlas size");
+    const uint32_t edgePadding = parseUint32Argument(argv[4], "edge padding");
+    const std::size_t count = static_cast<std::size_t>((argc - 5) / 3);
+    std::vector<Lightmap2DOutput> outputs;
+    outputs.reserve(count);
+    SceneInfo scene;
+    BakingJobInputs jobs;
+    std::vector<LightmapAtlasResult> results;
+    results.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const int base = 5 + static_cast<int>(index) * 3;
+        outputs.push_back(readLightmap2DOutputFile(argv[base]));
+        Lightmap2DOutput& output = outputs.back();
+        output.header.jobId = Guid{0u, 0u, static_cast<uint32_t>(index), 5u};
+        output.header.meshId = Guid{0x4D455348u, 0u, 0u, static_cast<uint32_t>(index + 1u)};
+        if (output.header.size.x <= 0 || output.header.size.y <= 0 ||
+            output.lightmapData.size() !=
+                static_cast<std::size_t>(output.header.size.x) * static_cast<std::size_t>(output.header.size.y)) {
+            throw std::runtime_error("lightmap result has an invalid size");
+        }
+        MeshInstanceInfo instance;
+        instance.header.guid = output.header.meshId;
+        scene.meshInstances.push_back(instance);
+        Lightmap2DInput input;
+        input.jobId = output.header.jobId;
+        input.meshId = output.header.meshId;
+        input.size = output.header.size;
+        jobs.lightmap2DJobs.push_back(input);
+        const uint32_t x = parseUint32Argument(argv[base + 1], "target x");
+        const uint32_t y = parseUint32Argument(argv[base + 2], "target y");
+        results.push_back(LightmapAtlasResult{&outputs.back(), LightmapAtlasPlacement{
+            0u, x, y, static_cast<uint32_t>(output.header.size.x), static_cast<uint32_t>(output.header.size.y)}});
+    }
+    std::error_code directoryError;
+    std::filesystem::create_directories(argv[2], directoryError);
+    LightmapAtlasImageSet images;
+    LightmapAtlasOptions options;
+    options.edgePadding = edgePadding;
+    std::string error;
+    if (!buildLightmapAtlasImages(scene, jobs, results, {atlasSize}, &images, &error, options)) {
+        throw std::runtime_error(error);
+    }
+    if (!writeLightmapAtlasDds(images, argv[2], &error)) {
+        throw std::runtime_error(error);
+    }
+    std::printf("wrote tile atlas: atlas=%u edgePadding=%u blocks=%zu\n", atlasSize, edgePadding, count);
+    return 0;
+}
+
 int verifyLightmap2DResultsCommand(const std::filesystem::path& jobDirectory, const std::string& guid) {
     std::string error;
     if (!verifyLightmap2DResultSet(jobDirectory, guid, true, &error)) {
@@ -3740,8 +5511,49 @@ int main(int argc, char** argv) {
         if (command == "--agent-upload" && argc == 6) {
             return agentUploadCommand(argc, argv);
         }
+        if (command == "--agent-cache-upload") {
+            return agentCacheUploadCommand(argc, argv);
+        }
+        if (command == "--agent-multi-upload") {
+            return agentMultiUploadCommand(argc, argv);
+        }
+        if (command == "--agent-transfer-job") {
+            return agentTransferCommand(argc, argv);
+        }
+        if (command == "--agent-download") {
+            return agentDownloadCommand(argc, argv);
+        }
+        if (command == "--agent-spec-test") {
+            return agentSpecTest();
+        }
+        if (command == "--agent-upload-test") {
+            return agentUploadTest();
+        }
+        if (command == "--agent-cache-test") {
+            return agentCacheTest();
+        }
+        if (command == "--agent-multi-upload-test") {
+            return agentMultiUploadTest();
+        }
+        if (command == "--agent-transfer-test") {
+            return agentTransferTest();
+        }
+        if (command == "--agent-download-test") {
+            return agentDownloadTest();
+        }
+        if (command == "--agent-multi-download-test") {
+            return agentMultiDownloadTest();
+        }
+        if (command == "--agent-download-files-test") {
+            return agentDownloadFilesTest();
+        }
 #else
-        if (command == "--agent-upload") {
+        if (command == "--agent-upload" || command == "--agent-cache-upload" || command == "--agent-multi-upload" ||
+            command == "--agent-transfer-job" || command == "--agent-download" || command == "--agent-spec-test" ||
+            command == "--agent-upload-test" ||
+            command == "--agent-cache-test" || command == "--agent-multi-upload-test" ||
+            command == "--agent-transfer-test" || command == "--agent-download-test" ||
+            command == "--agent-multi-download-test" || command == "--agent-download-files-test") {
             throw std::runtime_error("this build has no gRPC Agent support (configure with -DHBG_BUILD_DAWN_GRPC=ON)");
         }
 #endif
@@ -3750,6 +5562,9 @@ int main(int argc, char** argv) {
         }
         if (command == "--job-lifecycle-test") {
             return jobLifecycleTest();
+        }
+        if (command == "--protocol-version-test") {
+            return protocolVersionTest();
         }
         if (command == "--golden-test" && (argc == 2 || argc == 3)) {
             const std::filesystem::path dir =
@@ -3774,6 +5589,25 @@ int main(int argc, char** argv) {
         }
         if (command == "--export-t1" && (argc == 3 || argc == 4)) {
             return exportDirectionalPackage(argv[2], argc == 4 ? argv[3] : "11111111222222223333333344444444");
+        }
+        if (command == "--export-falloff" && (argc == 3 || argc == 4)) {
+            return exportPointFalloffPackage(argv[2], argc == 4 ? argv[3] : "11111111222222223333333344444444");
+        }
+        if (command == "--export-t1-color" && (argc == 3 || argc == 4)) {
+            return exportDirectionalColorPackage(argv[2], argc == 4 ? argv[3] : "11111111222222223333333344444444");
+        }
+        if (command == "--export-t3-tile" && (argc == 4 || argc == 5)) {
+            const uint32_t tileIndex = parseUint32Argument(argv[3], "tile index");
+            return exportSeamTilePackage(argv[2], tileIndex, argc == 5 ? argv[4] : "11111111222222223333333344444444");
+        }
+        if (command == "--export-t6" && (argc == 3 || argc == 4)) {
+            return exportT6Package(argv[2], argc == 4 ? argv[3] : "11111111222222223333333344444444");
+        }
+        if (command == "--t6-test") {
+            return t6PerfTest();
+        }
+        if (command == "--dawn-config-test" && (argc == 2 || argc == 3)) {
+            return dawnConfigTest(argc == 3 ? std::filesystem::path(argv[2]) : defaultDawnConfigPath());
         }
         if (command == "--write-lightmap-dds") {
             return writeLightmapDdsCommand(argc, argv);
@@ -3804,6 +5638,9 @@ int main(int argc, char** argv) {
         }
         if (command == "--merge-sidecar" || command == "--merge-lightmap-sidecar") {
             return mergeLightmapSidecarCommand(argc, argv);
+        }
+        if (command == "--write-tile-atlas") {
+            return writeTileAtlasCommand(argc, argv);
         }
         if (command == "--verify-sh-atlas-dds") {
             return verifyLightmapAtlasDdsCommand(argc, argv);

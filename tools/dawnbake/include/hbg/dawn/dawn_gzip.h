@@ -7,6 +7,7 @@
 
 namespace hbg::dawn {
 
+std::vector<uint8_t> gzipCompress(std::span<const uint8_t> data);
 std::vector<uint8_t> gzipCompressStored(std::span<const uint8_t> data);
 std::vector<uint8_t> gzipDecompressStored(std::span<const uint8_t> data);
 std::vector<uint8_t> gzipDecompress(std::span<const uint8_t> data);

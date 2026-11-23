@@ -70,7 +70,10 @@ struct DawnLaunchOptions {
     std::vector<std::filesystem::path> expectedResults;
     std::chrono::milliseconds resultGrace{std::chrono::seconds(2)};
     bool keepJob = false;
+    bool downloadAgentResults = false;
+    bool forceAgentDownload = false;
     std::string agentAddress;
+    std::string agentFileAddress;
     std::function<void(size_t completed, size_t total)> onProgress;
 };
 

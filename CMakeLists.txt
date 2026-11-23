@@ -17,6 +17,7 @@ option(HBG_BUILD_SHADER_TOOLS "Build bgfx shaderc tools" ON)
 option(HBG_BUILD_DAWNBAKE "Build the Dawn GI protocol tool" ON)
 option(HBG_BUILD_DAWN_GRPC "Build the optional Dawn Agent gRPC client" OFF)
 option(HBG_BUILD_VFX "Build the standalone VFX runtime library" ON)
+option(HBG_ENABLE_DRACO "Enable KHR_draco_mesh_compression decoding" ON)
 option(HBG_IDL_CODEGEN "Regenerate uniform declarations from config/uniforms/*.idl" ON)
 set(HBG_SHADERC "" CACHE FILEPATH "Path to an existing bgfx shaderc executable (optional)")
 
@@ -136,6 +137,7 @@ else()
 endif()
 
 add_library(hbg_asset STATIC
+    src/asset/animation.cpp
     src/asset/gltf_loader.cpp
     src/asset/material.cpp
     src/asset/mesh.cpp
@@ -154,6 +156,10 @@ target_link_libraries(hbg_asset
     PUBLIC hbg_gfx
     PRIVATE hbg_mikktspace bimg_decode ${HBG_NLOHMANN_JSON_TARGET}
 )
+if(HBG_ENABLE_DRACO)
+    target_link_libraries(hbg_asset PRIVATE ${HBG_DRACO_TARGET})
+    target_compile_definitions(hbg_asset PRIVATE HBG_HAS_DRACO=1)
+endif()
 hbg_target_options(hbg_asset)
 if(MSVC)
     target_compile_definitions(hbg_asset PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -274,10 +280,24 @@ endif()
 
 if(HBG_BUILD_VFX)
     add_subdirectory(vfx)
+    target_sources(hbg_app PRIVATE src/app/vfx_editor_ui.cpp)
+    target_compile_definitions(hbg_app PRIVATE
+        HBG_VFX_SHADERC_DEFAULT="${HBG_SHADER_COMPILER}"
+        HBG_VFX_BGFX_SOURCE_DEFAULT="${HBG_BGFX_SOURCE_DIR}"
+        HBG_VFX_SHADER_PACK_DEFAULT="${CMAKE_SOURCE_DIR}/shaders"
+    )
     if(TARGET hbg_vfx_adapter)
         target_link_libraries(hbg_app PUBLIC hbg_vfx_adapter)
     endif()
     if(TARGET hbg_vfx_runtime)
         target_link_libraries(hbg_app PUBLIC hbg_vfx_runtime)
     endif()
+    if(TARGET hbg_vfx_compiler)
+        target_link_libraries(hbg_app PUBLIC hbg_vfx_compiler)
+    endif()
+    if(TARGET hbg_vfx)
+        target_link_libraries(hbg_app PUBLIC hbg_vfx)
+    endif()
+else()
+    target_sources(hbg_app PRIVATE src/app/vfx_editor_ui_stub.cpp)
 endif()

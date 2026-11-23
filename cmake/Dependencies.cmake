@@ -4,6 +4,7 @@ set(HBG_BGFX_CMAKE_DIR "" CACHE PATH "Path to a local bgfx.cmake checkout")
 set(HBG_BGFX_SOURCE_DIR "" CACHE PATH "Path to the bgfx source checkout (used for example shaders)")
 set(HBG_GLFW_DIR "" CACHE PATH "Path to a local GLFW checkout")
 set(HBG_CGLTF_DIR "" CACHE PATH "Path to a local cgltf checkout")
+set(HBG_DRACO_DIR "" CACHE PATH "Path to a local Draco checkout")
 set(HBG_MIKKTSPACE_DIR "" CACHE PATH "Path to a local MikkTSpace checkout")
 set(HBG_NLOHMANN_JSON_DIR "" CACHE PATH "Path to a local nlohmann/json checkout")
 set(HBG_XATLAS_DIR "" CACHE PATH "Path to a local xatlas checkout")
@@ -68,6 +69,27 @@ else()
     )
     FetchContent_MakeAvailable(cgltf)
     set(HBG_CGLTF_SOURCE_DIR "${cgltf_SOURCE_DIR}")
+endif()
+
+if(HBG_ENABLE_DRACO)
+    set(DRACO_TESTS OFF CACHE BOOL "Disable Draco tests" FORCE)
+    set(DRACO_BUILD_EXECUTABLES OFF CACHE BOOL "Disable Draco tools" FORCE)
+    set(DRACO_INSTALL OFF CACHE BOOL "Disable Draco install" FORCE)
+    if(HBG_DRACO_DIR)
+        add_subdirectory(${HBG_DRACO_DIR} ${CMAKE_BINARY_DIR}/draco)
+    else()
+        FetchContent_Declare(
+            draco
+            GIT_REPOSITORY https://github.com/google/draco.git
+            GIT_TAG 1.5.9
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(draco)
+    endif()
+    if(NOT TARGET draco::draco)
+        message(FATAL_ERROR "hbg: Draco target not found; set HBG_DRACO_DIR to a local Draco checkout")
+    endif()
+    set(HBG_DRACO_TARGET draco::draco)
 endif()
 
 if(HBG_MIKKTSPACE_DIR)

@@ -379,6 +379,8 @@ def main() -> int:
         deferred_lighting_buffer_fragment = backend_root / "deferred_lighting_buffer.fs.bin"
         deferred_lighting_advanced_fragment = backend_root / "deferred_lighting_advanced.fs.bin"
         deferred_lighting_advanced_buffer_fragment = backend_root / "deferred_lighting_advanced_buffer.fs.bin"
+        deferred_lighting_advanced_ims_fragment = backend_root / "deferred_lighting_advanced_ims.fs.bin"
+        deferred_lighting_advanced_ims_buffer_fragment = backend_root / "deferred_lighting_advanced_ims_buffer.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting.fs.sc",
                        deferred_lighting_fragment, "fragment", backend, ["HBG_SHADOW_POINT_SAMPLER=1"],
                        args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
@@ -394,9 +396,20 @@ def main() -> int:
                        deferred_lighting_advanced_buffer_fragment, "fragment", backend,
                        ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_LIGHT_LIST_BUFFER=1"],
                        args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
+                       deferred_lighting_advanced_ims_fragment, "fragment", backend,
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_SHADOW_IMS_STAGE6=1"],
+                       args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_advanced.fs.sc",
+                       deferred_lighting_advanced_ims_buffer_fragment, "fragment", backend,
+                       ["HBG_ADVANCED_MATERIAL=1", "HBG_SHADOW_AREA_SAMPLER=1", "HBG_SHADOW_IMS_STAGE6=1",
+                        "HBG_LIGHT_LIST_BUFFER=1"], args.force, newest_input,
+                       d3d_skip_optimization=(backend == "dxbc"))
 
         deferred_variant_fragments = []
         deferred_variant_buffer_fragments = []
+        deferred_variant_ims_fragments = []
+        deferred_variant_ims_buffer_fragments = []
         deferred_variant_flags = [
             (1, 0), (1, 4), (1, 5), (1, 6), (1, 7), (1, 12), (1, 13), (1, 15),
             (13, 0), (13, 4), (13, 5), (13, 6), (13, 7),
@@ -425,6 +438,24 @@ def main() -> int:
             deferred_variant_fragments.append(fragment.relative_to(root / "shaders").as_posix())
             deferred_variant_buffer_fragments.append(buffer_fragment.relative_to(root / "shaders").as_posix())
 
+            if (material_flags & 0x7e) != 0:
+                ims_fragment = backend_root / f"deferred_lighting_variant_ims.fs.{variant}.bin"
+                ims_buffer_fragment = backend_root / f"deferred_lighting_variant_ims_buffer.fs.{variant}.bin"
+                ims_defines = defines + ["HBG_SHADOW_IMS_STAGE6=1"]
+                compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_variant.fs.sc",
+                               ims_fragment, "fragment", backend, ims_defines, args.force, newest_input,
+                               d3d_skip_optimization=(backend == "dxbc"))
+                compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/deferred_lighting_variant.fs.sc",
+                               ims_buffer_fragment, "fragment", backend, ims_defines + ["HBG_LIGHT_LIST_BUFFER=1"],
+                               args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+                deferred_variant_ims_fragments.append(ims_fragment.relative_to(root / "shaders").as_posix())
+                deferred_variant_ims_buffer_fragments.append(
+                    ims_buffer_fragment.relative_to(root / "shaders").as_posix())
+            else:
+                deferred_variant_ims_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+                deferred_variant_ims_buffer_fragments.append(
+                    buffer_fragment.relative_to(root / "shaders").as_posix())
+
         lit_material_flags_compute = backend_root / "lit_material_flags.cs.bin"
         lit_variant_indirect_clear_compute = backend_root / "lit_variant_indirect_clear.cs.bin"
         lit_variant_indirect_compute = backend_root / "lit_variant_indirect.cs.bin"
@@ -436,6 +467,7 @@ def main() -> int:
                        lit_variant_indirect_compute, "compute", backend, [], args.force, newest_input)
 
         deferred_variant_computes = []
+        deferred_variant_ims_computes = []
         for variant, (material_flags, light_flags) in enumerate(deferred_variant_flags):
             defines = [f"HBG_VARIANT_INDEX={variant}",
                        f"HBG_VARIANT_MATERIAL_FLAGS={material_flags}",
@@ -454,6 +486,16 @@ def main() -> int:
                            compute, "compute", backend, defines, args.force, newest_input,
                            d3d_skip_optimization=(backend == "dxbc"))
             deferred_variant_computes.append(compute.relative_to(root / "shaders").as_posix())
+
+            if (material_flags & 0x7e) != 0:
+                ims_compute = backend_root / f"deferred_lighting_variant_compute_ims.cs.{variant}.bin"
+                compile_shader(shaderc, root, bgfx_src,
+                               root / "shaders/passes/deferred_lighting_variant_compute.cs.sc",
+                               ims_compute, "compute", backend, defines + ["HBG_SHADOW_IMS_STAGE6=1"],
+                               args.force, newest_input, d3d_skip_optimization=(backend == "dxbc"))
+                deferred_variant_ims_computes.append(ims_compute.relative_to(root / "shaders").as_posix())
+            else:
+                deferred_variant_ims_computes.append(compute.relative_to(root / "shaders").as_posix())
 
         ssao_fragment = backend_root / "ssao.fs.bin"
         ssao_blur_fragment = backend_root / "ssao_blur.fs.bin"
@@ -775,6 +817,9 @@ def main() -> int:
         shadow_sat_vertical_compute = backend_root / "shadow_sat_vertical.cs.bin"
         shadow_evsm_blur_compute = backend_root / "shadow_evsm_blur.cs.bin"
         shadow_evsm_blur_moments_compute = backend_root / "shadow_evsm_blur_moments.cs.bin"
+        shadow_copy_depth_fragment = backend_root / "shadow_copy_depth.fs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_copy_depth.fs.sc",
+                       shadow_copy_depth_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_cull.cs.sc",
                        shadow_cull_compute, "compute", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_moments.cs.sc",
@@ -1010,6 +1055,10 @@ def main() -> int:
             "shadowEvsmBlurMoments": {
                 "compute": shadow_evsm_blur_moments_compute.relative_to(root / "shaders").as_posix(),
             },
+            "shadowCopyDepth": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": shadow_copy_depth_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "prepass": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": prepass_fragments,
@@ -1044,10 +1093,20 @@ def main() -> int:
                 "fragment": deferred_lighting_advanced_fragment.relative_to(root / "shaders").as_posix(),
                 "bufferFragment": deferred_lighting_advanced_buffer_fragment.relative_to(root / "shaders").as_posix(),
             },
+            "deferredLightingAdvancedIms": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": deferred_lighting_advanced_ims_fragment.relative_to(root / "shaders").as_posix(),
+                "bufferFragment": deferred_lighting_advanced_ims_buffer_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "deferredLightingVariant": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": deferred_variant_fragments,
                 "bufferFragments": deferred_variant_buffer_fragments,
+            },
+            "deferredLightingVariantIms": {
+                "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": deferred_variant_ims_fragments,
+                "bufferFragments": deferred_variant_ims_buffer_fragments,
             },
             "litMaterialFlags": {
                 "compute": lit_material_flags_compute.relative_to(root / "shaders").as_posix(),
@@ -1060,6 +1119,9 @@ def main() -> int:
             },
             "deferredLightingVariantCompute": {
                 "bufferComputes": deferred_variant_computes,
+            },
+            "deferredLightingVariantComputeIms": {
+                "bufferComputes": deferred_variant_ims_computes,
             },
             "ssao": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),

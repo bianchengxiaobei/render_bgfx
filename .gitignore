@@ -10,6 +10,11 @@ gfx_test_screenshot.png
 __pycache__/
 *.pyc
 
+# Dawn bake scratch
+/Jobs/
+/_FileCache/
+/atlasout.txt
+
 # C# tooling (tools/dawnbake/golden)
 tools/dawnbake/**/bin/
 tools/dawnbake/**/obj/

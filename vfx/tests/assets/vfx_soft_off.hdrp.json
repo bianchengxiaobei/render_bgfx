@@ -1,0 +1,13 @@
+{
+  "vfx": [
+    {
+      "name": "SoftVisualOff",
+      "asset": "soft_visual_off.vfxb",
+      "position": [0.0, 0.0, 0.0],
+      "play": true,
+      "playRate": 1.0,
+      "seed": 7,
+      "properties": []
+    }
+  ]
+}

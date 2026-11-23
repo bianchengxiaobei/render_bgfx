@@ -1,0 +1,13 @@
+{
+  "vfx": [
+    {
+      "name": "EmptyVisual",
+      "asset": "empty_visual.vfxb",
+      "position": [0, 0, 1],
+      "play": true,
+      "playRate": 1.0,
+      "seed": 0,
+      "properties": []
+    }
+  ]
+}

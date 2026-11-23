@@ -177,7 +177,7 @@ bool bakeOne(const std::filesystem::path& input, const std::filesystem::path& ou
              const Options& options, bool check) {
     vfx::CompileResult result = vfx::compileGraphFile(input, makeCompileOptions(options));
     if (!result.ok()) {
-        std::cerr << "vfxbake: " << input.string() << ": " << result.error << '\n';
+        std::cerr << "vfxbake: " << result.error << '\n';
         return false;
     }
     if (check) {

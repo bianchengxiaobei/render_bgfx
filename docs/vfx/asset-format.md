@@ -2,7 +2,7 @@
 
 > 本文定义 `vfxbake` 的输入 `.vfx.json` 与输出 `.vfxb`。
 > 原则：JSON 面向编辑器/手写；`.vfxb` 面向运行时，确定性、无外部依赖、无绝对路径。
-> 版本：schema 1 / binary 1。任何不兼容修改必须提升版本并在 reader 中拒绝旧/新格式混用。
+> 版本：schema 1 / binary 6。任何不兼容修改必须提升版本并在 reader 中拒绝旧/新格式混用。
 
 ---
 
@@ -25,7 +25,7 @@
 | `name` | string | 是 | 资产名（仅调试/字符串表） |
 | `properties` | array | 否 | 暴露属性 |
 | `attributes` | array | 否 | 自定义粒子属性（最多 8 个，见 §3） |
-| `subgraphs` | array | 否 | 子图定义（V1.3） |
+| `subgraphs` | array | 否 | 子图定义（V1.3.1；parse 时展开） |
 | `systems` | array | 是 | 至少 1 个 system |
 
 ## 2. 属性（properties）
@@ -110,11 +110,11 @@
 | `capacity` | 1..1048576；编译期按 64 对齐（内部 capacity 可能大于请求值） |
 | `space` | `world` / `local`（local 使用 effect transform） |
 | `bounds.mode` | V1 只支持 `manual`；`center`/`extents` 必填；缺省 `bounds` 为 center `[0,0,0]`、extents `[1,1,1]` |
-| `sort.mode` | `none` / `distance` / `custom`；`order` = `ascending` / `descending` |
+| `sort.mode` | `none` / `distance` / `custom`；`order` = `ascending` / `descending`。V1.2.2 `distance` 的 key 为相机空间平方距离；`custom` 读取系统声明的 scalar `sortKey` 属性 |
 | `spawner.rate` | 每秒粒子数；可为 0 |
 | `spawner.bursts` | 单次（无 period）或周期（有 period/repeat）；`time` 为首次触发时间，`repeat` 为总次数上限（0=无限） |
 | `init.blocks` / `update.blocks` | 块列表（见 §6） |
-| `events` | V1.2；`receive` 引用事件名与属性映射；`emit` 定义死亡/更新事件 |
+| `events` | V1.2.3/4；`receive`/`emit` 按事件名连接；无 emit 的 receive 是 CPU 事件；属性映射见 §5.2 |
 | `outputs` | 至少 1 个（V1 只支持 quad） |
 
 ## 5. Output
@@ -125,7 +125,10 @@
   "lit": false,
   "blend": "additive",
   "texture": "MainTex",
-  "softParticles": false,
+  "softParticles": true,
+  "softDistance": 1.0,
+  "metallic": "Metallic",
+  "roughness": 0.5,
   "sort": "distance"
 }
 ```
@@ -136,11 +139,84 @@
 | `lit` | false = unlit；true = 复用 HDRP 光照 |
 | `blend` | `alpha` / `additive` / `premultiply` |
 | `texture` | property 名称；缺省使用白色纹理 |
-| `softParticles` | 需要 depth；`softDistance` 可在 output 扩展 |
-| `sort` | 覆盖 system 排序；`none` 表示不排序 |
+| `softParticles` | V1.4.2；需要 scene depth；透明 blend；缺省 false |
+| `softDistance` | V1.4.2；>0（最小 0.001），缺省 0.1；与粒子 eye depth 的 fade 距离 |
+| `metallic` | V1.4.1；0..1 常量或 float property 名；缺省 0 |
+| `roughness` | V1.4.1；0..1 常量或 float property 名；缺省 0.5 |
+| `sort` | 必须与 `system.sort.mode` 一致；V1.2.2 所有 output 共享 system 排序/indirection，`none` 仅用于 system 未排序 |
 
-- Lit 额外属性（V1.4）：`metallic`、`roughness`（float property 或常量），缺省 0/0.5。
+- V1.4.1 lit output：FS 填充 `SurfaceData`，调用 `hbgSampleDirectionalShadow`/`hbgEvaluateLightLoop`；metallic/roughness 支持常量或 float property，property 通过 `u_vfxProp_*` 在运行时上传。VFX lit 使用全局 light-list fallback，point/area shadow sampler 不启用（12/13 保留给 attribute/indirection）。
+- V1.4.2 soft output：FS 在 stage 4 采样 `s_vfxSceneDepth`，用 `u_vfxSoftParams`（x=distance，yz=1/viewport）和 `u_global_view`/`u_global_invViewProj` 线性化 scene/particle depth；`fade=smoothstep(saturate((sceneZ-selfZ)/softDistance))`。输出 pass 显式 `readTexture(depth)`，depth attachment 使用 read-only flag。无 depth 时绑定白色 fallback。
 - 输出材质/纹理由适配层绑定，不写入 `.vfxb`。
+
+### 5.1 排序语义（V1.2.2）
+
+- `distance`：key = `dot(worldPosition - cameraPosition, worldPosition - cameraPosition)`；`ascending` 近到远，`descending` 远到近。
+- `custom`：key = scalar `sortKey` 属性；没有该属性时编译失败。
+- key 相等时始终按 `particleIndex` 升序（tie-break），与 `Sort.compute` 一致。
+- `capacity <= 4096`：一次 bitonic dispatch 排序并直接写 indirection。
+- `capacity > 4096`：4096 个 KVP 为一块，逐块 bitonic pre-pass 写 `sortScratch`，再 merge 到最终 indirection；每块单独 dispatch，避免大容量 LDS 并发超限。
+- V1.2.2 所有 output 共享 system 排序；`output.sort` 只用于校验，不能覆盖 system 排序。
+
+### 5.2 GPU 事件（V1.2.3）
+
+事件通过名称连接：一个 system 的 `events.emit` 与另一个 system 的 `events.receive` 使用同一 `name`。V1.2.3 限制：
+
+- 每个 system 最多一个 `emit`、一个 `receive`，且同一 system 不能同时收发（事件链留到 V1.3）。
+- 一个事件名最多一个 producer、一个 consumer；receiver 的 `spawner.rate` 必须为 0 且 `bursts` 为空。
+- 事件 payload 最多 4 个属性；每个属性占一个 `float4` slot（标量/uint/int/bool 转为 float，V1 有精度限制）。
+- event link 容量 = receiver 的 64 对齐 capacity；总事件缓冲超过 64 KiB 时编译器拒绝（V1 单 storage 限制）。
+- 只有 `receive`、没有同名 `emit` 的事件是 **CPU 事件**；CPU receiver 必须显式声明 `receive.attributes`，且不能有 CPU spawner。
+
+```json
+"events": {
+  "emit": [{
+    "name": "death",
+    "attributes": {
+      "position": {"op": "attr", "name": "position"},
+      "color": {"op": "attr", "name": "color"}
+    }
+  }],
+  "receive": [{
+    "name": "death",
+    "attributes": {
+      "position": "position",
+      "color": "color"
+    }
+  }]
+}
+```
+
+- `emit.attributes`：payload 名称 → 在 producer update 结束后的表达式；表达式使用 producer 的粒子属性。
+- `receive.attributes`：consumer 属性名 → emit payload 名称。省略/空对象时按同名属性自动映射。
+- 未声明 `trigger_event` 时，producer 粒子在本次 update 从 alive 变为 dead 时自动发 1 个事件（死亡子发射器）。
+- `trigger_event` block（仅 update）：`event` 必填且匹配 emit 名，`count` 可选（默认 1），`condition` 可选。无 `condition` 时在死亡转换时触发；有 `condition` 时按表达式触发（V1 表达式没有比较运算，可由 bool 属性/select 构造）。
+- producer 对每个粒子最多写 `capacity` 个事件；超过 receiver capacity 的 accepted 上限后写入 `dropped` 计数，不越界。
+- 事件索引缓冲保存 producer 的 `particleIndex`，payload 在 emit 时复制到独立 event attribute slots；consumer init 在正常 init blocks 之后应用 payload，因此 payload 可覆盖 init 属性。
+- V1.2.3 的 event buffer 是每个 effect 一份全局 storage；每个链路头部 5 个 uint：`elementCount`、accepted `totalCount`、本帧全局 `prefix`、`dropped`、`frameCount`，随后 `capacity` 个 source index 和 `capacity * 16` 个 payload words。
+- 每帧执行顺序：reset（首帧）→ 无事件输入的 producer simulation → Sklansky event prefix sum（128 threads）→ consumer simulation。prefix 将本帧 accepted 事件数累加到全局 base，并在 consumer init 前把 `elementCount` 清零；`totalCount` 累计 accepted 事件，`dropped` 记录被 capacity 丢弃的尝试。
+- `Diagnostics::eventCount` 在 V1.2.3/4 只表示参与的事件链数量；V1.4.4 `FrameDiagnostics.vfx_events` 仍暴露事件链数；精确事件数继续通过 reference 的 event buffer `frameCount`/`totalCount` 读回，默认帧循环不做同步读回。
+
+#### CPU 事件（V1.2.4）
+
+```json
+"events": {
+  "receive": [{
+    "name": "hit",
+    "attributes": {
+      "position": "position",
+      "color": "color"
+    }
+  }]
+}
+```
+
+- 没有同名 `emit` 的 `receive` 编译为 CPU event link；`Effect::sendEvent("hit", attributes)` 入队。
+- `receive.attributes` 的 key 是 consumer 属性，value 是 CPU `EventAttribute.name`。必须显式声明；最多 4 个 payload 属性。
+- 缺少某个 event attribute 时使用 consumer 属性默认值；类型不兼容或未知事件名通过 runtime error callback 报告，事件不进入队列。
+- runtime 维护 CPU pending queue 与 `vfx.cpu.events` staging buffer；每帧按发送顺序写入 event slot，再通过 `event_cpu_upload`（task 13）复制到全局 `vfx.events`，随后同一 Sklansky prefix/consumer init 路径消费。
+- CPU 事件容量同样是 receiver 的 64 对齐 capacity；超出队列容量的调用写入 `dropped`，不越界。
+- 每次 `sendEvent` 计 1 个事件；V1 不支持 CPU 事件属性数组/多属性集。
 
 ## 6. Block 列表（V1）
 
@@ -180,6 +256,7 @@ V1 建议直接用 `system.spawner` 的 rate/bursts；块形式保留给后续�
 | `set_scale` | `scale` |
 | `set_attribute` | `attribute`, `value`（自定义属性） |
 | `set_random` | `attribute`, `min`, `max` |
+| `custom_hlsl` | `code`, `reads?`, `writes?`（V1.3.2） |
 
 ### 6.3 Update
 
@@ -193,14 +270,17 @@ V1 建议直接用 `system.spawner` 的 rate/bursts；块形式保留给后续�
 | `integrate` | — | `position += velocity*dt` |
 | `age` | — | `age += dt` |
 | `reap` | `condition`（默认 `age >= lifetime`） | 标记死亡 |
+| `trigger_event` | `event`, `count?`, `condition?` | 触发 emit 事件；无 condition 时死亡触发，V1.2.3 |
 | `collision_plane` | `normal`, `distance`, `mode`, `restitution`, `friction` | 解析平面 |
 | `collision_sphere` | `center`, `radius`, `mode`, `restitution`, `friction` | 解析球 |
-| `color_over_life` | `gradient` | 采样 gradient |
-| `alpha_over_life` | `curve` | 采样 curve |
-| `size_over_life` | `curve` | 采样 curve |
-| `custom_hlsl` | `code`, `reads`, `writes` | 受限 HLSL |
+| `color_over_life` | `gradient` | `t = saturate(age/lifetime)`；覆盖 RGB |
+| `alpha_over_life` | `curve` | `t = saturate(age/lifetime)`；覆盖 alpha |
+| `size_over_life` | `curve` | `t = saturate(age/lifetime)`；覆盖 size |
+| `custom_hlsl` | `code`, `reads?`, `writes?` | 受限 HLSL；init/update 均可用 |
 
-碰撞 `mode`：`kill` / `bounce` / `stick`。
+碰撞 `mode`：`kill` / `bounce` / `stick`，默认 `bounce`；`restitution` 默认 `0.1`，`friction` 默认 `0`。`normal` 在运行时归一化，`distance` 是归一化平面到原点的有符号距离。`kill` 标记死亡；`bounce` 反射法线速度并按 friction 衰减切向速度；`stick` 将粒子放到碰撞点并清零速度。当前不使用粒子半径，也不写碰撞事件。
+
+Over-life 块采样对应 Curve/Gradient property；`t = saturate(age / max(lifetime, 1e-6))`。`color_over_life` 仅覆盖 RGB，alpha 由 `alpha_over_life` 独立控制（原 `ColorOverLife` 的 ColorAndAlpha/Multiply composition 当前简化，见 D14）。Curve/Gradient 的 LUT 采样为 `u = (t * 255 + 0.5) / 256`，同类型 property 打包为 `256 × N` 纹理、row 顺序为 JSON property 顺序；compute stage 9=curve、10=gradient。
 
 V1.1.2 力场限制：
 - 原项目 `Force`/`Drag`/`Turbulence` 的 `/ mass` 在 V1.1.2 固定 `mass = 1.0`（当前没有 mass 属性/Set Mass 块）；Gravity 原本就不除 mass。
@@ -249,7 +329,7 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 - `attr/property/time/dt/lifetime_ratio/random/noise/sample_curve/sample_gradient` 不做常量折叠；`random` 必须由 seed（缺省 0）确定 code，不能把编译期随机数写死。
 - 表达式内部引用错误、类型错误、未知参数/op 在解析阶段报错，路径如 `systems[0].init.blocks[0].alpha.b`。
 - 生成的 HLSL 使用 `VFX_ATTR`/`VFX_PROP`/`VFX_TIME`/`VFX_DT`/`VFX_LIFETIME_RATIO`/`VFX_RAND*`/`VFX_NOISE`/`VFX_SAMPLE_*` 宏；V1.0b.5 已由 compiler 生成对应宏、buffer 声明和属性 local/store。
-- `sample_texture` 属于 V1.1；`sample_curve/gradient` 的 name 当前必须是 curve/gradient property。
+- `sample_texture` 属于 V1.1；`sample_curve/gradient` 的 name 当前必须是 curve/gradient property，V1.1.4 起在 GPU 上使用 stage 9/10 的 LUT 双线性采样；CPU reference 仅对 over-life block 做控制点求值。
 
 ### 7.2 示例
 
@@ -264,39 +344,51 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
   "b": { "op": "sample_curve", "curve": "SizeCurve", "t": { "op": "lifetime_ratio" } } }
 ```
 
-## 8. 子图（V1.3）
+## 8. 子图（V1.3.1）
 
 ```json
 {
-  "name": "RandomVelocity",
-  "inputs": [{"name":"Speed","type":"float","default":1}],
-  "outputs": [{"name":"Velocity","type":"float3"}],
+  "name": "OffsetColor",
+  "inputs": [
+    {"name":"Color", "type":"vector3", "default":[0.1,0.1,0.1]},
+    {"name":"Offset","type":"vector3", "default":[0.1,0.2,0.3]}
+  ],
+  "outputs": [{
+    "name":"Result", "type":"vector3",
+    "value": {"op":"add", "a":{"op":"input","name":"Color"},
+              "b":{"op":"input","name":"Offset"}}
+  }],
   "init": {"blocks": []},
   "update": {"blocks": []}
 }
 ```
 
-- 父图通过 `{"op":"subgraph","name":"RandomVelocity","args":{"Speed":...}}` 调用。
-- V1 只支持纯函数子图（无 spawner/output/事件），递归深度 ≤16，禁止循环。
-- 编译器展开后按普通 block 处理；`.vfxb` 不保留子图结构（只保留调试名）。
+- 表达式调用：`{"op":"subgraph","name":"OffsetColor","args":{"Color":...},"output":"Result"}`。只有一个 output 时可省略 `output`；多个 output 必须指定。
+- 纯函数子图的 `value` 使用 `{"op":"input","name":"Color"}`（`arg` 同义）引用输入；为兼容手写图，子图内部的 `{"op":"property","name":"Color"}` 也会优先绑定同名 input。未传 args 时使用 input `default`，没有 default 则报错。
+- block 子图调用：`{"type":"subgraph","name":"Fall","args":{"Gravity":...}}`；按父 block 所在 init/update stage 展开子图对应的 `init.blocks`/`update.blocks`。子图 block 可递归调用其他子图。
+- V1 子图不能包含 spawner/output/事件；递归深度 ≤16，禁止直接或间接循环；循环/过深/未知 input/output/缺失参数均带 JSON 路径报错。
+- 展开在 `parseGraphJson` 阶段完成：`graph.subgraphs` 被清空，系统 block/表达式替换为普通内容；`.vfxb` 不保留子图结构。
 
-## 9. 自定义 HLSL（V1.3）
+## 9. 自定义 HLSL（V1.3.2）
+
+`custom_hlsl` 是 init/update 的语句片段，不是完整函数定义：
 
 ```json
 {
   "type": "custom_hlsl",
-  "reads": ["position", "velocity", "age"],
-  "writes": ["velocity"],
-  "code": "velocity += VFX_ATTR(velocity) * 0.5 * VFX_DT;"
+  "reads": ["position", "velocity"],
+  "writes": ["position"],
+  "code": "VFX_SET_ATTR(position, VFX_ATTR(position) + VFX_ATTR(velocity) * VFX_DT);"
 }
 ```
 
-限制：
-- 只能使用注入宏与内置数学函数；不能声明 buffer/uniform/texture；不能 `#include`/`#define`。
-- 不能修改未在 `writes` 声明的属性；`reads` 未声明的属性不可访问。
-- 不能使用 `discard`（output FS 的自定义除外；V1 不允许）。
-- 必须同时通过 dxbc + spirv 编译；否则烘焙失败。
-- 编译器在生成的 kernel 中插入一个显式作用域 `{ ... }`，避免变量泄漏。
+- `code` 必填（≤32 KiB）；`reads`/`writes` 可选，名称必须是内置或 `attributes` 声明的属性。
+- 读属性必须用 `VFX_ATTR(name)`，且 `name` 在 `reads`；写属性必须用 `VFX_SET_ATTR(name, value)`，且 `name` 在 `writes`。读改写需要同时声明 reads/writes。
+- 注入宏：`VFX_ATTR(name)`、`VFX_SET_ATTR(name, value)`、`VFX_PROP(name)`、`VFX_TIME`、`VFX_DT`；`VFX_LIFETIME_RATIO` 需要声明 reads `age` 与 `lifetime`。
+- 禁止直接访问生成的 `a_*`、`attributes.Load_*`/`Store_*`、`s_vfx*`/`u_vfx*`、`gl_*`；禁止 `#` 预处理指令（含 include/define）、`buffer`/`uniform`/texture/sampler 声明、`return`/`discard`/barrier/static/volatile。
+- 编译器在 init/update kernel 中生成显式作用域 `{ ... }`，避免局部变量泄漏；自定义代码只通过声明的 reads/writes 影响属性。
+- 语法/类型最终由 shaderc 的 dxbc + spirv 双后端编译把关；失败时资产烘焙失败。校验错误包含 JSON 路径和 HLSL 行/列（`code:line:column`）。
+- V1 不支持函数定义、include、平台特定 intrinsic、output stage 自定义块；完整 HLSL 语义留给后续版本。
 
 ## 10. `.vfxb` 二进制
 
@@ -305,7 +397,7 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 偏移 | 大小 | 字段 |
 |---|---|---|
 | 0 | 4 | magic `VFXB` |
-| 4 | 2 | version = 1 |
+| 4 | 2 | version = 6 |
 | 6 | 2 | headerSize = 64 |
 | 8 | 4 | flags（bit0=little-endian；bit1 保留 debug） |
 | 12 | 4 | sectionCount = 9 |
@@ -329,8 +421,8 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 5 | BUFFERS | `u32 count` + 24B/条 |
 | 6 | KERNELS | `u32 count` + 44B/条 + shader blobs |
 | 7 | BINDINGS | `u32 count` + 8B/条 |
-| 8 | OUTPUTS | `u32 count` + 24B/条 |
-| 9 | EVENTS | `u32 count`；V1.0b.5 为 0 |
+| 8 | OUTPUTS | `u32 count` + 32B/条 |
+| 9 | EVENTS | `u32 count` + `u32 bufferSize` + link 记录；见 §10 |
 | 10 | DEBUG | 保留；V1.0b.5 不生成 |
 
 #### PROPERTIES（32B/条）
@@ -382,7 +474,7 @@ Burst 16B：`{ time:f32, count:u32, period:f32, repeat:u32 }`；无周期/重复
 | 16 | `initialOffset:u32`（相对 LUTS；无则 `0xffffffff`） |
 | 20 | `initialSize:u32` |
 
-V1.0b.5 每 system 固定 7 条：`0=attributes`、`1=deadList`、`2=indirection`、`3=renderCount`、`4=spawnCount`、`5=indirectArgs`、`6=bounds`。deadList 为 `2 + capacity` uints；indirectArgs 为 32B。
+V1.0b.5 每 system 固定 7 条；V1.2.1 为 8 条；V1.2.2 起固定 **9** 条：`0=attributes`、`1=deadList`、`2=indirection`、`3=renderCount`、`4=spawnCount`、`5=indirectArgs`、`6=bounds`、`7=renderKVP`、`8=sortScratch`。deadList 为 `2 + capacity` uints；indirectArgs 为 32B；renderKVP 为 `(1 + capacity) * 8`B（word0=key、word1=counter，随后 `capacity` 个 `{key:f32, index:u32}`）；sortScratch 为 `capacity * 8`B，仅存 `{key,index}`。
 
 #### KERNELS（44B/条）
 
@@ -401,17 +493,34 @@ V1.0b.5 每 system 固定 7 条：`0=attributes`、`1=deadList`、`2=indirection
 | 36 | `program:u32` |
 | 40 | `reserved:u32` |
 
-记录之后是 4B 对齐的 shader blob。每个 logical shader 每个 backend 一条记录；output VS/FS 共享 `program`，compute kernel 的 `program` 唯一。
+记录之后是 4B 对齐的 shader blob。每个 logical shader 每个 backend 一条记录；output VS/FS 共享 `program`，compute kernel 的 `program` 唯一。event prefix/reset 为 global program，`system=0xffffffff`。
 
-- `task`：`0=spawner`、`1=deadListInit`、`2=init`、`3=update`、`4=outputUpdate`、`5=fillIndirect`、`6=outputVertex`、`7=outputFragment`。
+- `task`：`0=spawner`、`1=deadListInit`、`2=init`、`3=update`、`4=outputUpdate`、`5=fillIndirect`、`6=outputVertex`、`7=outputFragment`、`8=sortBitonicFinal`、`9=sortPrePass`、`10=sortMerge`、`11=eventPrefix`、`12=eventReset`、`13=eventCpuUpload`。
 - `stage`：`0=vertex`、`1=fragment`、`2=compute`。
 - `backend`：`0=dxbc`、`1=spirv`。
 
 #### BINDINGS（8B/条）
 
-`{ kind:u8, stage:u8, access:u8, reserved:u8, index:u32 }`；`kind` 0=buffer、1=texture。`stage` 为 shader binding slot；compute VFX 使用 0–4，output VS 使用 12/13，output FS sampler 使用 0。
+`{ kind:u8, stage:u8, access:u8, reserved:u8, index:u32 }`；`kind` 0=buffer、1=texture、2=global event buffer、3=CPU event staging buffer。`stage` 为 shader binding slot；compute VFX 使用 0–4，output VS 使用 12/13，output FS sampler 使用 0；soft scene depth 为 texture kind、stage 4、`index=0xfffffffe`（`kSceneDepthBindingIndex`）。event kind 的 `index` 保留为 0。
 
-#### OUTPUTS（24B/条）
+#### EVENTS
+
+`u32 linkCount` + `u32 eventBufferSizeBytes`，随后每条 link 32B：
+
+| 偏移 | 字段 |
+|---|---|
+| 0 | `producerSystem:u32` |
+| 4 | `consumerSystem:u32` |
+| 8 | `capacity:u32`（consumer 对齐 capacity） |
+| 12 | `bufferOffsetWords:u32` |
+| 16 | `payloadOffsetWords:u32` |
+| 20 | `nameOff:u32`（字符串表） |
+| 24 | `payloadCount:u32`（≤4） |
+| 28 | `receiveCount:u32` |
+
+随后 `payloadCount` 条 `{ nameOff:u32, slot:u32, type:u8+pad3, default:4*f32 }`（28B）和 `receiveCount` 条 `{ attributeNameOff:u32, slot:u32 }`。CPU link 的 `producerSystem=0xffffffff`，`type/default` 供 `sendEvent` 校验/补默认值。event buffer 每 link：`elementCount/totalCount/prefix/dropped/frameCount` 5*uint，随后 `capacity` 个 source index，再随后 `capacity*16` 个 payload float words。V1 总 event buffer ≤64 KiB；reader 校验 offset/capacity/slot/字符串。
+
+#### OUTPUTS（32B/条）
 
 | 偏移 | 字段 |
 |---|---|
@@ -423,7 +532,10 @@ V1.0b.5 每 system 固定 7 条：`0=attributes`、`1=deadList`、`2=indirection
 | 11 | `sortOrder:u8` |
 | 12 | `textureProperty:u32`（无则 `0xffffffff`） |
 | 16 | `flags:u32`（bit0=有 texture property） |
-| 20 | `reserved:u32` |
+| 20 | `softParticles:u8` |
+| 21 | `reserved:u8[3]` |
+| 24 | `softDistance:f32` |
+| 28 | `reserved:u32` |
 
 ### 10.3 Shader blob
 
@@ -441,13 +553,13 @@ V1.0b.5 每 system 固定 7 条：`0=attributes`、`1=deadList`、`2=indirection
 
 ### 10.5 版本/兼容
 
-- reader 只接受 `version == 1`（V1）。
+- reader 只接受 `version == 6`（V1.4.2+）。V1.4.2 增加 output soft flag/softDistance（OUTPUTS 24B→32B）与 scene-depth binding；不兼容旧 version 1–5 资产；所有 checked-in `.vfxb` 已重新烘焙。V1.2.4 增加 CPU event link、event staging binding、eventCpuUpload task 与 payload type/default。
 - 新增可选字段用 flags 表示；不改变布局。
 - 不兼容修改 → version+1；旧 runtime 明确拒绝。
 - `capacity` 实际值可能因 64 对齐而增大；资产记录 requested/actual 两值，运行时用 actual。
 - V1.0b.6 reader 在 `vfx/src/runtime/runtime_asset.cpp` 校验 magic/version/header size/flags/contentHash/section 范围/双后端完整性；`.vfxb` 不依赖 compiler target 加载。V1.0b.8 起 header offset 28 的 `assetNameOffset` 指回 STRINGS 段，reader 回填 `Asset::name`；0 表示空名，兼容旧资产。
 - output VS/FS 的 binding 记录同样来自 KERNELS；runtime 用 VS 的 12/13 buffer 绑定和 FS 的 sampler 绑定。无 texture property 时绑定 1×1 白纹理。
-- runtime 对 Curve/Gradient 默认 LUT 创建 RGBA16F 纹理；`setCurve`/`setGradient` 通过 `Device::updateTexture` 重传。当前 unlit shader 仍使用编译期分段函数，LUT 采样留到 V1.1。
+- runtime 对 Curve/Gradient 默认 LUT 按类型创建 RGBA16F 纹理（`256 × N`，N=该类型 property 数）；`setCurve`/`setGradient` 通过 `Device::updateTexture` 重传整张类型纹理。V1.1.4 起 compute shader 在 stage 9/10 采样 LUT；raster FS 仍只绑定 stage 0 main texture。
 
 ## 11. 校验规则（摘要）
 
@@ -455,15 +567,18 @@ V1.0b.5 每 system 固定 7 条：`0=attributes`、`1=deadList`、`2=indirection
 - `sort.mode != none` 时 V1 要求 `actual capacity <= 262144`；更大容量必须关闭排序或等待 V2（编译器报错，不静默降级）。
 - `spawner.rate >= 0`；burst `count >= 0`；`period > 0`（若有周期）；`repeat >= 1`。
 - `bounds.mode == manual` 时 center/extents 必填；extents > 0。
-- `sort.mode != none` 时每个 output 必须显式声明 `sort`（`none`/`distance`/`custom`）；`none` 表示该 output 不排序。
+- `sort.mode != none` 时每个 output 必须显式声明相同 `sort`（`distance`/`custom`）；V1.2.2 共享 system 排序，所有 output 使用同一 sorted indirection。
+- `sort.mode == custom` 时系统必须声明 scalar（float/int/uint/bool）`sortKey` 属性；否则编译器在 `systems[i].sort.mode` 报错。
 - 属性名唯一；自定义属性 ≤8；不得与内置冲突。
 - 表达式内部类型匹配、无环、嵌套深度 ≤64（V1.0b.3）；block 字段目标类型在 V1.0b.5 kernel 编译入口校验；子图深度 ≤16 在 V1.3 校验。
-- 事件图无环（V1）；事件属性读写一致。
-- 自定义 HLSL 只读/写声明集合一致。
-- Lit output 的 metallic/roughness 属性必须存在或使用默认值。
+- 事件名唯一匹配（GPU 一个 emit/一个 receive；CPU 只有 receive）；同一 system 不能同时收发；receiver 不能有 CPU spawner；每个事件最多 4 个 payload 属性；event buffer 总量 ≤64 KiB；`trigger_event` 必须匹配该 system 的唯一 emit 名；CPU receive 必须显式声明 attributes。
+- 自定义 HLSL：`code` ≤32 KiB；`reads`/`writes` 必须是已知属性且不能重复；`VFX_ATTR` 只能读 `reads`，`VFX_SET_ATTR` 只能写 `writes`；禁止绕过宏直接访问生成变量。V1.3.4 的 `custom_hlsl_visual` 资产覆盖字段类型、双后端烘焙与 D3D11/Vulkan golden。
+- 子图：`inputs/outputs` 的 `name` 必须是合法标识符且唯一，`type` 限于纯函数可用类型；`outputs.value` 必填；递归深度 ≤16、循环/缺参/未知参数报错。V1.3.4 的 `subgraph_visual` 资产覆盖纯函数 + block 子图组合及双后端 golden。
+- Lit output 的 `metallic`/`roughness` 必须是 0..1 常量，或指向存在的 `float` property；缺省 0/0.5。V1.4.1 的 `lit_visual` 资产覆盖双后端烘焙与 forward/deferred D3D11/Vulkan golden。
+- V1.4.2 `softParticles=true` 时 `softDistance` 必须 ≥0.001；输出 FS 增加 stage 4 depth sampler，`.vfxb` OUTPUTS 记录 soft flag/distance。`soft_visual`/`soft_visual_off` 覆盖 soft on/off D3D11/Vulkan golden。
 - 所有 kernel 的 dxbc + spirv 必须存在。
 
-**分阶段实现**：V1.0b.1 实现 schema/路径/数值/枚举/引用/curve-gradient 确定性校验；V1.0b.3 已实现表达式内部类型/折叠/DAG 校验（parser 接入 `validateGraphExpressions`），block 字段目标类型在 V1.0b.5；子图深度/循环在 V1.3，事件图在 V1.2，自定义 HLSL 语义在 V1.3，lit metallic/roughness 在 V1.4，shader blob 完整性在 V1.0b.5；runtime reader 在 V1.0b.6。
+**分阶段实现**：V1.0b.1 实现 schema/路径/数值/枚举/引用/curve-gradient 确定性校验；V1.0b.3 已实现表达式内部类型/折叠/DAG 校验（parser 接入 `validateGraphExpressions`），block 字段目标类型在 V1.0b.5；子图深度/循环在 V1.3，事件图在 V1.2，自定义 HLSL 语义在 V1.3.2（`vfx/src/core/custom_hlsl.cpp` + shaderc 双后端），lit metallic/roughness 在 V1.4.1，shader blob 完整性在 V1.0b.5；runtime reader 在 V1.0b.6。
 
 ## 12. `vfxbake` CLI
 
@@ -476,7 +591,32 @@ vfxbake --check <asset-dir> --shaderc <path> --bgfx-src <path>
 ```
 
 - 退出码：0 成功；1 校验/编译失败；2 参数错误。
-- 失败信息包含 JSON 路径（如 `systems[0].update.blocks[3].type`）与 shaderc 输出摘要。
-- `--check` 单文件模式比较 `--output`；批量模式递归查找 `*.vfx.json`，并比较同目录同名 `.vfxb`，不写文件；用于 CI。
+- 失败信息包含源文件、JSON 路径（如 `systems[0].update.blocks[3].type`）和可得行/列；自定义 HLSL 错误为 `.code:line:column`，并附 shaderc 输出摘要。
+- `--check` 单文件模式比较 `--output`；批量模式递归查找 `*.vfx.json`，并比较同目录同名 `.vfxb`，不写文件；CMake 在 `HBG_SHADER_COMPILER` 可用时注册 `hbg_vfx_asset_check` CTest，CI 直接跑 `ctest` 即覆盖 **28** 个测试资产（V1.4.5），其中包括 `subgraph_visual`、`custom_hlsl_visual`、`lit_visual`、`soft_visual`/`soft_visual_off` 与性能/empty fixture。
+- `--shader-pack` 提供 HDRP 风格 include 根（`material/`、`lighting/`）；lit output 需要该路径。`compileGraphFile` 未显式提供时会从资产路径向上查找 `shaders/material/surface_data_types.sc`。
 - `--backend` 默认 `dxbc,spirv`；V1 验收要求双后端。
 - 当前未提供 `--dump-shaders`；生成 shader 仅存在于编译临时目录。
+
+## 13. 编辑器布局 sidecar（V2）
+
+- 路径：与资产同目录，`foo.vfx.json` → `foo.vfx.editor.json`。
+- 该文件不是运行时资产；`vfxbake`/`parseGraphJson` 不读取，`.vfxb`/graph hash 不包含它。
+- schema：
+
+```json
+{
+  "version": 1,
+  "assetHash": "123456789",
+  "view": {"pan": [0, 0], "zoom": 1.0},
+  "nodes": {
+    "systems/0/spawner": {"x": 48, "y": 40, "collapsed": false},
+    "systems/0/init": {"x": 48, "y": 150, "collapsed": false},
+    "systems/0/update": {"x": 48, "y": 330, "collapsed": false},
+    "systems/0/outputs/0": {"x": 48, "y": 500, "collapsed": false}
+  }
+}
+```
+
+- `assetHash` 是 `vfx::graphHash()` 的十进制字符串；不匹配只提示 stale，不阻塞图加载。
+- 未知/失效 context path 被忽略；缺失 context 使用默认布局。
+- Save 会同时写 `.vfx.json` 与 sidecar；sidecar 损坏/缺失不影响运行时。

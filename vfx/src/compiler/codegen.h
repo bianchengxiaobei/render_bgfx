@@ -2,6 +2,7 @@
 
 #include "vfx/attribute_layout.h"
 #include "vfx/device.h"
+#include "vfx/expression.h"
 #include "vfx/graph.h"
 
 #include <array>
@@ -22,6 +23,12 @@ enum class KernelTask : std::uint8_t {
     FillIndirect = 5,
     OutputVertex = 6,
     OutputFragment = 7,
+    SortBitonic = 8,
+    SortPrepass = 9,
+    SortMerge = 10,
+    EventPrefix = 11,
+    EventReset = 12,
+    EventCopy = 13,
 };
 
 enum class BufferKind : std::uint8_t {
@@ -32,11 +39,16 @@ enum class BufferKind : std::uint8_t {
     SpawnCount = 4,
     IndirectArgs = 5,
     Bounds = 6,
+    RenderKVP = 7,
+    SortScratch = 8,
+    Count = 9,
 };
 
 enum class BindingKind : std::uint8_t {
     Buffer = 0,
     Texture = 1,
+    Event = 2,
+    CpuEvent = 3,
 };
 
 struct KernelBinding {
@@ -69,6 +81,12 @@ struct OutputProgram {
     ShaderSource fragment;
     BlendMode blend = BlendMode::Alpha;
     bool lit = false;
+    bool softParticles = false;
+    float softDistance = 0.1f;
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    std::string metallicProperty;
+    std::string roughnessProperty;
     SortMode sortMode = SortMode::None;
     SortOrder sortOrder = SortOrder::Ascending;
     std::uint32_t textureProperty = kInvalidIndex;
@@ -79,6 +97,34 @@ struct AttributeUsage {
     std::set<std::string> writes;
 };
 
+struct EventPayloadAttribute {
+    std::string name;
+    std::uint32_t slot = 0;
+    ExprType type = ExprType::Float;
+    AttributeType targetType = AttributeType::Float;
+    AttributeWords defaultWords{};
+};
+
+struct EventReceiveMapping {
+    std::string attribute;
+    std::uint32_t slot = 0;
+};
+
+struct CompiledEventLink {
+    std::uint32_t producerSystem = 0;
+    std::uint32_t consumerSystem = 0;
+    std::string name;
+    bool cpu = false;
+    std::uint32_t capacity = 0;
+    std::uint32_t bufferOffsetWords = 0;
+    std::uint32_t payloadOffsetWords = 0;
+    std::vector<EventPayloadAttribute> payload;
+    std::vector<EventReceiveMapping> receives;
+    bool hasTrigger = false;
+    std::string triggerCount;
+    std::string triggerCondition;
+};
+
 struct CompiledSystem {
     const SystemDesc* desc = nullptr;
     AttributeSet attributeSet;
@@ -86,11 +132,16 @@ struct CompiledSystem {
     AttributeUsage usage;
     std::vector<KernelProgram> kernels;
     std::vector<OutputProgram> outputs;
+    std::int32_t eventIn = -1;
+    std::int32_t eventOut = -1;
 };
 
 struct CompiledAsset {
     std::unique_ptr<Graph> graph;
     std::vector<CompiledSystem> systems;
+    std::vector<CompiledEventLink> eventLinks;
+    std::vector<KernelProgram> globalKernels;
+    std::uint32_t eventBufferSize = 0;
     std::string error;
 };
 

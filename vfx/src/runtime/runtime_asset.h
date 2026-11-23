@@ -18,6 +18,8 @@ namespace vfx {
 enum class AssetBindingKind : std::uint8_t {
     Buffer = 0,
     Texture = 1,
+    Event = 2,
+    CpuEvent = 3,
 };
 
 struct AssetBinding {
@@ -47,11 +49,37 @@ struct AssetBurst {
     std::uint32_t repeat = 0;
 };
 
+struct AssetEventPayload {
+    std::string name;
+    std::uint32_t slot = 0;
+    AttributeType type = AttributeType::Float;
+    std::array<float, 4> defaultFloat{};
+};
+
+struct AssetEventReceive {
+    std::string attribute;
+    std::uint32_t slot = 0;
+};
+
+struct AssetEventLink {
+    std::uint32_t producerSystem = 0;
+    std::uint32_t consumerSystem = 0;
+    std::string name;
+    bool cpu = false;
+    std::uint32_t capacity = 0;
+    std::uint32_t bufferOffsetWords = 0;
+    std::uint32_t payloadOffsetWords = 0;
+    std::vector<AssetEventPayload> payload;
+    std::vector<AssetEventReceive> receives;
+};
+
 struct AssetSystem {
     std::string name;
     std::uint32_t requestedCapacity = 0;
     std::uint32_t capacity = 0;
     SystemSpace space = SystemSpace::World;
+    SortMode sortMode = SortMode::None;
+    SortOrder sortOrder = SortOrder::Ascending;
     Bounds bounds{};
     float spawnerRate = 0.0f;
     std::vector<AssetBurst> bursts;
@@ -65,6 +93,7 @@ struct AssetProgram {
     std::uint32_t system = 0;
     std::uint8_t task = 0;
     bool output = false;
+    bool global = false;
     std::array<std::uint32_t, 3> groups{1, 1, 1};
     std::vector<AssetBinding> bindings;
     std::vector<AssetBinding> vertexBindings;
@@ -74,6 +103,8 @@ struct AssetProgram {
     std::array<std::vector<std::byte>, 2> fragmentBlobs;
     BlendMode blend = BlendMode::Alpha;
     bool lit = false;
+    bool softParticles = false;
+    float softDistance = 0.1f;
     SortMode sortMode = SortMode::None;
     SortOrder sortOrder = SortOrder::Ascending;
     std::uint32_t textureProperty = kInvalidIndex;
@@ -84,6 +115,8 @@ struct Asset {
     std::vector<AssetProperty> properties;
     std::vector<AssetSystem> systems;
     std::vector<AssetProgram> programs;
+    std::vector<AssetEventLink> eventLinks;
+    std::uint32_t eventBufferSize = 0;
 };
 
 std::shared_ptr<const Asset> loadAssetBinaryFile(const std::filesystem::path& path, std::string& error);

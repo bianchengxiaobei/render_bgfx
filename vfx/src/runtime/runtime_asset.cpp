@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -19,7 +20,7 @@ namespace vfx {
 namespace {
 
 constexpr std::uint32_t kHeaderSize = 64u;
-constexpr std::uint16_t kBinaryVersion = 1u;
+constexpr std::uint16_t kBinaryVersion = 6u;
 constexpr std::uint32_t kCompilerVersion = 0x00010000u;
 constexpr std::uint32_t kFlagsLittleEndian = 1u;
 constexpr std::uint32_t kInvalidOffset = 0xffffffffu;
@@ -118,7 +119,7 @@ bool readBindings(std::span<const std::byte> bindings, std::uint32_t start, std:
     for (std::uint32_t i = 0; i < count; ++i) {
         const std::size_t offset = static_cast<std::size_t>(byteStart) + static_cast<std::size_t>(i) * 8u;
         const std::uint8_t kind = readU8(bindings, offset);
-        if (kind > static_cast<std::uint8_t>(AssetBindingKind::Texture)) {
+        if (kind > static_cast<std::uint8_t>(AssetBindingKind::CpuEvent)) {
             return fail(error, "BINDINGS has an invalid kind");
         }
         const std::uint8_t access = readU8(bindings, offset + 2u);
@@ -226,8 +227,8 @@ bool parseSystems(const Section& section, std::span<const std::byte> strings, As
             return fail(error, "SYSTEMS has an invalid enum value");
         }
         system.space = static_cast<SystemSpace>(space);
-        (void)sortMode;
-        (void)sortOrder;
+        system.sortMode = static_cast<SortMode>(sortMode);
+        system.sortOrder = static_cast<SortOrder>(sortOrder);
         const Vec3 center{readF32(section.data, offset + 16u), readF32(section.data, offset + 20u),
                           readF32(section.data, offset + 24u)};
         const Vec3 extents{readF32(section.data, offset + 28u), readF32(section.data, offset + 32u),
@@ -280,7 +281,7 @@ bool parseBuffers(const Section& section, Asset& asset, std::string& error) {
         const std::size_t offset = 4u + static_cast<std::size_t>(i) * 24u;
         const std::uint32_t system = readU32(section.data, offset);
         const std::uint8_t kind = readU8(section.data, offset + 4u);
-        if (system >= asset.systems.size() || kind > 6u) {
+        if (system >= asset.systems.size() || kind > 8u) {
             return fail(error, "BUFFERS has an invalid system/kind");
         }
         AssetBuffer buffer;
@@ -298,7 +299,7 @@ bool parseBuffers(const Section& section, Asset& asset, std::string& error) {
         asset.systems[system].buffers.push_back(buffer);
     }
     for (AssetSystem& system : asset.systems) {
-        std::array<bool, 7> seen{};
+        std::array<bool, 9> seen{};
         for (const AssetBuffer& buffer : system.buffers) {
             seen[buffer.kind] = true;
         }
@@ -307,6 +308,100 @@ bool parseBuffers(const Section& section, Asset& asset, std::string& error) {
                 return fail(error, "BUFFERS is missing a required system buffer");
             }
         }
+    }
+    return true;
+}
+
+bool parseEvents(const Section& section, std::span<const std::byte> strings, Asset& asset,
+                 std::string& error) {
+    if (!isRangeValid(section.data, 0, 8u)) {
+        return fail(error, "EVENTS section is truncated");
+    }
+    const std::uint32_t count = readU32(section.data, 0);
+    const std::uint32_t bufferSize = readU32(section.data, 4);
+    if (count > 128u || bufferSize % 4u != 0u || bufferSize > 256u * 1024u * 1024u) {
+        return fail(error, "EVENTS header is invalid");
+    }
+    if (count == 0u) {
+        if (bufferSize != 0u) {
+            return fail(error, "EVENTS buffer size is nonzero without links");
+        }
+        asset.eventBufferSize = 0u;
+        return true;
+    }
+    asset.eventBufferSize = bufferSize;
+    const std::uint32_t bufferWords = bufferSize / 4u;
+    std::size_t cursor = 8u;
+    asset.eventLinks.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (!isRangeValid(section.data, cursor, 32u)) {
+            return fail(error, "EVENTS link record is truncated");
+        }
+        AssetEventLink link;
+        link.producerSystem = readU32(section.data, cursor);
+        link.consumerSystem = readU32(section.data, cursor + 4u);
+        link.capacity = readU32(section.data, cursor + 8u);
+        link.bufferOffsetWords = readU32(section.data, cursor + 12u);
+        link.payloadOffsetWords = readU32(section.data, cursor + 16u);
+        const std::uint32_t nameOffset = readU32(section.data, cursor + 20u);
+        const std::uint32_t payloadCount = readU32(section.data, cursor + 24u);
+        const std::uint32_t receiveCount = readU32(section.data, cursor + 28u);
+        cursor += 32u;
+        link.cpu = link.producerSystem == kInvalidOffset;
+        if ((!link.cpu && link.producerSystem >= asset.systems.size()) ||
+            link.consumerSystem >= asset.systems.size() ||
+            (!link.cpu && link.producerSystem == link.consumerSystem) ||
+            link.capacity == 0u || link.capacity != asset.systems[link.consumerSystem].capacity ||
+            payloadCount > 4u || receiveCount > 64u) {
+            return fail(error, "EVENTS link metadata is invalid");
+        }
+        bool stringOk = true;
+        link.name = stringAt(strings, nameOffset, stringOk);
+        if (!stringOk || link.name.empty()) {
+            return fail(error, "EVENTS link name is invalid");
+        }
+        const std::uint64_t payloadEnd = static_cast<std::uint64_t>(link.payloadOffsetWords) +
+                                         static_cast<std::uint64_t>(link.capacity) * 16u;
+        if (link.bufferOffsetWords + 5u + link.capacity > link.payloadOffsetWords ||
+            payloadEnd > bufferWords) {
+            return fail(error, "EVENTS link buffer range is out of bounds");
+        }
+        if (!isRangeValid(section.data, cursor, static_cast<std::size_t>(payloadCount) * 28u +
+                                                static_cast<std::size_t>(receiveCount) * 8u)) {
+            return fail(error, "EVENTS link arrays are truncated");
+        }
+        link.payload.reserve(payloadCount);
+        for (std::uint32_t j = 0; j < payloadCount; ++j) {
+            AssetEventPayload payload;
+            payload.name = stringAt(strings, readU32(section.data, cursor), stringOk);
+            payload.slot = readU32(section.data, cursor + 4u);
+            const std::uint8_t type = readU8(section.data, cursor + 8u);
+            for (unsigned component = 0; component < 4u; ++component) {
+                payload.defaultFloat[component] = readF32(section.data, cursor + 12u + component * 4u);
+            }
+            cursor += 28u;
+            if (!stringOk || payload.name.empty() || payload.slot >= 4u ||
+                type > static_cast<std::uint8_t>(AttributeType::Bool)) {
+                return fail(error, "EVENTS payload metadata is invalid");
+            }
+            payload.type = static_cast<AttributeType>(type);
+            link.payload.push_back(std::move(payload));
+        }
+        link.receives.reserve(receiveCount);
+        for (std::uint32_t j = 0; j < receiveCount; ++j) {
+            AssetEventReceive receive;
+            receive.attribute = stringAt(strings, readU32(section.data, cursor), stringOk);
+            receive.slot = readU32(section.data, cursor + 4u);
+            cursor += 8u;
+            if (!stringOk || receive.attribute.empty() || receive.slot >= payloadCount) {
+                return fail(error, "EVENTS receive metadata is invalid");
+            }
+            link.receives.push_back(std::move(receive));
+        }
+        asset.eventLinks.push_back(std::move(link));
+    }
+    if (cursor > section.data.size()) {
+        return fail(error, "EVENTS section is truncated");
     }
     return true;
 }
@@ -336,7 +431,9 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
         const std::uint8_t stage = readU8(kernels.data, offset + 5u);
         const std::uint8_t backend = readU8(kernels.data, offset + 6u);
         const std::uint32_t program = readU32(kernels.data, offset + 36u);
-        if (system >= asset.systems.size() || task > 7u || stage > 2u || backend > 1u) {
+        const bool global = system == kInvalidOffset;
+        if ((!global && system >= asset.systems.size()) || task > 13u || stage > 2u || backend > 1u ||
+            (global && task != 11u && task != 12u && task != 13u) || (!global && task >= 11u)) {
             return fail(error, "KERNELS has an invalid system/task/stage/backend");
         }
         if (!isRangeValid(kernels.data, offset + 8u, 28u)) {
@@ -361,20 +458,22 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
             assetProgram.program = program;
             assetProgram.system = system;
             assetProgram.task = task;
-            assetProgram.output = task >= 6u;
+            assetProgram.output = task == 6u || task == 7u;
+            assetProgram.global = global;
             assetProgram.groups = {readU32(kernels.data, offset + 8u), readU32(kernels.data, offset + 12u),
                                    readU32(kernels.data, offset + 16u)};
             asset.programs.push_back(std::move(assetProgram));
         }
         AssetProgram& assetProgram = asset.programs[iterator->second];
-        if (assetProgram.system != system || assetProgram.output != (task >= 6u) ||
+        if (assetProgram.system != system || assetProgram.global != global ||
+            assetProgram.output != (task == 6u || task == 7u) ||
             (!assetProgram.output && assetProgram.task != task)) {
             return fail(error, "KERNELS program metadata is inconsistent");
         }
 
         const auto* blobBegin = kernels.data.data() + blobOffset;
         std::vector<std::byte> blob(blobBegin, blobBegin + blobSize);
-        if (task <= 5u) {
+        if (task <= 5u || task >= 8u) {
             if (stage != static_cast<std::uint8_t>(ShaderStage::Compute)) {
                 return fail(error, "KERNELS compute program has a non-compute stage");
             }
@@ -412,11 +511,11 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
         return fail(error, "OUTPUTS section is truncated");
     }
     const std::uint32_t outputCount = readU32(outputs.data, 0);
-    if (!isRangeValid(outputs.data, 4u, static_cast<std::size_t>(outputCount) * 24u)) {
+    if (!isRangeValid(outputs.data, 4u, static_cast<std::size_t>(outputCount) * 32u)) {
         return fail(error, "OUTPUTS section is truncated");
     }
     for (std::uint32_t i = 0; i < outputCount; ++i) {
-        const std::size_t offset = 4u + static_cast<std::size_t>(i) * 24u;
+        const std::size_t offset = 4u + static_cast<std::size_t>(i) * 32u;
         const std::uint32_t system = readU32(outputs.data, offset);
         const std::uint32_t program = readU32(outputs.data, offset + 4u);
         const auto iterator = programMap.find(program);
@@ -443,6 +542,11 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
         assetProgram.textureProperty = (readU32(outputs.data, offset + 16u) & 1u) != 0u
                                            ? readU32(outputs.data, offset + 12u)
                                            : kInvalidIndex;
+        assetProgram.softParticles = readU8(outputs.data, offset + 20u) != 0u;
+        assetProgram.softDistance = readF32(outputs.data, offset + 24u);
+        if (!std::isfinite(assetProgram.softDistance) || assetProgram.softDistance < 0.001f) {
+            return fail(error, "OUTPUTS has an invalid soft particle distance");
+        }
     }
 
     for (AssetProgram& program : asset.programs) {
@@ -566,11 +670,6 @@ std::shared_ptr<const Asset> parseAssetBinary(std::span<const std::byte> bytes, 
         fail(error, "VFX asset is missing a required section");
         return nullptr;
     }
-    if (!isRangeValid(events->data, 0, 4u) || readU32(events->data, 0) != 0u) {
-        fail(error, "VFX asset events are not supported");
-        return nullptr;
-    }
-
     auto asset = std::make_shared<Asset>();
     bool nameOk = true;
     asset->name = stringAt(strings->data, readU32(bytes, 28), nameOk);
@@ -581,6 +680,7 @@ std::shared_ptr<const Asset> parseAssetBinary(std::span<const std::byte> bytes, 
     if (!parseProperties(*properties, strings->data, luts->data, *asset, error) ||
         !parseSystems(*systems, strings->data, *asset, error) ||
         !parseBuffers(*buffers, *asset, error) ||
+        !parseEvents(*events, strings->data, *asset, error) ||
         !parsePrograms(*kernels, *bindings, *outputs, *asset, error)) {
         return nullptr;
     }

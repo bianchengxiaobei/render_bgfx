@@ -212,7 +212,7 @@
 ### V1.0b.6 Runtime：Effect/System 资源与执行
 
 - [x] `Runtime::loadAsset`、`createEffect`、`destroyEffect`。
-- [x] 每 system 创建 attribute/deadList/renderKVP/indirect/bounds buffer。
+- [x] 每 system 创建 attribute/deadList/indirection/renderCount/spawnCount/indirect/bounds buffer；V1.2.1 增加 renderKVP。
 - [x] dead list 初始化（counter=size、free list 逆序）；reset 时同 kernel 清空 attributes/indirection，避免 CPU 更新 COMPUTE_WRITE buffer。
 - [x] `update(dt)`：常量 spawn 累积、时间/种子、bounds。
 - [x] `encodeSimulation`：spawn → init → update → outputUpdate → fillIndirect；上传 uniforms。
@@ -248,7 +248,7 @@
 - `update` 使用 CPU 的常量速率/Burst 累积决定 spawnCount；V1.0b.8 reference 测试路径已读回 GPU deadList/attributes，但交互运行时 `Diagnostics::particles` 仍是 CPU 估算值。
 - `fillIndirect` 仍由生成的 compute kernel 用 `renderCount` 写 args；runtime 只 dispatch，不直接 CPU 写 indirect args。
 - 输出必须由适配层提前绑定 view/encoder；`drawIndirect` 的 dummy 6 顶点由 `HbgVfxBackend` 负责。
-- LUT 已上传（Curve/Gradient），但当前生成的 unlit shader 仍使用编译期分段函数；shader 采样 LUT 留到 V1.1。
+- LUT 已上传（Curve/Gradient）；V1.0b.6 时生成 shader 仍使用编译期分段函数，V1.1.4 已改为 stage 9/10 LUT 双线性采样。
 - `sendEvent` 当前只报告 events 未支持（V1.2），没有事件 buffer。
 - runtime 仍按 effect 独立创建 program/buffer；不共享 GPU instancing。
 - 真实 D3D11/Vulkan pass 在 V1.0b.7 接入；GPU readback + CPU reference 在 V1.0b.8 完成（仅 reference 测试路径）。
@@ -413,7 +413,7 @@
 **验收**
 - [x] CPU reference 与 GPU 在 1e-3 内：`forces_1024` D3D11/Vulkan 10 帧、1024 粒子全部通过。
 - [x] turbulence 关闭时与 V1.0b 结果一致：`minimal_unlit` 双后端 golden 0 字节差异。
-- [x] 双后端 golden 基线未回归：`hbg_vfx_golden_d3d11`/`vulkan` 通过；力场本身由 `forces_1024` CPU/GPU readback 覆盖，force 场景视觉 golden 留到 V1.1.5。
+- [x] 双后端 golden 基线未回归：`hbg_vfx_golden_d3d11`/`vulkan` 通过；力场本身由 `forces_1024` CPU/GPU readback 覆盖，force 场景视觉 golden 已在 V1.1.5 完成。
 - [x] `hbg_vfx_tests` 51 cases / 21142 assertions；runtime 8 / 190；compiler 9 / 131（无工具链）/ 229（带 shaderc）；adapter 4 / 274；`hbg_tests` 248 / 32525。
 - [x] `vfxbake --check` 5 个资产通过；VFX 相关 CTest 11/11；全量 CTest 32/32。
 
@@ -421,41 +421,124 @@
 
 ### V1.1.3 碰撞：平面 / 球
 
-- [ ] `collision_plane`：normal/distance/mode/restitution/friction。
-- [ ] `collision_sphere`：center/radius/mode/restitution/friction。
-- [ ] kill/bounce/stick；位置修正 + 速度反射。
-- [ ] 单测：穿透/边界/多帧稳定；无 NaN。
-- [ ] 参考 `Editor/Models/Blocks/Implementations/Collision/CollisionPlane.cs`、`CollisionSphere.cs`。
+- [x] `collision_plane`：normal/distance/mode/restitution/friction。
+- [x] `collision_sphere`：center/radius/mode/restitution/friction。
+- [x] kill/bounce/stick；位置修正 + 速度反射。
+- [x] 单测：穿透/边界/多帧稳定；无 NaN。
+- [x] 参考 `Editor/Models/Blocks/Implementations/Collision/CollisionPlane.cs`、`CollisionSphere.cs`。
+
+**实现位置**
+- `vfx/src/reference/cpu_reference.cpp`：`CollisionMode`、`intersectPlane`、`intersectSphere`、`applyBounce`；`applyUpdateBlock` 的 plane/sphere 分支。
+- `vfx/src/compiler/codegen.cpp`：`makeCollisionResponseCode` 与 `compileUpdateBlock` 的 plane/sphere sweeping/inside detection。
+- `vfx/tests/assets/collision_1024.vfx.json/.vfxb`：1024 粒子，plane + sphere bounce，10 帧 CPU/GPU reference。
+- `vfx/tests/test_vfx_reference.cpp`：plane kill/bounce/stick、sphere sweep/restitution、多帧稳定。
+- `vfx/tests/test_vfx_compiler.cpp`：plane/sphere codegen、kill/stick codegen。
+- `vfx/CMakeLists.txt`：`hbg_vfx_reference_collision_d3d11/vulkan`。
+
+**语义**
+- `collision_plane`：`normal` 归一化；`d = dot(position, normal) - distance`；粒子在平面负侧或本帧从正侧穿过时发生碰撞；位置修正到平面。
+- `collision_sphere`：`center/radius`；当前在球内或本帧射线从外到内与球相交时发生碰撞；位置修正到球面。
+- `bounce`：`vn = dot(velocity, normal)`；`vn < 0` 时 `velocity -= (1 + max(restitution, 0)) * vn * normal`；切向速度再乘 `1 - exp(-max(friction, 0) * dt)`。
+- `stick`：位置修正到碰撞点，速度清零。
+- `kill`：标记 `alive=false`，交给 update 尾部的 dead list 回收。
+- 默认 `mode=bounce`、`restitution=0.1`、`friction=0.0`；与原 `CollisionBase` 的 Bounce/Friction 默认一致。
+- 当前使用零粒子半径；原 `RadiusMode`、`BounceSpeedThreshold`、`LifetimeLoss`、roughSurface、碰撞事件和 sphere transform 尚未实现（D13）。
+
+**参考**
+- `Editor/Models/Blocks/Implementations/Collision/CollisionPlane.cs:34-56`：平面 signed distance、穿过检测、inside teleport。
+- `CollisionSphere.cs:55-159`：单位球射线求交、inside 投影、法线。
+- `CollisionBase.cs:214-269`：bounce/friction 响应、hitPos 与 `position` 修正。
+- `CollisionBase.cs:123-147`：默认 radius/bounce threshold（当前未接入）。
 
 **验收**
-- [ ] 粒子不穿平面/球（固定 dt 步进）。
-- [ ] bounce 后速度方向/大小符合 restitution。
-- [ ] CPU/GPU 一致（epsilon）。
+- [x] 粒子不穿平面/球：`collision_1024` 固定 dt 10 帧、1024 粒子通过；CPU 多帧稳定性单测通过。
+- [x] bounce 后速度方向/大小符合 restitution：plane/sphere CPU 单测和 1e-3 reference 通过。
+- [x] CPU/GPU 一致（epsilon）：D3D11/Vulkan collision reference 均通过。
+- [x] `hbg_vfx_tests` 54 cases / 21170 assertions；runtime 8 / 190；compiler 11 / 143（无工具链）/ 241（带 shaderc）；adapter 4 / 274；`hbg_tests` 248 / 32525。
+- [x] `vfxbake --check` 6 个资产通过；VFX 相关 CTest 13/13；全量 CTest 34/34。
 
 ---
 
 ### V1.1.4 Curve / Gradient + over-life 块
 
-- [ ] 编译期 LUT 烘焙（256×1，RGBA16F/RGBA8）。
-- [ ] `color_over_life`/`alpha_over_life`/`size_over_life`。
-- [ ] `sample_curve`/`sample_gradient` 表达式。
-- [ ] LUT 写入 `.vfxb`；运行时上传纹理；双线性采样。
-- [ ] 单测：控制点 → LUT 字节；采样值与 CPU 参考一致。
-- [ ] 参考 `Editor/Models/Blocks/Implementations/Color/ColorOverLife.cs`、`Editor/Models/Blocks/Implementations/Attribute/AttributeFromCurve.cs`；`Editor/Models/Operators/Implementations/SampleCurve.cs`/`SampleGradient.cs`。
+- [x] 编译期 LUT 烘焙（256×1，RGBA16F/RGBA8）。
+- [x] `color_over_life`/`alpha_over_life`/`size_over_life`。
+- [x] `sample_curve`/`sample_gradient` 表达式。
+- [x] LUT 写入 `.vfxb`；运行时上传纹理；双线性采样。
+- [x] 单测：控制点 → LUT 字节；采样值与 CPU 参考一致。
+- [x] 参考 `Editor/Models/Blocks/Implementations/Color/ColorOverLife.cs`、`Editor/Models/Blocks/Implementations/Attribute/AttributeFromCurve.cs`；`Editor/Models/Operators/Implementations/SampleCurve.cs`/`SampleGradient.cs`。
+
+**实现**
+- `binary.cpp:265-296`：每个 Curve/Gradient property 烘焙 `256 × RGBA16F`（2048B）到 LUTS；curve 使用 `.x`，gradient 使用 RGBA，控制点线性插值。
+- `codegen.cpp:186/195`：每个 property 生成 LUT 采样函数；`:228/231` 声明 compute sampler `s_vfxCurveLut` stage 9、`s_vfxGradientLut` stage 10；`:415` 生成 init/update 的 texture binding；`:1196/1251` 附加到 kernel。
+- 采样坐标：`u = (saturate(t) * 255 + 0.5) / 256`，行坐标 `(row + 0.5) / rowCount`，`texture2DLod(..., 0)` 由 sampler 双线性/clamp 采样。同一类型的多个 property 运行时打包为 `256 × N` 纹理，row 为 property 顺序。
+- `runtime.cpp:931-966`：每类型创建一张 LUT 纹理；`:778` 按 kernel binding 绑定 stage 9/10；`setCurve`/`setGradient` 经 `updateLutTexture` 重传整张类型纹理。
+- `cpu_reference.cpp:526-605`：CPU reference 实现 over-life；按 `saturate(age / max(lifetime, 1e-6))` 从控制点求值，`color_over_life` 写 RGB，`alpha_over_life` 写 alpha，`size_over_life` 写 size。
+- `codegen.cpp:366`：`set_velocity_direction`/`set_velocity_random` 的零方向改用 `vfxSafeNormalize`，避免 Vulkan `normalize(0)` 产生 NaN（curve reference 的零速度初始化暴露）。
+- `vfx/tests/assets/curve_1024.vfx.json/.vfxb`：1024 粒子、10 帧、color/alpha/size over-life；D3D11/Vulkan reference 通过。
+- `vfx/tests/assets/curve_unlit.vfx.json/.vfxb`：保留 runtime LUT 上传/绑定测试；`expressions.vfx.json` 覆盖 `sample_curve`/`sample_gradient` 表达式的 LUT 代码生成。
+
+**原码对齐**
+- `ColorOverLife.cs:93`：`SampleGradient(gradient, age / lifetime)`；`ColorOverLife.cs:20-87` 的 mode/composition 当前简化为 RGB/alpha 分别覆盖（D14）。
+- `AttributeFromCurve.cs:332-358`：OverLife 用 `age / lifetime` 采样；当前只实现 OverLife 覆盖，不支持 BySpeed/Random/Custom 和 composition（D14）。
+- `SampleCurve.cs:7-27`、`SampleGradient.cs:7-27`：表达式分别输出 float/Vector4；`VFXCommon.hlsl:536-558` 的 baked texture 采样概念对应本实现的 LUT + 双线性采样。
+
+**限制/偏差**
+- 原 `ColorOverLife` 默认 ColorAndAlpha + Multiply composition；当前 `color_over_life` 只覆盖 RGB，alpha 由独立 block 控制。
+- 当前 LUT 固定 256×1 RGBA16F；原项目使用 baked texture + curve metadata（128 宽）。当前不支持 wrap mode、随机/按速度采样和逐组件曲线（D15）。
+- CPU reference 仅对 over-life block 做求值；通用表达式 DAG 仍由 compiler/GPU 侧验证（沿用 V1.0b.8 的 reference 边界）。
 
 **验收**
-- [ ] LUT 字节确定性；`--check` 0 差异。
-- [ ] GPU 采样与 CPU 参考一致（epsilon）。
-- [ ] curve/gradient 纹理 stage 不与光照冲突。
+- [x] LUT 字节确定性；`--check` 0 差异。
+- [x] GPU 采样与 CPU 参考一致（epsilon）：D3D11/Vulkan `curve_1024` 均通过。
+- [x] curve/gradient 纹理 stage 不与光照冲突：compute texture stage 9/10；raster main texture 仍为 stage 0。
+- [x] `hbg_vfx_tests` 55 cases / 21177 assertions；runtime 8 / 192；compiler 13 / 175（无工具链）/ 273（带 shaderc）；adapter 4 / 274；`hbg_tests` 248 / 32525。
+- [x] `vfxbake --check` 7 个资产通过；VFX 相关 CTest 15/15；全量 CTest 36/36。
 
 ---
 
 ### V1.1.5 V1.1 验收
 
-- [ ] 双后端 golden：bursts、forces、collision、curves。
-- [ ] CPU reference 场景（固定 seed/dt）。
-- [ ] 性能记录（粒子数/耗时）。
-- [ ] 文档回填。
+- [x] 双后端 golden：bursts、forces、collision、curves。
+- [x] CPU reference 场景（固定 seed/dt）。
+- [x] 性能记录（粒子数/耗时）。
+- [x] 文档回填。
+
+**实现**
+- `vfx/tests/assets/vfx_bursts.gltf`、`vfx_forces.gltf`、`vfx_collision.gltf`、`vfx_curves.gltf` 及同名 `.hdrp.json`：固定 640×360 相机和 VFX 实例；分别渲染 `spawner_bursts`、`forces_1024`、`collision_1024`、`curve_visual`。
+- `vfx/CMakeLists.txt`：新增 `add_vfx_feature_golden()`，为四个场景注册 D3D11/Vulkan 各自的 `hbg_vfx_golden_{bursts,forces,collision,curves}_{d3d11,vulkan}`；`run_vfx_golden.cmake` 支持 `HBG_FRAMES`，四个场景分别为 90/30/30/300 帧。
+- `vfx/tests/golden/vfx_{bursts,forces,collision,curves}_{d3d11,vulkan}.png`：逐后端 golden；D3D11 与 Vulkan 的 bursts/collision/curves 像素一致，力场因浮点累积有 155 个像素 1 LSB 差异，因此不共用严格 0-diff 图。
+- `vfx/tests/assets/curve_visual.vfx.json/.vfxb`：单粒子、local space、`playRate` 0.15–0.85 的 8 个实例；同一 color/alpha/size LUT 在不同 age 比例下形成可见的蓝→绿→棕渐变和尺寸变化，避免 `curve_1024` 全部重叠导致的纯白块。
+- CPU reference：沿用 `reference_1024`、`forces_1024`、`collision_1024`、`curve_1024` 的固定 `seed=0`、`dt=0.1`、10 帧逐粒子 1e-3 对照；Burst 使用 `spawner_bursts` 的固定 dt 序列单测（首帧 14，后续 2,2,2,2,0,0,0）。
+- 性能：`--render-test=<feature scene> --vfx-test --frames=300 --width=1920 --height=1080 --no-vsync`，从 `render performance` 读取 `avg_frame_ms/fps/vfx_*`；Debug 构建，仅记录，不设门槛。
+
+**原码对齐**
+- Burst：`VFXSpawnerBurst.cs`、`VFXSpawnerConstantRate.cs`；固定 dt 序列参考 `Tests/SRPTests/Packages/com.unity.testing.visualeffectgraph/Tests/Runtime/VFXSpawnerTests.cs:460`。
+- 力场：`Gravity.cs:39-45`、`Drag.cs:50-64`、`Force.cs:61-67`、`Turbulence.cs:67-78`；V1.1.2 的 CPU/GPU 参数顺序与 curl noise 保持不变。
+- 碰撞：`CollisionBase.cs:123-147`、`CollisionPlane.cs`、`CollisionSphere.cs`；V1.1.3 的 kill/bounce/stick、friction/restitution 语义不变。
+- Curve/Gradient：`ColorOverLife.cs:93`、`AttributeFromCurve.cs:332-358`、`SampleCurve.cs:7-27`、`SampleGradient.cs:7-27`、`VFXCommon.hlsl:536-558`；V1.1.4 的 LUT 双线性采样不变。
+
+**性能记录（1920×1080，300 帧，Debug）**
+
+| 场景 | D3D11 | Vulkan | 粒子/绘制/派发 |
+|---|---|---|---|
+| bursts | 4.344 ms / 230.2 fps | 6.126 ms / 163.2 fps | 22 / 1 / 5 |
+| forces | 3.765 ms / 265.6 fps | 5.698 ms / 175.5 fps | 1024 / 1 / 5 |
+| collision | 4.255 ms / 235.0 fps | 5.300 ms / 188.7 fps | 1024 / 1 / 5 |
+| curves（8 实例） | 4.454 ms / 224.5 fps | 7.129 ms / 140.3 fps | 8 / 8 / 40 |
+
+**验收**
+- [x] 四个 feature golden 在 D3D11/Vulkan 均逐字节稳定；`vfx_scene` 原有 golden 未回归。
+- [x] 跨后端像素差异：bursts 0、collision 0、curves 0；forces 155 像素最大 1 LSB，已用每后端 golden 固定，并由 `forces_1024` CPU/GPU 1e-3 reference 保证运动正确性。
+- [x] CPU reference 固定 seed/dt 通过；Burst 固定 dt 总数与逐帧序列通过。
+- [x] 性能数据已记录；无崩溃/超时，未设硬门槛。
+- [x] `vfxbake --check` 8 个资产通过；`hbg_vfx_*` CTest 22/22；全量 CTest 44/44。
+
+**限制/偏差**
+- Feature golden 采用后端各自 golden，不把 D3D11/Vulkan 截图强制 0-diff；跨后端运动正确性由 CPU/GPU reference 负责。
+- `curve_visual` 用 8 个 `playRate` 实例展示 LUT，而不是在原粒子系统内随机化 age；`curve_1024` 仍覆盖同一系统的 1024 粒子 LUT 求值。
+- 性能数据来自 Debug 构建和单场景，未覆盖 10k/100k/1M 或 Release；V1 只记录，不设门槛。
+- `spawner_bursts` 截图容量为 64、1.5 秒时 22 粒子；1024 粒子 CPU reference 只在 `reference_1024` 等场景覆盖。
 
 ---
 
@@ -463,68 +546,174 @@
 
 ### V1.2.1 Rendering data / KVP / indirection
 
-- [ ] `renderKVP` buffer（counter + KVP）；`indirection` buffer。
-- [ ] `output_update`：alive 才注册 KVP；无排序时写顺序索引。
-- [ ] sort 后写 indirection；VS 读 `indirection[slot]`。
-- [ ] 单测：KVP 内容/计数/索引范围。
-- [ ] 参考 `Shaders/Temp/Data/RenderingData.hlsl:4-61`、`RenderingDataDescriptionWriter.cs:54-96`。
+- [x] `renderKVP` buffer（counter + KVP）；`indirection` buffer。
+- [x] `output_update`：alive 才注册 KVP；无排序时写顺序索引。
+- [x] sort 后写 indirection；VS 读 `indirection[slot]`（V1.2.2 完成）。
+- [x] 单测：KVP 内容/计数/索引范围。
+- [x] 参考 `Shaders/Temp/Data/RenderingData.hlsl:4-61`、`RenderingDataDescriptionWriter.cs:54-96`。
+
+**实现**
+- `.vfxb` binary version 提升到 **2**；每 system 增加 buffer kind **7=renderKVP**：`(1 + capacity) * 8`B，word0=key、word1=counter，随后 `capacity` 个 `{key:f32, index:u32}`。counter 与 KVP 同 buffer，布局对齐原 `VFXSortingData`/`RenderKVP`；`indirection` 仍为每粒子 `u32`。
+- `output_update` 绑定 attributes(0,RO)、renderKVP(1,RW raw)、indirection(2,RW raw)、renderCount(3,RW uint)：先 atomic 增加 renderCount，再写 KVP `{0.0, particleIndex}` 与顺序 indirection `[previousCount]=particleIndex`；只有 `alive` 粒子注册。
+- `spawner` 清零 renderKVP counter；`fill_indirect` 在写完 32B args 后把 renderCount 复制到 KVP counter，保证 readback 时 `renderKVP.count == renderCount == alive`。KVP key 暂为 0，V1.2.2 接入 distance/custom 排序键后替换。
+- VS 现有 `s_vfxIndirection[particleSlot]` 保持不变；无排序时 indirection 为顺序索引，因此输出路径不需要分支。
+- 参考原码：`Shaders/Temp/Data/RenderingData.hlsl:4-61`（KVP/counter/indirection）、`Shaders/Temp/Templates/OutputUpdate.hlsl:14-33`（alive 才注册）、`Editor/NewCompiler/Data/DescriptionWriter/RenderingDataDescriptionWriter.cs:54-96`（counter/keys buffer 分离语义）、`Shaders/Sort.compute:65-120`（key 相等按 index 升序的 tie-break 留给 V1.2.2）。
+- 验证：compiler 测试检查 8 个 buffer、binary v2、outputUpdate 4 个 binding、KVP/indirect 内容；runtime Mock 检查 8 个 buffer 与逐 kernel binding；`vfx_reference` 读回 KVP counter/全部 index，检查 `kvp_count == render_count == draw_count`、索引范围/唯一性且与 indirection 集合一致。
 
 **验收**
-- [ ] `alive` 与 KVP count 一致；indirection 覆盖 [0,alive)。
-- [ ] 无排序时画面与 V1.0b 一致。
+- [x] `alive` 与 KVP count 一致；indirection 覆盖 [0,alive)。
+- [x] 无排序时画面与 V1.0b 一致（22/22 VFX CTest 全部通过，feature golden 未重生成）。
+- [x] `vfxbake --check` 8 个资产通过；全量 CTest 44/44。
 
 ---
 
 ### V1.2.2 GPU sort（bitonic + merge）
 
-- [ ] 迁移 `Sort.compute` 语义：KVP、tie-break、descending/ascending。
-- [ ] 128/1024/2048/4096 单 dispatch；更大走 pre-pass + merge。
-- [ ] 每 output 排序或全局排序（V1 按 output）。
-- [ ] 单测：随机 KVP 排序与 CPU std::sort 比较；稳定性。
-- [ ] 参考 `Shaders/Sort.compute:1-120,240-345`。
+- [x] 迁移 `Sort.compute` 语义：KVP、tie-break、descending/ascending。
+- [x] 128/1024/2048/4096 单 dispatch；更大走 pre-pass + merge。
+- [x] 每 output 排序或全局排序（V1 共享 system 排序/indirection；output sort 必须与 system 一致）。
+- [x] 单测：随机 KVP 排序与 CPU std::sort 比较；稳定性。
+- [x] 参考 `Shaders/Sort.compute:1-120,240-345`。
+
+**实现**
+- `.vfxb` binary version **3**；每 system 固定 **9** 个 buffer，新增 **kind 8=sortScratch**（`capacity * 8`B）。`renderKVP` 保持 `(1 + capacity) * 8`B；KVP 仍为 `{key:f32, index:u32}`，key 相等按 index 升序 tie-break。
+- `output_update` 生成 sort key：`distance` 用 world/effect 空间的平方相机距离（需 `u_vfx_world`、`u_global_cameraPos`）；`custom` 读取系统声明的 scalar `sortKey` 属性，缺失时编译报错。KVP key 不再固定 0。
+- 排序 kernel：`capacity <= 4096` 用一次 4096-element bitonic dispatch，LDS `{key,value}`，直接写 indirection；`capacity > 4096` 每个 4096-KVP chunk 单独 dispatch bitonic pre-pass 写 sortScratch（chunk base 通过 `u_vfx_ids.z` 传入），随后按 4096→8192→… 做 merge；merge 用 64 线程、二分 partition 求 rank，支持 descending 与 tie-break，最终写 indirection。
+- `spawner` 清 KVP counter；`fill_indirect` 继续同步 renderCount 到 KVP counter；`sortPasses` 诊断统计 bitonic/pre-pass/merge dispatch。
+- KVP/sortScratch 在 bgfx 适配层以 `StorageVertex` 创建；大于 64KB 的 DynamicIndex storage 在 Vulkan 作为 compute storage 会触发 device lost。
+- 测试：CPU `vfx::reference::sortKVP` 对 4096 随机 key/value 与 `std::sort` 升/降序比较；compiler 检查 binary v3、9 buffer、sort kernel、custom key；runtime Mock 检查 sorted 8192 的 pre-pass×2 + merge 调度和 `sortPasses`；`vfx_reference` 对 1024（单 dispatch）、8192（pre-pass+merge）、262144（最大容量）校验 KVP key 与 indirection。
+- 资产：`reference_sorted_{1024,8192,262144}.vfx.json/.vfxb` 覆盖单 dispatch、pre-pass+merge、最大容量；`sort_visual.vfx.json/.vfxb` + `vfx_sort.gltf` 提供排序 golden，`sort_visual_off.vfx.json/.vfxb` + `vfx_sort_off.gltf` 提供 on/off 对照。
+- 参考原码：`Shaders/Sort.compute:65-120`（KVP/tie-break）、`:159-238`（bitonic LDS）、`:240-345`（merge）、`Shaders/Temp/Data/RenderingData.hlsl:4-61`。
 
 **验收**
-- [ ] 排序结果与 CPU 参考一致（key/value）。
-- [ ] 排序 on/off 画面可区分；透明粒子前后关系正确。
-- [ ] 最大容量压力测试（262144）无越界/NaN。
+- [x] 排序结果与 CPU 参考一致（key 1e-3；GPU KVP 排序后 indirection 完全一致）；1024/8192/262144 D3D11 与 Vulkan 通过。
+- [x] 排序 on/off 画面可区分；`vfx_sort` 10 帧 D3D11 截图与无排序场景有 2304 像素差异，透明前后关系正确；`hbg_vfx_sort_on_off_d3d11` 自动比较两场景截图并拒绝相同输出。
+- [x] 最大容量压力测试（262144）无越界/NaN；D3D11 与 Vulkan `vfx_reference` 均通过。
+- [x] 全量 CTest **55/55**；`vfxbake --check` 13 个资产通过。
+- 限制：V1 所有 output 共享 system 排序；custom key 使用 scalar `sortKey` 属性而非 output slot；>4096 pre-pass 为每 chunk 单 dispatch，优先正确性/稳定性，性能留到 V1.2.5。
 
 ---
 
 ### V1.2.3 GPU 事件 + prefix sum
 
-- [ ] GPU event list（counter/total/index/attributes）。
-- [ ] 死亡生成/子发射器；事件属性传递。
-- [ ] 跨 system prefix sum（`VFXPrefixSum.compute` 语义）。
-- [ ] 事件上限/丢弃策略；诊断计数。
-- [ ] 单测：单/多 system 事件数/属性。
-- [ ] 参考 `Shaders/Temp/Data/EventListData.hlsl:37-84`、`Shaders/VFXPrefixSum.compute:27-143`、`Editor/NewCompiler/Builder/GpuEventBuilder.cs`。
+- [x] GPU event list（counter/total/prefix/dropped/frameCount/index/attributes）。
+- [x] 死亡生成/子发射器；事件属性传递。
+- [x] 跨 system prefix sum（`VFXPrefixSum.compute` 语义）。
+- [x] 事件上限/丢弃策略；诊断计数。
+- [x] 单测：单/多 system 事件数/属性。
+- [x] 参考 `Shaders/Temp/Data/EventListData.hlsl:37-84`、`Shaders/VFXPrefixSum.compute:27-143`、`Editor/NewCompiler/Builder/GpuEventBuilder.cs`、`ParticleSystemBuilder.cs:565-580`。
+
+**实现**
+- 事件连接：`emit`/`receive` 按名称一对一；V1 单层 producer→consumer，receiver 不能有 CPU spawner。
+- event buffer 为每 effect 一份全局 Storage `vfx.events`；每 link 5 个 header uints（`elementCount`/accepted `totalCount`/`prefix`/`dropped`/`frameCount`）+ `capacity` 个 source index + `capacity*16` payload words；payload 最多 4 个 `float4` slot。
+- producer `update`：无 `trigger_event` 时 alive→dead 自动写 1 个事件；`trigger_event { event, count?, condition? }` 支持 count，未给 condition 时仍按死亡触发；每个粒子写入受 receiver capacity 限制，超出写 `dropped`。
+- consumer `init`：读 `frameCount`/`prefix`，不依赖 CPU spawnCount；payload 在 init blocks 后覆盖 consumer 属性；`particleId = prefix + eventIndex`。
+- 每帧调度：首帧/reset `event_reset`（task 12）→ 无 event 输入的 producer simulation → `event_prefix_sum`（task 11，128-thread Sklansky；写入 frameCount/prefix 并清 elementCount）→ consumer simulation。
+- binary v4：EVENTS section 存 link producer/consumer/capacity/offset/name/payload/receive 映射；KERNELS 支持 global task 11/12；BINDINGS kind 2 绑定 `vfx.events`。
+- 限制：单 effect、单层事件图、无 CPU event、payload 经 float4（uint/int/bool 精度受限）、总 event buffer ≤64 KiB；`Diagnostics::eventCount` 仅事件链数。
+
+**实现位置**
+- `vfx/src/compiler/codegen.cpp`：`CompiledEventLink`、`makeEventResetSource`、`makeEventPrefixSource`、producer append、`makeEventInitSource`。
+- `vfx/src/compiler/binary.cpp`：binary v4 EVENTS/global kernels。
+- `vfx/src/runtime/runtime_asset.*`：event link/buffer 解析、global program。
+- `vfx/src/runtime/runtime.cpp`：`vfx.events` 创建、reset/prefix 调度、event binding。
+- `vfx/src/reference/cpu_reference.cpp`：`simulateEventCount`；`src/render/vfx/vfx_reference.cpp` 的 `--vfx-event-reference` 读回校验。
+- `vfx/tests/assets/vfx_event.*`、`vfx_events_count.*`、`vfx_events_multi.*`、`vfx_events_overflow.*`。
+
+**验证**
+- `hbg_vfx_compiler_tests` 15/15、251 assertions；事件 codegen/binary roundtrip/trigger count/错误映射。
+- `hbg_vfx_runtime_tests` 10/10、226 assertions；event reset/prefix/consumer 调度、19 buffers、16 programs。
+- `--vfx-event-reference` D3D11 + Vulkan：
+  - `vfx_event` 16 个死亡事件，payload position/color 与 producer 一致。
+  - `vfx_events_count` count=2，32 事件。
+  - `vfx_events_multi` 双链 8+16，prefix `0/8` 连续，particleId base 正确。
+  - `vfx_events_overflow` producer 128 → receiver capacity 64，accepted 64、dropped 64。
+- 全量 CTest **64/64**；`vfxbake --check` **17** 个资产通过。
 
 **验收**
-- [ ] 事件链（A 死亡 → B 生成）数量/属性正确。
-- [ ] 双 system 事件并发时 prefix sum 连续。
-- [ ] CPU reference/读回一致（epsilon）。
+- [x] 事件链（A 死亡 → B 生成）数量/属性正确。
+- [x] 双 system 事件并发时 prefix sum 连续。
+- [x] CPU reference/读回一致（epsilon）。
 
 ---
-
 ### V1.2.4 CPU 事件 + 事件属性
 
-- [ ] `Effect::sendEvent(name, attributes)`。
-- [ ] CPU 事件缓冲/前缀和；下游 init 读取。
-- [ ] 事件属性类型/默认值校验。
-- [ ] 单测：事件顺序/属性映射。
+- [x] `Effect::sendEvent(name, attributes)`。
+- [x] CPU 事件缓冲/前缀和；下游 init 读取。
+- [x] 事件属性类型/默认值校验。
+- [x] 单测：事件顺序/属性映射。
+
+**实现**
+- 只有 `receive`、没有同名 `emit` 的 system 编译为 CPU event link；consumer 不能有 CPU spawner，`receive.attributes` 必须显式（最多 4 个 payload，consumer 属性 → CPU EventAttribute 名称）。
+- `Effect::sendEvent` 按调用顺序入 per-effect pending queue；容量 = receiver 64 对齐 capacity，超出写 `dropped`；未知事件名/类型不兼容通过 error callback 报告且不入队。
+- 缺少 event attribute 时使用 consumer 属性默认值；`float/int/uint/bool/float2/3/4` 严格匹配 payload 类型。
+- runtime 将 pending 写入 `vfx.cpu.events` staging buffer（Storage + `initialData`/COMPUTE_READ，`updateBuffer` 每帧上传），dispatch `event_cpu_upload`（task 13）复制 CPU link 范围到全局 `vfx.events`；随后统一 `event_prefix_sum` + event init。
+- binary v5：CPU link 的 `producerSystem=0xffffffff`；EVENTS payload 记录增加 `type/default`（28B）；BINDINGS kind 3 绑定 CPU staging。
+- 限制：每 receive 单 CPU 事件名/单 payload；CPU receiver 不能有 CPU spawner；总 event buffer ≤64 KiB；精确诊断仍需读 event buffer。
+
+**实现位置**
+- `vfx/src/compiler/codegen.cpp`：CPU link 构建、`makeEventCopySource`、`EventCopy` task 13。
+- `vfx/src/compiler/binary.cpp`、`vfx/src/runtime/runtime_asset.*`：binary v5 CPU link/payload metadata。
+- `vfx/src/runtime/runtime.cpp`：`sendEvent`、CPU pending/staging upload、event binding/copy dispatch。
+- `vfx/tests/assets/vfx_cpu_event.*`。
+- `src/render/vfx/vfx_reference.cpp` 的 `--vfx-cpu-event-reference`。
+
+**验证**
+- `hbg_vfx_compiler_tests` 16/16、275 assertions（CPU link/copy/binary roundtrip）。
+- `hbg_vfx_runtime_tests` 11/11、243 assertions（CPU pending、类型/未知事件错误、reset/upload/prefix/consumer 调度）。
+- `hbg_vfx_tests` 56/56、37563；adapter 4/4、274。
+- `--vfx-cpu-event-reference` D3D11 + Vulkan：发送 66 次，accepted 64、dropped 2；前 3 个事件属性/顺序正确，缺失 color 使用默认白色，错误类型被拒绝。
+- 全量 CTest **66/66**；`vfxbake --check` **18** 个资产通过。
 
 **验收**
-- [ ] 事件触发数量与调用次数一致（有上限时记录丢弃）。
-- [ ] 属性映射正确（CPU/GPU）。
+- [x] 事件触发数量与调用次数一致（有上限时记录丢弃）。
+- [x] 属性映射正确（CPU/GPU）。
 
 ---
-
 ### V1.2.5 V1.2 验收
 
-- [ ] 事件/排序 golden（D3D11/Vulkan）。
-- [ ] 确定性（固定 seed/dt/frame）。
-- [ ] 性能记录（sort/事件）。
-- [ ] 文档回填。
+- [x] 事件/排序 golden（D3D11/Vulkan）。
+- [x] 确定性（固定 seed/dt/frame）。
+- [x] 性能记录（sort/事件）。
+- [x] 文档回填。
+
+**实现**
+- `vfx/tests/assets/vfx_events_visual.vfx.json/.vfxb`：连续 GPU 死亡事件样例；Emitter 以 24/s + 初始 8 个 Burst 生成，lifetime 0.1s，死亡自动 emit `position/color`；Receiver lifetime 0.5s，event init 后以 size 0.40/alpha 0.9 输出 alpha quad。30 帧时约 10-12 个接收粒子可见，避免一次性 Burst 在 golden 中只剩空场景。
+- `vfx/tests/assets/vfx_events.gltf/.hdrp.json`：固定相机 `[0,1,8]`、`seed=0`、`playRate=1.0`；`vfx/tests/golden/vfx_events_{d3d11,vulkan}.png` 为 30 帧逐后端 golden，两后端当前逐字节一致。
+- `vfx/tests/run_vfx_determinism.cmake`：同一场景、同一后端、同一 `--frames` 连续启动两次，固定 `--width=640 --height=360 --no-vsync`，逐字节比较两次 PNG；`vfx/CMakeLists.txt` 为 sort/events 各注册 D3D11/Vulkan 确定性测试。render-test 固定按 `frame/60` 推进时间，effect seed 来自 `.hdrp.json`，因此 seed/dt/frame 均固定。
+- `src/render/vfx/vfx_reference.cpp`：reference 增加 `submit_ms_per_frame`、`steady_ms_per_frame`（跳过前 2 帧管线初始化）、`first_frame_ms`、`readback_ms`、`dispatches`、`sort_passes` 日志；用于 1024/8192/262144 大规模 sort 记录。
+
+**性能记录（1920×1080，300 帧，Debug，full pipeline）**
+
+| 场景 | D3D11 | Vulkan | VFX 粒子/绘制/派发 |
+|---|---|---|---|
+| events（2 system，连续事件） | 1.485 ms / 673.4 fps | 4.252 ms / 235.2 fps | 64 / 2 / 11 |
+| sort（64 粒子，distance） | 1.529 ms / 653.9 fps | 4.067 ms / 245.9 fps | 64 / 1 / 6 |
+
+**大规模 sort reference（10 帧固定 dt=0.1、64×64，Debug）**
+
+| capacity | D3D11 steady | Vulkan steady | D3D11 readback | Vulkan readback | dispatches / sort passes |
+|---|---|---|---|---|---|
+| 1024 | 0.731 ms | 1.185 ms | 4.345 ms | 6.459 ms | 6 / 1 |
+| 8192 | 1.113 ms | 1.100 ms | 15.827 ms | 7.645 ms | 8 / 3 |
+| 262144 | 6.129 ms | 8.121 ms | 70.873 ms | 64.184 ms | 75 / 70 |
+
+**验收**
+- [x] sort 原 golden 未回归，events 新增 D3D11/Vulkan golden；`vfx_events` 两后端 0 字节差异；sort on/off 仍为 2304 像素差异。
+- [x] `hbg_vfx_determinism_{sort,events}_{d3d11,vulkan}` 全部通过：同 seed/dt/frame 两次渲染逐字节一致。
+- [x] `hbg_vfx_compiler_tests` 16/16、275；runtime 11/11、243；core 56/56、37563；adapter 4/4、274。
+- [x] VFX 相关 CTest **47/47**；全量 CTest **73/73**；`vfxbake --check` **19** 个资产通过。
+- [x] 性能数据已记录；Debug 构建，仅记录，不设硬门槛。
+
+**原码对齐**
+- Sort：`Shaders/Sort.compute:65-120` 的 KVP/等 key tie-break、`:159-238` bitonic、`:240-345` merge；本实现保持升/降序与 value 升序 tie-break。
+- Event：`Shaders/Temp/Data/EventListData.hlsl:8-84` 的 `elementCount/totalCount/prefix/spawnCount` 语义与 source index 读取；`VFXGPUEvent.hlsl` 的 GPU event append 行为。
+- 随机/确定性：`Shaders/VFXCommon.hlsl:396-424` 的 `WangHash`；本实现 CPU reference 与生成 HLSL 使用同一 hash 形制，固定 effect seed 后逐帧可重复。
+
+**限制/偏差**
+- events 性能样例是“连续死亡事件 + 单层 receiver”，不覆盖多层事件图；大规模 sort reference 排除前 2 帧管线初始化，且 readback 单独计时，不代表纯 GPU sort 时间。
+- 事件 golden 是单帧 30 帧画面，事件正确性由 event reference（frameCount/prefix/payload/consumer attrs）和确定性测试共同保证；CPU event 无独立可视 golden，由 `--vfx-cpu-event-reference` 覆盖。
+- 未设性能门槛；Release、10k/100k/1M 粒子和 GPU timer 分解留到 V1.4。
 
 ---
 
@@ -532,51 +721,137 @@
 
 ### V1.3.1 子图展开
 
-- [ ] 纯函数子图：输入/输出、参数重映射。
-- [ ] 递归深度 ≤16；循环检测。
-- [ ] 子图内 block/表达式展开到父图。
-- [ ] 单测：展开前后 CPU reference/生成 shader 等价。
-- [ ] 参考 Unity `VFXSubgraph*`（按需复核）。
+- [x] 纯函数子图：输入/输出、参数重映射。
+- [x] 递归深度 ≤16；循环检测。
+- [x] 子图内 block/表达式展开到父图。
+- [x] 单测：展开前后 CPU reference/生成 shader 等价。
+- [x] 参考 Unity `VFXSubgraph*`（按需复核）。
+
+**实现**
+- `vfx/src/core/subgraph.cpp/.h`：解析子图 `inputs/outputs`，校验名称/类型/默认值/重复项；表达式调用 `{"op":"subgraph",...}` 与 block 调用 `{"type":"subgraph",...}` 都在 `parseGraphJson` 阶段展开。
+- 输入引用支持 `{"op":"input","name":"X"}`（`arg` 同义）和同名 `property` 优先绑定；未传 args 时使用 default，缺失参数报错。表达式 output 必须提供 `value`，多 output 通过 `output` 选择。
+- block 子图按父 block 的 init/update stage 展开对应块列表，可递归嵌套；展开后子图结构从 `Graph::subgraphs` 清除，`.vfxb` 不保留子图。
+- 递归深度上限 16；定义级 DFS 检测未使用子图的循环/缺失引用，展开时再次检测调用栈；错误路径覆盖 `subgraphs[i]`、`systems[i].init/update.blocks[j]`、args/output。
+- `vfx/src/core/asset_json.cpp`：新增 `subgraph`/`input`/`arg` JSON op、`subgraph` block spec，并在表达式校验前调用 flatten；`vfx/src/compiler/codegen.cpp` 对手工构造的 Graph 再做一次 flatten 防护。
+
+**验证**
+- `hbg_vfx_tests` 61/61、37628 assertions：纯函数/block 子图、默认参数、嵌套、多 output 选择、循环/过深/缺失参数。
+- `hbg_vfx_compiler_tests` 17/17、301 assertions：subgraph 与手写展开图的 kernel/output shader source 完全一致。
+- CPU reference：同 seed/dt/frame 下 subgraph 展开与手写展开的 position/velocity/color/age/seed 一致。
+- 参考 Unity：`VFXSubgraphBlock.cs:135-168`（RecreateCopy/嵌套）、`:196-216`（PatchInputExpressions/recursiveSubBlocks）；`VFXSubgraphOperator.cs:14-34`（TransferExpressionToParameters）、`:214-227`（input/output properties）。
+- 临时 subgraph probe 经 `vfxbake` dual-backend 烘焙成功，两次输出二进制 0 差异；VFX CTest 47/47，`vfxbake --check` 19 个既有资产通过。
+- V1.3.4 已补 checked-in 子图资产、D3D11/Vulkan golden 与 fixture 编译测试（见 V1.3.4）。
 
 **验收**
-- [ ] 展开前后渲染/仿真一致（epsilon/0-diff）。
-- [ ] 循环/过深报错带 JSON 路径。
+- [x] 展开前后 CPU reference/生成 shader 一致（epsilon/0-diff）。
+- [x] 循环/过深/缺参报错带 JSON 路径。
+
+**限制/偏差**
+- 子图在 parse 阶段一次性展开，不支持运行时热重载后的增量重展开；V1.3.3 处理重建。
+- `inputs/outputs.type` 已解析但未强制约束表达式推断类型；自定义属性合并/Unity 的 context subgraph 尚未实现。
+- block 子图的 `outputs` 不参与父 block；只展开 init/update blocks。
 
 ---
 
 ### V1.3.2 自定义 HLSL block
 
-- [ ] 字段：`code`/`reads`/`writes`。
-- [ ] 校验：禁用 include/define/buffer/uniform；只读写声明属性。
-- [ ] 注入宏：`VFX_ATTR`/`VFX_SET_ATTR`/`VFX_PROP`/`VFX_TIME`/`VFX_DT`。
-- [ ] 生成 kernel 作用域；shaderc 双后端门禁。
-- [ ] 单测：合法/非法代码；属性读写检查。
-- [ ] 参考 `Editor/Models/Blocks/Implementations/HLSL/CustomHLSL.cs`（语义/限制参考，不复制）。
+- [x] 字段：`code`/`reads`/`writes`。
+- [x] 校验：禁用 include/define/buffer/uniform；只读写声明属性。
+- [x] 注入宏：`VFX_ATTR`/`VFX_SET_ATTR`/`VFX_PROP`/`VFX_TIME`/`VFX_DT`。
+- [x] 生成 kernel 作用域；shaderc 双后端门禁。
+- [x] 单测：合法/非法代码；属性读写检查。
+- [x] 参考 `Editor/Models/Blocks/Implementations/HLSL/CustomHLSL.cs`（语义/限制参考，不复制）。
+
+**实现**
+- `vfx/src/core/custom_hlsl.{h,cpp}`：解析/校验 `code`/`reads`/`writes`，属性存在性与重复检查，32 KiB 上限，HLSL 行/列错误；`VFX_ATTR` 读、`VFX_SET_ATTR` 写、`VFX_PROP`/`VFX_LIFETIME_RATIO` 引用检查；禁止 `#` 预处理、buffer/uniform/texture/sampler、`a_*`/`attributes.Load_*`/`Store_*`、`s_vfx*`/`u_vfx*`、`return`/`discard`/barrier 等。
+- `vfx/src/core/asset_json.cpp`：init/update 均接受 `custom_hlsl`；parse 完成后在 `validateGraphExpressions` 前执行 `validateGraphCustomHlsl`。
+- `vfx/src/compiler/codegen.cpp`：`VFX_SET_ATTR(name, value)` 宏；init/update 自定义代码包在显式 `{ ... }` 作用域；`collectBlockUsage` 合并声明 reads/writes；手写 Graph 也经同一校验。
+- `vfx/tests/test_vfx_asset_json.cpp`：合法 init/update、默认参数/属性宏、注释中的 `#`；非法定义、未知属性、缺 reads/writes、直接 `a_*`、写只读 `VFX_ATTR`、`VFX_LIFETIME_RATIO` 缺声明、uniform/buffer/StructuredBuffer/return。
+- `vfx/tests/test_vfx_compiler.cpp`：生成 shader 含宏/作用域/自定义代码；`compileGraph` 合法样例 dxbc+spirv 烘焙。
+- 参考 Unity：`Editor/Models/Blocks/Implementations/HLSL/CustomHLSL.cs:11-42`（void/VFXAttributes/input 校验）、`:389-436`（`BuildSource` 初始化 `VFXAttributes`、调用函数、写回属性）、`:438-447`（`BuildCustomCode` 函数名后缀）；V1 采用宏化语句片段，不复制 Unity 的完整 HLSL parser/function editor。
+
+**验证**
+- `hbg_vfx_tests` 62/62, 37665 assertions；合法/非法样例通过。
+- `hbg_vfx_compiler_tests` 19/19, 414 assertions；设置 `VFX_TEST_SHADERC`/`VFX_TEST_BGFX_SOURCE` 时合法样例 dxbc+spirv 烘焙通过。
+- VFX CTest 47/47；全量 CTest 77/77；`vfxbake --check` 19 个既有资产通过；临时 custom HLSL probe 双后端烘焙成功且两次输出 0 差异。
+- V1.3.4 已补 checked-in `custom_hlsl_visual` 资产、D3D11/Vulkan golden 与 fixture 编译测试（见 V1.3.4）。
+- 自定义代码只通过声明的 `reads`/`writes` 访问属性；直接生成变量访问被拒绝。
 
 **验收**
-- [ ] 合法样例双后端编译通过；非法样例明确报错。
-- [ ] 自定义代码只影响声明属性。
+- [x] 合法样例双后端编译通过；非法样例明确报错。
+- [x] 自定义代码只影响声明属性。
+
+**限制/偏差**
+- 没有完整 HLSL parser/type checker；语法与类型由 shaderc 双后端把关，校验器只覆盖安全性/声明约束。
+- 不支持函数定义、include、平台特定 intrinsic、output stage 自定义块；`VFX_ATTR` 的写检测覆盖直接赋值/复合赋值/自增和 swizzle/索引左值；通过 HLSL 出参/内在函数间接写入不在 V1 保证范围。
 
 ---
 
 ### V1.3.3 图校验 / 错误定位 / hot reload
 
-- [ ] 所有错误带 JSON 路径 + 源码/hlsl 行号（如可得）。
-- [ ] `vfxbake --check` 在 CI 上校验测试资产。
-- [ ] 运行时 `Runtime::reloadEffect` 或 effect 重建（V1 支持销毁重建即可）。
-- [ ] 编辑器后续直接链接 `vfx_compiler`。
+- [x] 所有错误带 JSON 路径 + 源码/hlsl 行号（如可得）。
+- [x] `vfxbake --check` 在 CI 上校验测试资产。
+- [x] 运行时 `Runtime::reloadEffect` 或 effect 重建（V1 支持销毁重建即可）。
+- [x] 编辑器后续直接链接 `vfx_compiler`。
+
+**实现**
+- `vfx/include/vfx/asset.h:14-43`：`ErrorLocationKind`、`ParseError{path,message,source,line,column,location}`、`formatParseError`、`locateJsonPath`；JSON 错误按路径定位到源码行列，HLSL 错误使用代码内行列。
+- `vfx/src/core/asset_json.cpp:117-411,2199-2233`：`JsonLocationFinder` 扫描合法 JSON 的对象/数组路径；`parseGraphJson` 为所有非 HLSL 错误补 `source/line/column`，缺失字段回退到根位置；语法错误从 nlohmann `parse_error` 提取行列。
+- `vfx/src/core/custom_hlsl.cpp:499-588`：`CustomHlslError` 结构化错误，`.code` 路径 + HLSL 行列；`formatCustomHlslError` 供 codegen 使用。
+- `vfx/src/core/asset_json.cpp:613-636`：自定义 HLSL 错误映射为 `ParseError`，非 `.code` 错误保留 JSON 路径并由定位器补行号。
+- `vfx/src/compiler/compiler.cpp:47-59,309-343`：`compileGraph(json, options, sourceName)`，解析/代码生成错误进入 `CompileResult.errors`；`captureCompilerError` 将 codegen 的 `path: message` 补充 JSON 行列。
+- `vfx/src/runtime/runtime.cpp:1365-1455`：`Runtime::reloadEffect(Effect*, Asset, ...)`、`reloadEffect(Effect*, path, ...)`；先创建新 effect，成功后才销毁旧 effect；`pruneAssets` 释放无 effect 引用的资产；`refreshDiagnostics` 统一统计。
+- `vfx/include/vfx/runtime.h:77-96`：公开 reload API；`vfx/CMakeLists.txt:22` 提供 `vfx_compiler` alias，编辑器可直接链接 `hbg_vfx_compiler`/`vfx_compiler`。
+- `vfx/CMakeLists.txt:78-97`：有 `HBG_SHADER_COMPILER` 时注册 `hbg_vfx_compiler_tests` 的双后端环境，并新增 `hbg_vfx_asset_check` 调用 `vfxbake --check`；CI 使用默认 `HBG_BUILD_SHADER_TOOLS=ON` 或设置 `HBG_SHADERC` 即会执行。
+- `vfx/tests/test_vfx_asset_json.cpp:172-210`：JSON 行列/源码/格式化测试；`:564-654` 自定义 HLSL 行列测试。
+- `vfx/tests/test_vfx_runtime.cpp:115-203`：成功 reload（旧资源销毁、新资源存活）、失败 reload（旧 effect 保留）测试。
+- 验证：`hbg_vfx_tests` **63/63, 37701 assertions**；`hbg_vfx_runtime_tests` **13/13, 277**；`hbg_vfx_compiler_tests` **19/19, 421**；VFX CTest **48/48**、全量 CTest **79/79**；`vfxbake --check` **19** 个资产通过。
+
+**参考**
+- `Editor/Models/VFXErrorManager.cs:20-49,68-82,120-145`：`VFXErrorManager` 按 model 收集编译/失效错误；`ReportError` 持有 `model/type/error/description`；`RegisterError` 去重并更新 dirty model。本项目用 JSON 路径替代 model，用 `ParseError` 保留错误类型/位置。
+- `Editor/Models/VFXGraph.cs:156-197`：`OnCompileResource` 后调用 `errorManager.RefreshCompilationReport()`；`:1447-1457` `Compile()` 调用编译器后 `errorManager.GenerateErrors()`；`:1664-1674` `CompileAndUpdateAsset` 先 `ClearPreviewAssets()` 再替换 asset desc。
+- `Editor/Models/Blocks/Implementations/HLSL/CustomHLSL.cs:268-286`：自定义 HLSL 的 validator 错误逐条注册到 `VFXErrorReporter`；本项目映射为 `.code` 的 HLSL 行列。
 
 **验收**
-- [ ] 错误路径测试覆盖 ≥10 类。
-- [ ] 热重载后状态/资源无泄漏。
+- [x] 错误路径测试覆盖 ≥10 类（根/版本/属性/重复名/block type/block field/表达式 op/表达式引用/容量/burst/output/sort/子图/custom HLSL 等）。
+- [x] 热重载后状态/资源无泄漏：Success reload 创建 9 buffer/7 program/1 texture，旧 effect 销毁后 live 回到 9/7/1，最终 destroy 后 0；失败 reload 保持旧 effect 和原 live 资源。
+
+**限制/偏差**
+- V1 的 reload 是销毁重建，不保留旧 effect 的播放时间、pending 事件或属性覆盖；需要播放状态时由调用方在 reload 后重设。
+- JSON 定位以字段 key 为位置；缺失 required 字段无可定位 key 时回退到根/首行。shaderc 生成 shader 的日志不含 JSON 行，无法反推到 `.vfx.json` 行号。
+- Unity 通过 importer/reimport + `VisualEffectAssetDesc` 更新；本项目是显式 runtime API。编辑器当前不在仓库内，仅保证 `vfx_compiler` 静态库/CMake alias 可直接链接。
 
 ---
 
 ### V1.3.4 V1.3 验收
 
-- [ ] 子图/自定义 HLSL 的双后端 golden/编译测试。
-- [ ] 图校验测试。
-- [ ] 文档回填。
+- [x] 子图/自定义 HLSL 的双后端 golden/编译测试。
+- [x] 图校验测试。
+- [x] 文档回填。
+
+**实现**
+- `vfx/tests/assets/subgraph_visual.vfx.json/.vfxb`：`Tint` 纯函数子图 + `SeedParticles` block 子图；block 子图调用纯函数子图，init 展开后生成 24 个 alpha quad；`vfx/tests/assets/custom_hlsl_visual.vfx.json/.vfxb`：custom HLSL 按 `position.x` 设置颜色并写 alpha/size，init/update 走正常 kernel。
+- `vfx/tests/assets/vfx_subgraph.gltf/.hdrp.json`、`vfx/tests/assets/vfx_custom_hlsl.gltf/.hdrp.json`：固定相机 `[0,0,8]`、seed 0、30 帧。
+- `vfx/tests/golden/vfx_subgraph_{d3d11,vulkan}.png`、`vfx/tests/golden/vfx_custom_hlsl_{d3d11,vulkan}.png`：逐后端 golden；两场景当前 D3D11/Vulkan 均逐字节一致。
+- `vfx/CMakeLists.txt`：`add_vfx_feature_golden(subgraph ...)`、`add_vfx_feature_golden(custom_hlsl ...)` 共 4 个 CTest；`hbg_vfx_compiler_tests` 新增 fixture 双后端 `compileGraphFile` 测试；`hbg_vfx_asset_check` 批量校验 21 个 `.vfx.json`。
+- `vfx/tests/test_vfx_asset_json.cpp`：新增 subgraph 声明校验（未知 input type、重复 input/output、缺 output value）与 custom HLSL 字段校验（缺/非字符串 `code`、`reads` 非数组、`writes` 元素非字符串）。
+- 参考 Unity 原码：`Editor/Models/Blocks/VFXSubgraphBlock.cs:135-168,196-216`（子图复制/嵌套/PatchInputExpressions）、`Editor/Models/Operators/VFXSubgraphOperator.cs:14-34,214-227`（输入/输出重映射）、`Editor/Models/Blocks/Implementations/HLSL/CustomHLSL.cs:11-42,389-447`（自定义 HLSL 校验与 source 生成）。
+
+**验证**
+- `hbg_vfx_tests` **65/65, 37725 assertions**；`hbg_vfx_runtime_tests` **13/13, 277**；`hbg_vfx_compiler_tests` **20/20, 439**（带 shaderc 双后端）。
+- VFX CTest **52/52**、全量 CTest **84/84**；`vfxbake --check` **21** 个资产通过。
+- `hbg_vfx_golden_subgraph_{d3d11,vulkan}`、`hbg_vfx_golden_custom_hlsl_{d3d11,vulkan}` 均通过；两组 golden 的 D3D11/Vulkan 文件 SHA-256 相同（0 字节差异）。
+- 子图 fixture 与自定义 HLSL fixture 均通过 shaderc dxbc+spirv 双后端重新烘焙；`--check` 与 checked-in `.vfxb` 逐字节一致。
+
+**验收**
+- [x] 子图/自定义 HLSL 双后端 golden、编译 fixture 与 asset-check 覆盖。
+- [x] 图校验测试覆盖子图声明、参数、循环/深度与 custom HLSL 字段/安全约束。
+- [x] 文档、golden、测试资产与实现位置回填。
+
+**限制/偏差**
+- V1.3.4 golden 只验证视觉链路；custom HLSL 没有独立 CPU reference，语义安全性仍由 HLSL 声明校验 + 双后端编译 + golden 共同保证。
+- 子图仍不支持 context subgraph/自定义属性合并；custom HLSL 仍是语句片段子集，不支持函数/include/完整 HLSL parser。
+- golden 对驱动/shader 变化敏感；重新生成时必须同时保留 D3D11/Vulkan 两张图并记录跨后端差异。
 
 ---
 
@@ -584,77 +859,194 @@
 
 ### V1.4.1 Lit shading pack
 
-- [ ] `shaders/vfx/vfx_lit_quad.{vs,fs}.sc`：
-  - [ ] `SurfaceData` 填充；
-  - [ ] `hbgEvaluateLightLoop`；
-  - [ ] `hbgSampleDirectionalShadow`；
-  - [ ] contact shadow/环境/cluster 可选绑定。
-- [ ] Adapter `bindLighting`：复用 `PassUniforms`/`GlobalUniforms`/`ObjectUniforms`/`ClusterUniforms`/`EnvironmentUniforms`、stage 5/6/7/8/9/10/11/14/15；VFX attribute/indirection buffer 使用 stage 12/13。VFX lit variant **不得定义** `HBG_SHADOW_POINT_SAMPLER`/`HBG_SHADOW_AREA_SAMPLER`，否则 point/area depth sampler（12/13）与 buffer 冲突；需要时先重排 stage。
-- [ ] 提取共享 `bindForwardLighting()`，forward 与 VFX 共用（避免漂移）。
-- [ ] Lit output 属性：metallic/roughness；默认值。
-- [ ] 单测：stage/绑定表；lit program 存在。
-- [ ] 参考 `shaders/lighting/light_loop.sc:339`、`shaders/material/surface_data_types.sc:6-37`、`shaders/passes/forward.fs.sc:1-36`、`forward_renderer.cpp:6270-6310`。
+- [x] `shaders/vfx/vfx_lit_quad.{vs,fs}.sc`：
+  - [x] `SurfaceData` 填充；
+  - [x] `hbgEvaluateLightLoop`；
+  - [x] `hbgSampleDirectionalShadow`；
+  - [x] contact shadow/环境/cluster 可选绑定。
+- [x] Adapter `bindLighting`：复用 `PassUniforms`/`GlobalUniforms`/`ObjectUniforms`/`ClusterUniforms`/`EnvironmentUniforms`、stage 5/6/7/8/9/10/11/14/15；VFX attribute/indirection buffer 使用 stage 12/13。VFX lit variant **不得定义** `HBG_SHADOW_POINT_SAMPLER`/`HBG_SHADOW_AREA_SAMPLER`，否则 point/area depth sampler（12/13）与 buffer 冲突；需要时先重排 stage。
+- [x] 提取共享 `bindForwardLighting()`，forward 与 VFX 共用（避免漂移）。
+- [x] Lit output 属性：metallic/roughness；默认值。
+- [x] 单测：stage/绑定表；lit program 存在。
+- [x] 参考 `shaders/lighting/light_loop.sc:339`、`shaders/material/surface_data_types.sc:6-37`、`shaders/passes/forward.fs.sc:1-36`、`forward_renderer.cpp:6270-6310`。
+
+**实现**
+- `shaders/vfx/vfx_lit_quad.vs.sc/.fs.sc/.def.sc`：参考/编译检查模板；VS 使用 attribute/indirection stage 12/13，FS 填充 `SurfaceData`、采样 contact shadow、执行 `hbgSampleDirectionalShadow` + `hbgEvaluateLightLoop`。`vfx/src/compiler/codegen.cpp` 的 `makeOutputFragmentSource` 生成同结构的 lit FS；`shaders/vfx/vfx_lit_quad.*` 已用 shaderc 手动验证 dxbc/spirv（D3D 走 skip-optimization，避免 FXC 对 light loop 的保守未初始化告警）。
+- `vfx/include/vfx/graph.h`：`OutputDesc` 增加 `metallic`/`roughness`（默认 0/0.5）及可选 float property 名；`asset_json.cpp` 校验范围/property 类型；`codegen.cpp` 在 lit FS 中生成常量或 `u_vfxProp_*` 读取，`OutputProgram` 保留解析结果。
+- `src/render/passes/forward_lighting.h`：新增 `ForwardLightingContext` + 共享 `bindForwardLighting()`；`forward_renderer.cpp` 的 `drawForwardBatch`/`renderForwardPass` 改用该 helper，VFX adapter 复用同一函数。
+- `src/render/vfx/hbg_vfx_backend.cpp`：`bindLighting` 从 `FrameContext::lighting` 读取 forward lighting context，绑定 stage 5/6/7/8/9/10/11/14/15；VFX lit 变体不声明 point/area shadow sampler，12/13 留给 attribute/indirection。VFX context 关闭 GPU light-list buffer 与 cluster，`pass.lightListParams.w=0`，使用全局 light fallback；V1.4.3 已切透明 lit cluster。
+- `vfx/src/runtime/runtime.cpp`：lit output 上传 float property uniforms（供 metallic/roughness 覆盖），并调用 `ShadingProvider::bindLighting`；unlit 路径保持原直接 `u_global_*` 绑定，避免 bgfx uniform 重复设置。
+- 资产/测试：`vfx/tests/assets/lit_visual.vfx.json/.vfxb`（lit quad、metallic/roughness property）、`vfx_lit.gltf/.hdrp.json`（directional sun + shadow caster triangle）、`vfx/tests/golden/vfx_lit_{d3d11,vulkan}.png`、`vfx_lit_deferred_{d3d11,vulkan}.png`；`vfx/CMakeLists.txt` 注册 4 个 golden，`hbg_vfx_asset_check` 覆盖 22 个资产（V1.4.2 增至 24）。lit golden 使用 4 像素/通道 1 LSB tolerance，forward D3D/VK 有 3 像素、deferred 有 1 像素差异；普通 feature golden 仍严格逐字节。
+- `vfxbake`/`compileGraphFile`：lit shader include 需要 `shaders` 根；`compileGraphFile` 自动从资产路径向上寻找 `shaders/material/surface_data_types.sc`，显式 `--shader-pack` 优先。
+- `vfx/tests/test_vfx_compiler.cpp`：lit shader source、binding 12/13、无 point/area macro、双后端烘焙；`test_vfx_asset_json.cpp`：metallic/roughness 常量/property/范围；`test_vfx_hbg_backend.cpp`：lit effect 创建/输出、lightingBind 调用与 stage 常量。
+
+**验证**
+- `hbg_vfx_tests` **66/66, 37741 assertions**；`hbg_vfx_adapter_tests` **6/6, 298**；`hbg_vfx_compiler_tests` **21/21, 453**；`hbg_vfx_runtime_tests` **13/13, 277**。
+- `vfxbake --check` **22** 个资产；VFX CTest **56/56**、全量 CTest **89/89**（外部 shader-build 负载下 asset-check 超时阈值调至 900s）。
+- Lit scene: 4 directional shadow requests、8 shadow draws；forward/deferred D3D11/Vulkan 均通过；D3D vs Vulkan forward PSNR **101.76 dB** / 3 px max 1 LSB，deferred **106.53 dB** / 1 px max 1 LSB。
+- 共享 `bindForwardLighting()` 后既有 bursts/forces/collision/curves/sort/events/subgraph/custom_hlsl 双后端 golden 全部通过（0 字节差异）。
 
 **验收**
-- [ ] Lit VFX 在 forward/deferred 下被场景光照照亮；阴影方向正确。
-- [ ] 与 lit mesh 视觉趋势一致（记录截图/PSNR）。
-- [ ] 无 stage 冲突/validation error。
-- [ ] 共享 `bindForwardLighting()` 重构后，普通 forward 场景与重构前 **0 diff**（或记录 PSNR 与原因）。
+- [x] Lit VFX 在 forward/deferred 下被场景光照照亮；阴影方向正确（lit scene directional shadow requests/draws，shadow caster 阴影可见）。
+- [x] 与 lit mesh 视觉趋势一致（lit VFX + lit triangle shadow caster 同场景 golden）。
+- [x] 无 stage 冲突/validation error；VFX 12/13 buffer 与 forward point/area sampler 不重叠。
+- [x] 共享 `bindForwardLighting()` 重构后，普通 forward/full VFX golden 与重构前一致。
+
+**限制/偏差**
+- V1.4.1 VFX lit 使用**全局 light list fallback**，未启用 tile/cluster light list；V1.4.3 已接入透明 lit cluster。
+- VFX lit 不启用 point/area shadow sampler（12/13 被 attribute/indirection 占用）；directional/punctual 阴影可用，point/area 阴影留到后续 stage 重排。
+- lit output 的 metallic/roughness 只支持常量或 float property；完整 Unity output slot/材质图留到 V2。
+- lit golden 允许极小的 GPU 阴影/浮点 LSB 差异；lit 与 lit mesh 的严格逐像素对齐不成立。
 
 ---
 
 ### V1.4.2 Soft particles
 
-- [ ] FS 采样 scene depth（stage 4）；线性化；fade。
-- [ ] Output 属性 `softParticles`/`softDistance`。
-- [ ] 输出 pass 显式 `readTexture(depth)`。
-- [ ] 单测/截图：关闭时与 V1.3 一致；开启时边缘淡出。
+- [x] FS 采样 scene depth（stage 4）；线性化；fade。
+- [x] Output 属性 `softParticles`/`softDistance`。
+- [x] 输出 pass 显式 `readTexture(depth)`。
+- [x] 单测/截图：关闭时与 V1.3 一致；开启时边缘淡出。
+- [x] 参考 `VFXCommonOutput.hlsl:108-159`、`VFXAbstractParticleOutput.cs:108,280-343,460-461,573-574`、HDRP `Runtime/VFXGraph/Shaders/VFXCommon.hlsl:180-183`、`ParticlePlanarPrimitives/PassForwardCommon.template:20-21,68`、`VFXParticleCommon.template:15-17`。
+
+**实现**
+- `vfx/include/vfx/graph.h`：`OutputDesc` 增加 `softDistance`（默认 0.1，最小 0.001）；`asset_json.cpp` 解析/校验 `softParticles`、`softDistance` 并纳入 graph hash。
+- `vfx/src/compiler/codegen.cpp`：soft output 生成 `s_vfxSceneDepth`（stage 4）和 `u_vfxSoftParams`；FS 用 `gl_FragCoord` 取 raw depth，经 `u_global_invViewProj`/`u_global_view` 重建 scene/particle eye depth，`fade = smoothstep(saturate((sceneZ-selfZ)/softDistance))`，对齐 Unity `VFXGetSoftParticleFade`。`softParticles=false` 时保持原 unlit/lit shader 字节路径不变。
+- `vfx/src/compiler/codegen.h`、`vfx/src/compiler/binary.cpp`、`vfx/src/runtime/runtime_asset.*`：`.vfxb` version **6**，OUTPUTS 32B/条，新增 soft flag/softDistance；scene depth binding 使用 `index=0xfffffffe`（`kSceneDepthBindingIndex`）。
+- `vfx/src/runtime/runtime.cpp`：output VS 仍绑定 attribute/indirection stage 12/13；FS soft 绑定 `frame.sceneDepth` 到 stage 4、上传 `u_vfxSoftParams`（x=distance，yz=1/viewport），unlit soft 额外上传 `u_global_view`/`u_global_invViewProj`；pass desc 标记 `readsSceneDepth`。无 depth 时绑定 1×1 白纹理降级。
+- `src/render/passes/forward_renderer.cpp`：VFX output pass 继续显式 `readTexture(depth)`；`makeVfxFrameContext` 导入 `resources.depth`。输出 pass 使用 `setDepthAttachment(depth, 0, true)`。
+- `src/render/graph/render_graph.*`、`src/gfx/framebuffer_cache.*`：新增 read-only depth attachment flag（`BGFX_ATTACHMENT_READ_ONLY_DEPTH|STENCIL`），避免 D3D 采样同时绑定的 depth 返回 0；FrameBufferKey 纳入 attachment flags。
+- `vfx/tests/assets/soft_visual.vfx.json/.vfxb`、`soft_visual_off.vfx.json/.vfxb`、`vfx_soft*.gltf/.hdrp.json`：前向场景，背景 triangle 写深度，softDistance=2.0；off fixture 用于零输入回归。
+
+**验证**
+- `hbg_vfx_tests` **67/67, 37754 assertions**；`hbg_vfx_compiler_tests` **22/22, 471**；`hbg_vfx_runtime_tests` **14/14, 293**；`hbg_vfx_adapter_tests` **6/6, 298**；`hbg_tests` **252/252, 32578**。
+- `vfxbake --check` **24** 个资产；VFX CTest **60/60**、全量 CTest **93/93**。
+- 新增 `vfx_soft_{d3d11,vulkan}.png` 与 `vfx_soft_off_{d3d11,vulkan}.png`；soft off 保持原 unlit shader 路径，soft on/off 的 D3D11 图像差异 max 56 / mean 2.46 / 42,341 px；同后端重复渲染 0 diff。D3D11 vs Vulkan soft 仅 721 px / max 1 LSB（PSNR 77.95 dB），按后端分别保存 golden。
+- runtime 单测确认 stage 4、`s_vfxSceneDepth`、`u_vfxSoftParams` 和 `readsSceneDepth`；compiler 单测覆盖 lit/unlit soft shader、stage 4、双后端 shaderc 烘焙；FrameBufferKey 覆盖 read-only depth flag hash/equality。
 
 **验收**
-- [ ] 关闭时 0 diff/epsilon。
-- [ ] 开启时没有硬边/深度反转。
+- [x] 关闭时与原 unlit/lit shader 路径一致；`soft_off` golden 通过。
+- [x] 开启时粒子随场景深度连续淡出；输出 pass 显式读 depth 且 depth attachment 为 read-only，无深度反转/validation error。
+- [x] 无 depth 绑定时不崩溃，降级为不淡出。
+
+**限制/偏差**
+- 当前 quad 为 camera-facing billboard，单个 quad 深度近似常量；soft fade 主要呈逐粒子距离淡出，完整屏幕空间边缘依赖后续非 billboard mesh/sphere 输出。
+- soft 使用全局 `softDistance` 常量；Unity 的 per-output slot/property 曲线留到 V2。additive/premultiply 在当前 blend 公式下同时乘 RGB/alpha，alpha 模式只乘 alpha。
 
 ---
 
 ### V1.4.3 Forward/Deferred 帧顺序与排序
 
-- [ ] Forward：仿真在 sky 后/opaque 前；输出在 opaque 与 transparent 之间。
-- [ ] Deferred：仿真在 contact 后/GBuffer 前；输出在 deferred lighting/SSR 后、forward-only/transparent 前。
-- [ ] 透明 lit 使用 cluster light list。
-- [ ] VFX 输出与透明物体排序的记录（D8）；评估并入 DrawList 的成本。
-- [ ] 参考 `forward_renderer.cpp:4670-4682,4731-4756,4828-4880`。
+- [x] Forward：仿真在 sky 后/opaque 前；输出在 opaque 与 transparent 之间。
+- [x] Deferred：仿真在 sky/decals 后、GBuffer 前；输出在 deferred lighting/SSR 与 forward-only opaque 后、transparent 前。
+- [x] 透明 lit 使用 cluster light list。
+- [x] VFX 输出与透明物体排序的记录（D8）；评估并入 DrawList 的成本。
+- [x] 参考 `Packages/com.unity.visualeffectgraph/Editor/Models/Contexts/VFXSortingUtility.cs:9-56`、`Editor/NewCompiler/Builder/OutputUpdateTaskBuilder.cs:79-127`、`Editor/Models/Contexts/VFXAbstractParticleOutput.cs:110-120`、HDRP `HDRenderPipeline.cs:3465-3498`、`HDRenderPipeline.RenderGraph.cs:1899-1911`。
 
-**验收**
-- [ ] forward/deferred 双后端 golden。
-- [ ] VFX off 0-diff。
-- [ ] 透明场景无严重穿插（记录已知限制）。
+**实现**
+- `src/render/passes/forward_renderer.cpp:5370`：Forward 顺序保持 `sky → VFX Simulation → contact/opaque → VFX Output → transparent`；Deferred 在 `:5462` 仿真、`:5481` 输出。按 HDRP 实际顺序，forward-only **opaque** 先于 VFX 输出（否则无深度写入的粒子会被其后的 opaque 覆盖），VFX 输出仅保证在 transparent 前。
+- `Runtime::hasLitOutputs()`（`vfx/include/vfx/runtime.h:90`、`vfx/src/runtime/runtime.cpp:1547`）让 renderer 只在存在 lit output 时准备 cluster。
+- `ForwardRenderer::prepareVfxClusterLighting()`（`forward_renderer.cpp:5179`）：texture light-list 路径直接复用现有 cluster texture；GPU buffer 路径每帧构建 CPU cluster-texture mirror 并上传 `m_clusterTexture`，输出 pass 使用 `clusterLightList` + `u_cluster_*`，不再强制 `lightListParams.w=0`。
+- `addVfxOutputPass` 显式 `readTexture(clusterLightList)`；`bindForwardLighting` 绑定 stage 7 cluster texture / `u_cluster_*`，D3D/Vulkan 不依赖 buffer 变体。
+- 透明排序仍由 `kTransparentSortingCriteria` 管理（`src/render/culling/sort_key.h:48`、`sort_key.cpp:19`）；VFX 内部粒子继续使用 V1.2.2 KVP sort。D8 保留：VFX 是 effect pass，不与透明 mesh 逐对象交错。
+- 新增 `vfx_order.gltf` / `vfx_order.hdrp.json`：opaque、unlit forward-only、alpha transparent 三个 panel + lit VFX + directional/point light；`vfx_order_off.gltf` 为无 VFX baseline。
+- `vfx/CMakeLists.txt`：`order` forward/deferred D3D11/Vulkan golden、`order_off` baseline、`run_vfx_order_off.cmake` 验证 `--no-vfx` 与 baseline 逐字节一致。
+
+**验证**
+- `hbg_vfx_tests` **67/67, 37754 assertions**；`hbg_vfx_compiler_tests` **22/22, 471**；`hbg_vfx_runtime_tests` **15/15, 299**；`hbg_vfx_adapter_tests` **6/6, 298**；`hbg_tests` **252/252, 32578**。
+- `vfxbake --check` **24** 个资产；VFX CTest **68/68**；全量 CTest **101/101**（664.24s）。
+- `vfx_order` D3D11/Vulkan forward/deferred golden 通过；deferred pass order 为 `Forward Only Opaque → VFX Output → Forward Transparent`。D3D/VK order 图像 0 diff；VFX on/off 差异 29,014 px / max 181；forward vs deferred max 2 LSB。`vfx_order_off` 的 `--no-vfx` 输出与 baseline 0 diff（D3D11/Vulkan）。
+- `vfx_lit` 旧 golden 在 cluster 接入后保持 0 diff（仅有 directional light 的场景 cluster/global 结果一致）。
+- 已知限制：VFX 输出在所有透明物体之前，透明物体无法与 VFX 粒子逐对象交错；当前 `vfx_order` 透明 panel 在 VFX 前方，视觉正确，但透明 panel 位于 VFX 后方时仍会覆盖 VFX（D8）。合并 DrawList 需要 indirect batch 或逐粒子 CPU 深度键，成本高于 V1 收益。
 
 ---
 
 ### V1.4.4 诊断 / 性能 / 资源生命周期
 
-- [ ] `FrameDiagnostics`：`vfx_effects/systems/particles/draws/dispatches/sort_passes/events/vfx_ms`。
-- [ ] `render performance` 输出 VFX 指标。
-- [ ] 资源：effect 创建/销毁、resize、shutdown 泄漏检查。
-- [ ] 10k/100k/1M quad 基准；记录 sim/draw/sort/CPU。
-- [ ] 失败降级：shader 缺失/容量超限/绑定不足时明确日志，不崩溃。
+- [x] `FrameDiagnostics`：`vfx_effects/systems/particles/draws/dispatches/sort_passes/events/vfx_ms`。
+- [x] `render performance` 输出 VFX 指标。
+- [x] 资源：effect 创建/销毁、resize、shutdown 泄漏检查。
+- [x] 10k/100k/1M quad 基准；记录 sim/draw/sort/CPU。
+- [x] 失败降级：shader 缺失/容量超限/绑定不足时明确日志，不崩溃。
+- [x] 参考 `Editor/GraphView/Profiling/VFXProfilingBoard.cs:470-485`（Full Update、Evaluate Expressions、逐 system CPU 采样）、`:566-582`（effect/system recorder）、`:605-621`（平均 CPU ms、GPU memory/time）；`Editor/GraphView/Profiling/VFXSystemProfilerUI.cs:200-212,294-301`（alive/capacity）；`Editor/Debug/VFXUIDebug.cs:882-896`（alive/maxAlive/efficiency）；`Editor/Models/Contexts/Implementations/VFXBasicInitialize.cs:92-100`（capacity 超限报错）、`Editor/Data/VFXDataParticle.cs:246-247`（capacity 丢弃语义）。
+
+**实现**
+- `vfx/include/vfx/runtime.h`：`Diagnostics` 新增 `simulationMs`、`outputMs`、`totalMs`；`updateMs`/`encodeMs` 保留。`Runtime::update` 重置相位计时，`encodeSimulation`/`encodeOutput` 分别记录，`encodeMs=sim+output`、`totalMs=update+encode`（`vfx/src/runtime/runtime.cpp:1546-1612`）。
+- `src/render/passes/forward_renderer.h` / `.cpp`：`FrameDiagnostics` 新增 `vfxSortPasses`、`vfxEvents`、`vfxUpdateMs`、`vfxSimulationMs`、`vfxOutputMs`、`vfxMs`；从 `vfx::Diagnostics` 映射（`forward_renderer.cpp:3093-3103`）。
+- `src/app/render_test.cpp`：`render performance` 输出 `vfx_sort_passes`、`vfx_events`、`vfx_ms`、`vfx_update_ms`、`vfx_sim_ms`、`vfx_output_ms`；保留 effects/systems/particles/draws/dispatches。
+- 资源生命周期：`createEffect` 失败时 `pruneAssets()`，避免失败 shader/绑定创建留下未引用资产；`EffectImpl::releaseResources` 继续在 destroy/reload/shutdown 释放 program/buffer/texture。新增 `--resize-test`：render-test 逐帧在 full/half 分辨率间切换，覆盖 `ForwardRenderer::resize` 后 shutdown `ResourceManager` 0 live resource 检查（`src/app/backend.cpp`、`render_test.cpp`）。
+- 失败降级：`EffectImpl::validateDeviceLimits` 在分配前检查 system capacity（`1..kMaxParticleCapacity`）、当前后端 shader blob、compute/vertex/fragment binding stage 对 `Device::Limits` 的上限；错误包含 program/stage/limit（`runtime.cpp:497-549`）。非法 buffer/stride 仍由 `HbgVfxBackend::createBuffer` 明确报错并返回 invalid handle。
+- 新增性能 fixture：`perf_10k`/`perf_100k`（distance sort）与 `perf_1m`（sort 关闭，V1 sort 上限 262144）、`vfx_perf_*.gltf/.hdrp.json`；`vfx/CMakeLists.txt` 增加双后端 3 帧 perf smoke 和 resize CTest。
+
+**验证**
+- `hbg_vfx_tests` **67/67, 37754 assertions**；`hbg_vfx_compiler_tests` **22/22, 471**；`hbg_vfx_runtime_tests` **19/19, 489**；`hbg_vfx_adapter_tests` **7/7, 328**；`hbg_tests` **255/255, 32598**。
+- `vfxbake --check` **27** 个资产；VFX CTest **76/76**；全量 CTest **109/109**（1078.67s）。
+- 多次 create/destroy（16 次）与 4 次 HbgVfxBackend/Runtime session 后 live buffer/program/texture 为 0；`--resize-test` D3D11/Vulkan 通过，shutdown 无泄漏。
+- 失败测试覆盖：绑定 stage 超限返回 `"compute/fragment binding stage ... exceeds the device ... limit"`；capacity 超限返回 `"exceeds the runtime limit"`；清空 shader blob 返回 `"missing the selected backend shader"`；均不创建 effect、不保留资源。
+- 性能基准（Debug，640×360，60 帧，`--no-vsync`，playRate 0.1；`vfx_*_ms` 为最后一帧 CPU 记录，`gpu_frame_ms` 含 sim/draw/sort）：
+
+| capacity | backend | avg_frame_ms | fps | gpu_frame_ms | draws | dispatches | sort_passes | update_ms | sim_ms | output_ms | vfx_ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10240 | D3D11 | 6.171 | 162.0 | 0.901 | 1 | 10 | 5 | 0.005 | 0.153 | 0.058 | 0.216 |
+| 102400 | D3D11 | 14.317 | 69.8 | 3.851 | 1 | 35 | 30 | 0.006 | 0.187 | 0.051 | 0.244 |
+| 1048576 | D3D11 | 9.329 | 107.2 | 2.934 | 1 | 5 | 0 | 0.014 | 0.045 | 0.034 | 0.093 |
+| 10240 | Vulkan | 18.623 | 53.7 | 0.597 | 1 | 10 | 5 | 0.008 | 0.090 | 0.036 | 0.133 |
+| 102400 | Vulkan | 18.891 | 52.9 | 2.903 | 1 | 35 | 30 | 0.009 | 0.249 | 0.035 | 0.293 |
+| 1048576 | Vulkan | 20.341 | 49.2 | 3.799 | 1 | 5 | 0 | 0.008 | 0.061 | 0.036 | 0.106 |
+
+- 10k/100k 使用 distance sort，1M 使用 sort off（V1 compiler 对 sort capacity >262144 明确拒绝）；sort 的 GPU 成本计入 `gpu_frame_ms`，未单独做 per-pass GPU timer。1M sim 低于 100k 是因为少了 sort dispatch。
 
 **验收**
-- [ ] 多次 init/shutdown 无泄漏。
-- [ ] 性能数据记录到 checklist。
-- [ ] 容量/绑定超限有明确错误。
+- [x] 多次 init/shutdown 无泄漏。
+- [x] 性能数据记录到 checklist。
+- [x] 容量/绑定超限有明确错误。
+
+**限制/偏差**
+- `vfx_events` 仍是**事件链数量**（`Diagnostics::eventCount`）；精确 GPU `frameCount/totalCount/dropped` 仍由 `--vfx-event-reference`/`--vfx-cpu-event-reference` 读回验证。默认帧循环不读回 event buffer，避免同步 `bgfx::read` 停顿；异步计数环留给 V2。
+- `vfx_ms` 是 CPU update + command encode 时间，不是 GPU 执行时间；GPU 总时看 `gpu_frame_ms`。Debug 构建、单场景、不设性能门槛。
 
 ---
 
 ### V1.4.5 V1 发布验收
 
-- [ ] `ctest` 全绿；`py -3 tools/idl_gen.py --check` 通过；`vfxbake --check` 通过。
-- [ ] D3D11/Vulkan：unlit/lit、alpha/additive、soft particles、bursts、collision、events、sort、subgraph、custom HLSL 的 golden。
-- [ ] VFX off / empty effect 与基线 **0 diff**。
-- [ ] CPU reference（1024 粒子 10 帧）通过。
-- [ ] 资源泄漏/validation error 清零。
-- [ ] 文档回填：实现位置、偏差、已知限制、性能数据。
-- [ ] `README.md` 状态改为“V1 完成”。
+- [x] `ctest` 全绿；`py -3 tools/idl_gen.py --check` 通过；`vfxbake --check` 通过。
+- [x] D3D11/Vulkan：unlit/lit、alpha/additive、soft particles、bursts、collision、events、sort、subgraph、custom HLSL 的 golden。
+- [x] VFX off / empty effect 与基线 **0 diff**。
+- [x] CPU reference（1024 粒子 10 帧）通过。
+- [x] 资源泄漏/validation error 清零。
+- [x] 文档回填：实现位置、偏差、已知限制、性能数据。
+- [x] `README.md` 状态改为“V1 完成”。
+- [x] 参考 `Editor/NewCompiler/Passes/OutputPass.cs:229-235`（无 task 的 spawner system 跳过，不产生系统描述）；`Tests/Editor/VisualEffectGraphEditorTests.cs:17-31`（10 次 AddComponent/Undo 后对象与 VFXRenderer 均清除）；HDRP `HDRenderPipeline.RenderGraph.cs:1937,1959-1961,2062-2069,2092-2097`（仅当 `VFXManager.IsCameraBufferNeeded` 请求时发送 normal/depth/color buffer，空/VFX off 不增加 buffer 或 pass）。
+
+**实现**
+- 新增 `vfx/tests/assets/empty_visual.vfx.json` / `.vfxb`：`capacity=16`、`rate=0`、无 burst，输出为 additive quad，运行 30 帧仍为零 alive；这是“已加载但零发射”的 empty effect。
+- 新增 `vfx/tests/assets/vfx_empty.gltf` 与 `vfx_empty.hdrp.json`：复用 order 场景的 opaque/transparent/point light，只挂 EmptyVisual。
+- 新增 `vfx/tests/run_vfx_empty.cmake`：同一场景先以 empty effect 渲染，再以 `--no-vfx` 渲染，逐字节比较输出。
+- `vfx/CMakeLists.txt` 新增 `hbg_vfx_empty_d3d11` / `hbg_vfx_empty_vulkan`，共 2 个 release gate CTest。
+
+**验证**
+- 全量 CTest **111/111**（563.66s，`build\vs2022\v143_final_ctest_145c.log`）；VFX CTest **78/78**；`hbg_idl_check` 通过；`hbg_vfx_asset_check` **28** 个资产通过。
+- 单测：`hbg_vfx_tests` **67/67, 37754**；`hbg_vfx_compiler_tests` **22/22, 471**；`hbg_vfx_runtime_tests` **19/19, 489**；`hbg_vfx_adapter_tests` **7/7, 328**；`hbg_tests` **255/255, 32598**。
+- Feature golden 双后端全部通过：
+
+| 功能 | CTest |
+|---|---|
+| unlit additive | `hbg_vfx_golden_d3d11/vulkan` |
+| lit alpha forward | `hbg_vfx_golden_lit_d3d11/vulkan` |
+| lit alpha deferred | `hbg_vfx_golden_lit_deferred_d3d11/vulkan` |
+| soft particles on/off | `hbg_vfx_golden_soft*`、`hbg_vfx_golden_soft_off*` |
+| bursts | `hbg_vfx_golden_bursts_*` |
+| collision | `hbg_vfx_golden_collision_*` |
+| events | `hbg_vfx_golden_events_*` |
+| sort | `hbg_vfx_golden_sort_*`、`hbg_vfx_sort_on_off_d3d11` |
+| subgraph | `hbg_vfx_golden_subgraph_*` |
+| custom HLSL | `hbg_vfx_golden_custom_hlsl_*` |
+| order/VFX off | `hbg_vfx_golden_order_*`、`hbg_vfx_order_off_*` |
+
+- VFX off / empty effect：`hbg_vfx_order_off_*` 与 `hbg_vfx_empty_*` 均为同后端 **0 diff**；empty 用例同时检查 no-VFX baseline 的像素完全一致。
+- CPU reference：`vfx CPU reference simulates 1024 particles for 10 frames` 通过（1024/1024 spawnIndex、age=1.0、alive、属性范围检查）。
+- 资源/validation：runtime 16 次 create/destroy、4 次 backend/runtime session、`--resize-test` 双后端均为 0 live resource；full CTest 无泄漏或 validation failure。D3D11 `--bgfx-debug` 对 order/empty 场景各 3 帧 exit 0，日志无 `ERROR`/`Validation`。
+- 验证边界：Vulkan `--bgfx-debug` 在当前无 Vulkan validation layer 的环境会在 bgfx init 后崩溃，`--no-vfx` 同样复现，属于调试层环境限制；Vulkan release gate 以默认路径 CTest/golden 为准。
+- 结论：V1 发布门禁通过；V1 完成。已知限制保持 §7，无新增未登记偏差。
 
 ---
 
@@ -663,7 +1055,7 @@
 | 门禁 | 条件 |
 |---|---|
 | 功能 | V1.0b–V1.4 全部勾选；无未登记的偏差 |
-| 正确性 | CPU reference + 双后端 golden；VFX off 0-diff |
+| 正确性 | CPU reference + 双后端 golden；VFX off / empty effect 0-diff |
 | 资源 | init/destroy/resize 无泄漏；无 validation error |
 | 工具 | `ctest`、IDL check、`vfxbake --check` 通过 |
 | 文档 | checklist 实现位置/参考/限制完整 |

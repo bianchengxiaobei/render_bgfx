@@ -1,0 +1,59 @@
+{
+  "version": 1, "name": "EventMultiBake", "properties": [], "attributes": [],
+  "systems": [
+    {
+      "name": "EmitterA", "capacity": 16, "space": "world",
+      "bounds": {"center": [0,0,0], "extents": [4,4,4]},
+      "spawner": {"rate": 0, "bursts": [{"time": 0.0, "count": 8}]},
+      "init": {"blocks": [
+        {"type": "set_position_box", "center": [1,2,3], "size": [0,0,0]},
+        {"type": "set_color", "color": [0.2,0.4,0.6]},
+        {"type": "set_lifetime", "lifetime": 0.2}
+      ]},
+      "update": {"blocks": [{"type": "age"}, {"type": "reap"}]},
+      "events": {"emit": [{"name": "deathA", "attributes": {
+        "position": {"op": "attr", "name": "position"},
+        "color": {"op": "attr", "name": "color"}
+      }}]},
+      "outputs": [{"type": "quad", "blend": "alpha"}]
+    },
+    {
+      "name": "ReceiverA", "capacity": 16, "space": "world",
+      "bounds": {"center": [0,0,0], "extents": [4,4,4]},
+      "spawner": {"rate": 0, "bursts": []},
+      "init": {"blocks": [{"type": "set_lifetime", "lifetime": 1.0}]},
+      "update": {"blocks": [{"type": "age"}, {"type": "reap"}]},
+      "events": {"receive": [{"name": "deathA", "attributes": {
+        "position": "position", "color": "color"
+      }}]},
+      "outputs": [{"type": "quad", "blend": "alpha"}]
+    },
+    {
+      "name": "EmitterC", "capacity": 16, "space": "world",
+      "bounds": {"center": [0,0,0], "extents": [4,4,4]},
+      "spawner": {"rate": 0, "bursts": [{"time": 0.0, "count": 16}]},
+      "init": {"blocks": [
+        {"type": "set_position_box", "center": [4,5,6], "size": [0,0,0]},
+        {"type": "set_color", "color": [0.8,0.5,0.2]},
+        {"type": "set_lifetime", "lifetime": 0.2}
+      ]},
+      "update": {"blocks": [{"type": "age"}, {"type": "reap"}]},
+      "events": {"emit": [{"name": "deathC", "attributes": {
+        "position": {"op": "attr", "name": "position"},
+        "color": {"op": "attr", "name": "color"}
+      }}]},
+      "outputs": [{"type": "quad", "blend": "alpha"}]
+    },
+    {
+      "name": "ReceiverC", "capacity": 16, "space": "world",
+      "bounds": {"center": [0,0,0], "extents": [4,4,4]},
+      "spawner": {"rate": 0, "bursts": []},
+      "init": {"blocks": [{"type": "set_lifetime", "lifetime": 1.0}]},
+      "update": {"blocks": [{"type": "age"}, {"type": "reap"}]},
+      "events": {"receive": [{"name": "deathC", "attributes": {
+        "position": "position", "color": "color"
+      }}]},
+      "outputs": [{"type": "quad", "blend": "alpha"}]
+    }
+  ]
+}

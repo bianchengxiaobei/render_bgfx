@@ -5,6 +5,7 @@
 
 #include "gfx/encoder.h"
 #include "gfx/resource_manager.h"
+#include "render/passes/forward_lighting.h"
 
 #include "vfx/runtime.h"
 
@@ -60,6 +61,20 @@ std::uint32_t readU32(const std::vector<std::byte>& bytes, std::size_t offset) {
 }
 
 } // namespace
+
+TEST_CASE("forward lighting bindings preserve the VFX stage budget") {
+    CHECK(hbg::kForwardLightingLightDataStage == 5u);
+    CHECK(hbg::kForwardLightingDirectionalShadowStage == 6u);
+    CHECK(hbg::kForwardLightingLightListStage == 7u);
+    CHECK(hbg::kForwardLightingShadowContextStage == 8u);
+    CHECK(hbg::kForwardLightingPunctualShadowStage == 9u);
+    CHECK(hbg::kForwardLightingEnvironmentStage == 10u);
+    CHECK(hbg::kForwardLightingContactShadowStage == 11u);
+    CHECK(hbg::kForwardLightingProbeArrayStage == 14u);
+    CHECK(hbg::kForwardLightingCookieAtlasStage == 15u);
+    CHECK(hbg::kForwardLightingContactShadowStage != 12u);
+    CHECK(hbg::kForwardLightingContactShadowStage != 13u);
+}
 
 TEST_CASE("hbg vfx backend creates and destroys buffers and programs without leaks") {
     REQUIRE(initNoopRenderer());
@@ -267,6 +282,47 @@ TEST_CASE("hbg vfx backend maps command sink bindings to the encoder") {
     bgfx::shutdown();
 }
 
+TEST_CASE("hbg vfx backend releases resources across repeated runtime sessions") {
+    REQUIRE(initNoopRenderer());
+
+    {
+        hbg::gfx::ResourceManager resources;
+        resources.init();
+        for (std::uint32_t session = 0; session < 4; ++session) {
+            {
+                hbg::vfxbridge::HbgVfxBackend backend(resources);
+                vfx::Runtime runtime(backend.device(), &backend.shading());
+                std::string error;
+                const std::shared_ptr<const vfx::Asset> asset =
+                    runtime.loadAsset(std::filesystem::path(VFX_SOURCE_DIR) / "tests/assets/minimal_unlit.vfxb",
+                                      &error);
+                INFO(error);
+                REQUIRE(asset != nullptr);
+                vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+                INFO(error);
+                REQUIRE(effect != nullptr);
+
+                hbg::gfx::Encoder encoder(resources);
+                backend.begin(encoder, 0);
+                runtime.update(0.1f);
+                runtime.encodeSimulation(backend, {});
+                backend.end();
+                CHECK(runtime.diagnostics().dispatches == 6u);
+
+                runtime.destroyEffect(effect);
+                CHECK(backend.liveBufferCount() == 0u);
+                CHECK(backend.liveProgramCount() == 0u);
+                CHECK(backend.liveTextureCount() == 0u);
+            }
+            CHECK(resources.liveResourceCount() == 0u);
+        }
+        resources.shutdown();
+        CHECK_FALSE(resources.hadLeaksAtShutdown());
+    }
+
+    bgfx::shutdown();
+}
+
 TEST_CASE("hbg vfx backend runs the runtime resource path from a baked asset") {
     REQUIRE(initNoopRenderer());
 
@@ -285,7 +341,7 @@ TEST_CASE("hbg vfx backend runs the runtime resource path from a baked asset") {
             vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
             INFO(error);
             REQUIRE(effect != nullptr);
-            CHECK(backend.liveBufferCount() == 7u);
+            CHECK(backend.liveBufferCount() == 9u);
             CHECK(backend.liveProgramCount() == 7u);
             CHECK(backend.liveTextureCount() == 1u);
             CHECK(effect->isAlive());
@@ -299,6 +355,51 @@ TEST_CASE("hbg vfx backend runs the runtime resource path from a baked asset") {
 
             runtime.destroyEffect(effect);
             CHECK(backend.liveBufferCount() == 0u);
+            CHECK(backend.liveProgramCount() == 0u);
+            CHECK(backend.liveTextureCount() == 0u);
+        }
+        CHECK(resources.liveResourceCount() == 0u);
+        resources.shutdown();
+        CHECK_FALSE(resources.hadLeaksAtShutdown());
+    }
+
+    bgfx::shutdown();
+}
+
+TEST_CASE("hbg vfx backend runs a lit effect and invokes lighting binding") {
+    REQUIRE(initNoopRenderer());
+
+    {
+        hbg::gfx::ResourceManager resources;
+        resources.init();
+        {
+            hbg::vfxbridge::HbgVfxBackend backend(resources);
+            vfx::Runtime runtime(backend.device(), &backend.shading());
+            std::string error;
+            const std::shared_ptr<const vfx::Asset> asset =
+                runtime.loadAsset(std::filesystem::path(VFX_SOURCE_DIR) / "tests/assets/lit_visual.vfxb",
+                                  &error);
+            INFO(error);
+            REQUIRE(asset != nullptr);
+            vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+            INFO(error);
+            REQUIRE(effect != nullptr);
+            CHECK(backend.liveBufferCount() == 9u);
+            CHECK(backend.liveProgramCount() == 7u);
+            CHECK(backend.liveTextureCount() == 1u);
+
+            hbg::gfx::Encoder encoder(resources);
+            backend.begin(encoder, 0);
+            runtime.update(0.0f);
+            vfx::FrameContext frame;
+            runtime.encodeSimulation(backend, frame);
+            runtime.encodeOutput(backend, frame);
+            backend.end();
+            CHECK(runtime.diagnostics().draws == 1u);
+            CHECK(backend.lightingBindCount() == 1u);
+
+            runtime.destroyEffect(effect);
+            CHECK(backend.liveBufferCount() == 1u);
             CHECK(backend.liveProgramCount() == 0u);
             CHECK(backend.liveTextureCount() == 0u);
         }

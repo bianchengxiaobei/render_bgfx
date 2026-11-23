@@ -21,6 +21,7 @@ namespace vfx {
 namespace {
 
 constexpr float kMaxDeltaSeconds = 0.1f;
+constexpr float kStepDeltaSeconds = 1.0f / 60.0f;
 constexpr double kSpawnerBoundaryEpsilon = 1.0e-6;
 constexpr std::uint32_t kLutSampleCount = 256u;
 constexpr std::uint32_t kLutRowPitch = kLutSampleCount * 8u;
@@ -32,9 +33,19 @@ constexpr std::uint32_t kRenderCountBuffer = 3;
 constexpr std::uint32_t kSpawnCountBuffer = 4;
 constexpr std::uint32_t kIndirectBuffer = 5;
 constexpr std::uint32_t kBoundsBuffer = 6;
+constexpr std::uint32_t kRenderKVPBuffer = 7;
+constexpr std::uint32_t kSortScratchBuffer = 8;
+constexpr std::uint32_t kBufferKindCount = 9;
 
 constexpr std::uint8_t kTaskSpawner = 0;
 constexpr std::uint8_t kTaskDeadListInit = 1;
+constexpr std::uint8_t kTaskSortBitonic = 8;
+constexpr std::uint8_t kTaskSortPrepass = 9;
+constexpr std::uint8_t kTaskSortMerge = 10;
+constexpr std::uint8_t kTaskEventPrefix = 11;
+constexpr std::uint8_t kTaskEventReset = 12;
+constexpr std::uint8_t kTaskEventCopy = 13;
+constexpr std::uint32_t kSortChunkSize = 4096u;
 
 std::uint32_t burstOccurrences(const AssetBurst& burst, double time) noexcept {
     if (time < static_cast<double>(burst.time)) {
@@ -217,6 +228,54 @@ bool isNumericProperty(PropertyType type) {
            type == PropertyType::Color;
 }
 
+bool eventPropertyTypeMatches(PropertyType property, AttributeType target) {
+    switch (target) {
+    case AttributeType::Float:
+        return property == PropertyType::Float;
+    case AttributeType::Float2:
+        return property == PropertyType::Vector2;
+    case AttributeType::Float3:
+        return property == PropertyType::Vector3 || property == PropertyType::Color;
+    case AttributeType::Float4:
+        return property == PropertyType::Vector4 || property == PropertyType::Color;
+    case AttributeType::UInt:
+    case AttributeType::Int:
+        return property == PropertyType::Int;
+    case AttributeType::Bool:
+        return property == PropertyType::Bool;
+    }
+    return false;
+}
+
+std::array<float, 4> eventPropertyToPayload(const PropertyValue& value, AttributeType target) {
+    std::array<float, 4> result{};
+    switch (target) {
+    case AttributeType::Float:
+        result[0] = value.f[0];
+        break;
+    case AttributeType::Float2:
+        result[0] = value.f[0];
+        result[1] = value.f[1];
+        break;
+    case AttributeType::Float3:
+        result[0] = value.f[0];
+        result[1] = value.f[1];
+        result[2] = value.f[2];
+        break;
+    case AttributeType::Float4:
+        result = value.f;
+        break;
+    case AttributeType::UInt:
+    case AttributeType::Int:
+        result[0] = value.f[0];
+        break;
+    case AttributeType::Bool:
+        result[0] = value.f[0] != 0.0f ? 1.0f : 0.0f;
+        break;
+    }
+    return result;
+}
+
 std::size_t backendIndex(ShaderBackend backend) {
     return backend == ShaderBackend::Spirv ? 1u : 0u;
 }
@@ -238,6 +297,17 @@ struct SystemRuntime {
     std::uint32_t aliveEstimate = 0;
 };
 
+struct CpuEventRecord {
+    std::uint32_t link = 0;
+    std::array<std::array<float, 4>, 4> payload{};
+};
+
+struct LutRuntime {
+    std::vector<std::uint32_t> properties;
+    TextureHandle texture{};
+    SamplerHandle sampler{};
+};
+
 } // namespace
 
 class EffectImpl final : public Effect {
@@ -250,6 +320,7 @@ class EffectImpl final : public Effect {
     void pause() override;
     void stop() override;
     void reset() override;
+    void advanceOneFrame() override;
     void setTransform(const Mat4& world) override;
     void setPlayRate(float rate) override;
     bool isAlive() const override;
@@ -265,6 +336,7 @@ class EffectImpl final : public Effect {
     bool setGradient(std::string_view name, std::span<const GradientKey> gradient) override;
 
     void sendEvent(std::string_view name, std::span<const EventAttribute> attributes) override;
+    void uploadCpuEvents();
 
     Bounds bounds() const override;
     bool isCulled() const override;
@@ -274,19 +346,25 @@ class EffectImpl final : public Effect {
     void encodeOutput(CommandSink& sink, const FrameContext& frame);
     std::uint32_t aliveEstimate() const { return m_aliveEstimate; }
     std::uint32_t systemCount() const { return static_cast<std::uint32_t>(m_systems.size()); }
-    bool needsSimulation() const { return m_needsReset || (m_playing && !m_paused); }
+    const Asset* assetPtr() const noexcept { return m_asset.get(); }
+    bool needsSimulation() const { return m_needsReset || m_stepPending || (m_playing && !m_paused); }
     bool needsOutput() const { return m_playing && !m_needsReset; }
 
   private:
+    bool validateDeviceLimits(std::string& error) const;
     void createResources(std::string& error);
     void releaseResources();
     void refreshBounds();
     void resetCpuState();
-    void setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate);
+    void setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate,
+                     const FrameContext& frame);
     void bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program);
+    void bindKernelTextures(CommandSink& sink, const AssetProgram& program);
     void dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, std::uint32_t programIndex);
     void bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program);
-    void bindOutputTexture(CommandSink& sink, const AssetProgram& program);
+    void bindOutputTexture(CommandSink& sink, const FrameContext& frame, const AssetProgram& program);
+    void createLutTextures(std::string& error);
+    void updateLutTexture(LutRuntime& lut);
     void updateLut(std::size_t propertyIndex);
     void report(std::string_view message);
 
@@ -299,6 +377,8 @@ class EffectImpl final : public Effect {
     bool m_playing = false;
     bool m_paused = false;
     bool m_stopped = true;
+    bool m_stepPending = false;
+    bool m_stepFrame = false;
     bool m_needsReset = true;
     bool m_hasBoundsOverride = false;
     Bounds m_boundsOverride{};
@@ -313,16 +393,31 @@ class EffectImpl final : public Effect {
     std::vector<UniformHandle> m_propertyUniforms;
     std::vector<std::array<float, 4>> m_propertyValues;
     std::vector<TextureHandle> m_propertyTextures;
-    std::vector<TextureHandle> m_lutTextures;
     std::vector<std::vector<std::byte>> m_lutData;
+    LutRuntime m_curveLut;
+    LutRuntime m_gradientLut;
     TextureHandle m_whiteTexture{};
     UniformHandle m_paramsUniform{};
     UniformHandle m_idsUniform{};
     UniformHandle m_worldUniform{};
     UniformHandle m_invViewUniform{};
+    UniformHandle m_viewUniform{};
     UniformHandle m_viewProjUniform{};
+    UniformHandle m_invViewProjUniform{};
     UniformHandle m_cameraPosUniform{};
+    UniformHandle m_softParamsUniform{};
     SamplerHandle m_mainSampler{};
+    SamplerHandle m_sceneDepthSampler{};
+    BufferHandle m_eventBuffer{};
+    std::uint32_t m_eventPrefixProgram = kInvalidIndex;
+    std::uint32_t m_eventResetProgram = kInvalidIndex;
+    std::uint32_t m_eventCopyProgram = kInvalidIndex;
+    BufferHandle m_cpuEventBuffer{};
+    std::vector<std::byte> m_cpuEventData;
+    std::vector<std::vector<CpuEventRecord>> m_cpuPending;
+    std::vector<std::uint32_t> m_cpuEventTotal;
+    std::vector<std::uint32_t> m_cpuEventDropped;
+    std::vector<bool> m_systemHasEventInput;
 };
 
 EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& asset, const EffectDesc& desc,
@@ -338,25 +433,21 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
     createResources(error);
     m_propertyValues.resize(m_asset->properties.size());
     m_propertyTextures.resize(m_asset->properties.size());
-    m_lutTextures.resize(m_asset->properties.size());
     m_lutData.resize(m_asset->properties.size());
     m_propertyUniforms.resize(m_asset->properties.size());
     for (std::size_t i = 0; i < m_asset->properties.size(); ++i) {
         const AssetProperty& property = m_asset->properties[i];
         m_propertyValues[i] = property.defaultFloat;
-        if (!property.lut.empty()) {
-            m_lutData[i] = property.lut;
-            TextureDesc textureDesc;
-            textureDesc.width = static_cast<std::uint16_t>(kLutSampleCount);
-            textureDesc.height = 1;
-            textureDesc.format = TextureFormat::RGBA16F;
-            textureDesc.initialData = m_lutData[i].data();
-            textureDesc.dataSize = static_cast<std::uint32_t>(m_lutData[i].size());
-            const std::string lutName = "vfx.lut." + property.name;
-            textureDesc.name = lutName;
-            m_lutTextures[i] = m_device.createTexture(textureDesc);
-            if (!m_lutTextures[i].valid() && error.empty()) {
-                error = "failed to create LUT texture for property '" + property.name + "'";
+        if (property.type == PropertyType::Curve || property.type == PropertyType::Gradient) {
+            if (property.lut.size() == kLutRowPitch) {
+                m_lutData[i] = property.lut;
+            } else {
+                m_lutData[i].assign(kLutRowPitch, std::byte{0});
+            }
+            if (property.type == PropertyType::Curve) {
+                m_curveLut.properties.push_back(static_cast<std::uint32_t>(i));
+            } else {
+                m_gradientLut.properties.push_back(static_cast<std::uint32_t>(i));
             }
         }
         if (isNumericProperty(property.type)) {
@@ -371,14 +462,22 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
     m_idsUniform = m_device.findUniform("u_vfx_ids", UniformType::Vec4);
     m_worldUniform = m_device.findUniform("u_vfx_world", UniformType::Mat4);
     m_invViewUniform = m_device.findUniform("u_global_invView", UniformType::Mat4);
+    m_viewUniform = m_device.findUniform("u_global_view", UniformType::Mat4);
     m_viewProjUniform = m_device.findUniform("u_global_viewProj", UniformType::Mat4);
+    m_invViewProjUniform = m_device.findUniform("u_global_invViewProj", UniformType::Mat4);
     m_cameraPosUniform = m_device.findUniform("u_global_cameraPos", UniformType::Vec4);
+    m_softParamsUniform = m_device.findUniform("u_vfxSoftParams", UniformType::Vec4);
     m_mainSampler = m_device.findSampler("s_vfxMain");
+    m_sceneDepthSampler = m_device.findSampler("s_vfxSceneDepth");
     if (error.empty() &&
         (!m_paramsUniform.valid() || !m_idsUniform.valid() || !m_worldUniform.valid() ||
-         !m_invViewUniform.valid() || !m_viewProjUniform.valid() || !m_cameraPosUniform.valid() ||
-         !m_mainSampler.valid())) {
+         !m_invViewUniform.valid() || !m_viewUniform.valid() || !m_viewProjUniform.valid() ||
+         !m_invViewProjUniform.valid() || !m_cameraPosUniform.valid() ||
+         !m_softParamsUniform.valid() || !m_mainSampler.valid() || !m_sceneDepthSampler.valid())) {
         error = "failed to create VFX runtime uniforms/sampler";
+    }
+    if (error.empty()) {
+        createLutTextures(error);
     }
     const std::array<std::byte, 4> white = {std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
     TextureDesc whiteDesc;
@@ -392,16 +491,6 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
     if (!m_whiteTexture.valid() && error.empty()) {
         error = "failed to create VFX fallback texture";
     }
-    for (const AssetProgram& program : m_asset->programs) {
-        if (program.output) {
-            if (program.lit && error.empty()) {
-                error = "lit VFX output is not supported until V1.4";
-            }
-            if (program.sortMode != SortMode::None && error.empty()) {
-                error = "sorted VFX output is not supported until V1.2";
-            }
-        }
-    }
     refreshBounds();
     resetCpuState();
     m_needsReset = true;
@@ -409,17 +498,75 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
 
 EffectImpl::~EffectImpl() { releaseResources(); }
 
+bool EffectImpl::validateDeviceLimits(std::string& error) const {
+    const Limits limits = m_device.limits();
+    for (const AssetSystem& system : m_asset->systems) {
+        if (system.capacity == 0u || system.capacity > kMaxParticleCapacity) {
+            error = "VFX system '" + system.name + "' capacity " + std::to_string(system.capacity) +
+                    " exceeds the runtime limit " + std::to_string(kMaxParticleCapacity);
+            return false;
+        }
+    }
+
+    const auto checkBindings = [&](const AssetProgram& program,
+                                   std::span<const AssetBinding> bindings,
+                                   std::string_view stageName) {
+        for (const AssetBinding& binding : bindings) {
+            const bool texture = binding.kind == AssetBindingKind::Texture;
+            const std::uint32_t limit = texture ? limits.maxTextureSamplers : limits.maxComputeBindings;
+            if (limit != 0u && binding.stage >= limit) {
+                error = "VFX program " + std::to_string(program.program) + " " +
+                        std::string(stageName) + " binding stage " + std::to_string(binding.stage) +
+                        " exceeds the device " + (texture ? "texture sampler" : "storage") +
+                        " limit " + std::to_string(limit);
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const std::size_t currentBackend = backendIndex(m_device.backend());
+    for (const AssetProgram& program : m_asset->programs) {
+        if (!program.output) {
+            if (program.computeBlobs[currentBackend].empty()) {
+                error = "VFX program " + std::to_string(program.program) +
+                        " is missing the selected backend shader";
+                return false;
+            }
+            if (!checkBindings(program, program.bindings, "compute")) {
+                return false;
+            }
+            continue;
+        }
+        if (program.vertexBlobs[currentBackend].empty() ||
+            program.fragmentBlobs[currentBackend].empty()) {
+            error = "VFX program " + std::to_string(program.program) +
+                    " is missing the selected backend shader";
+            return false;
+        }
+        if (!checkBindings(program, program.vertexBindings, "vertex") ||
+            !checkBindings(program, program.fragmentBindings, "fragment")) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void EffectImpl::createResources(std::string& error) {
+    if (!validateDeviceLimits(error)) {
+        return;
+    }
     m_systems.resize(m_asset->systems.size());
     m_programs.resize(m_asset->programs.size());
     const std::size_t currentBackend = backendIndex(m_device.backend());
     for (std::size_t systemIndex = 0; systemIndex < m_asset->systems.size(); ++systemIndex) {
         const AssetSystem& assetSystem = m_asset->systems[systemIndex];
         SystemRuntime& system = m_systems[systemIndex];
-        system.buffers.resize(7);
+        system.buffers.resize(kBufferKindCount);
         for (const AssetBuffer& assetBuffer : assetSystem.buffers) {
             BufferUsage usage = BufferUsage::Storage;
-            if (assetBuffer.kind == kAttributesBuffer || assetBuffer.kind == kIndirectionBuffer) {
+            if (assetBuffer.kind == kAttributesBuffer || assetBuffer.kind == kIndirectionBuffer ||
+                assetBuffer.kind == kRenderKVPBuffer || assetBuffer.kind == kSortScratchBuffer) {
                 usage = BufferUsage::StorageVertex;
             } else if (assetBuffer.kind == kIndirectBuffer) {
                 usage = BufferUsage::Indirect;
@@ -442,6 +589,44 @@ void EffectImpl::createResources(std::string& error) {
         }
         system.burstFired.assign(assetSystem.bursts.size(), 0u);
     }
+    m_systemHasEventInput.assign(m_asset->systems.size(), false);
+    for (const AssetEventLink& link : m_asset->eventLinks) {
+        if (link.consumerSystem < m_systemHasEventInput.size()) {
+            m_systemHasEventInput[link.consumerSystem] = true;
+        }
+    }
+    if (m_asset->eventBufferSize > 0u) {
+        BufferDesc eventDesc;
+        eventDesc.usage = BufferUsage::Storage;
+        eventDesc.size = m_asset->eventBufferSize;
+        eventDesc.stride = 4u;
+        eventDesc.initialData = nullptr;
+        eventDesc.name = "vfx.events";
+        m_eventBuffer = m_device.createBuffer(eventDesc);
+        if (!m_eventBuffer.valid() && error.empty()) {
+            error = "failed to create VFX event buffer";
+        }
+    }
+    bool hasCpuEvents = false;
+    for (const AssetEventLink& link : m_asset->eventLinks) {
+        hasCpuEvents = hasCpuEvents || link.cpu;
+    }
+    m_cpuPending.assign(m_asset->eventLinks.size(), {});
+    m_cpuEventTotal.assign(m_asset->eventLinks.size(), 0u);
+    m_cpuEventDropped.assign(m_asset->eventLinks.size(), 0u);
+    if (hasCpuEvents && m_asset->eventBufferSize > 0u) {
+        m_cpuEventData.assign(m_asset->eventBufferSize, std::byte{0});
+        BufferDesc cpuEventDesc;
+        cpuEventDesc.usage = BufferUsage::Storage;
+        cpuEventDesc.size = m_asset->eventBufferSize;
+        cpuEventDesc.stride = 4u;
+        cpuEventDesc.initialData = m_cpuEventData.data();
+        cpuEventDesc.name = "vfx.cpu.events";
+        m_cpuEventBuffer = m_device.createBuffer(cpuEventDesc);
+        if (!m_cpuEventBuffer.valid() && error.empty()) {
+            error = "failed to create VFX CPU event staging buffer";
+        }
+    }
 
     for (std::size_t programIndex = 0; programIndex < m_asset->programs.size(); ++programIndex) {
         const AssetProgram& assetProgram = m_asset->programs[programIndex];
@@ -458,6 +643,16 @@ void EffectImpl::createResources(std::string& error) {
         m_programs[programIndex] = m_device.createProgram(blobs);
         if (!m_programs[programIndex].valid() && error.empty()) {
             error = "failed to create VFX program " + std::to_string(assetProgram.program);
+        }
+        if (assetProgram.global) {
+            if (assetProgram.task == kTaskEventPrefix) {
+                m_eventPrefixProgram = static_cast<std::uint32_t>(programIndex);
+            } else if (assetProgram.task == kTaskEventReset) {
+                m_eventResetProgram = static_cast<std::uint32_t>(programIndex);
+            } else if (assetProgram.task == kTaskEventCopy) {
+                m_eventCopyProgram = static_cast<std::uint32_t>(programIndex);
+            }
+            continue;
         }
         if (assetProgram.output) {
             m_systems[assetProgram.system].outputs.push_back(static_cast<std::uint32_t>(programIndex));
@@ -483,15 +678,23 @@ void EffectImpl::releaseResources() {
         }
     }
     m_systems.clear();
-    for (const TextureHandle texture : m_lutTextures) {
-        if (texture.valid()) {
-            m_device.destroyTexture(texture);
+    for (LutRuntime* lut : {&m_curveLut, &m_gradientLut}) {
+        if (lut->texture.valid()) {
+            m_device.destroyTexture(lut->texture);
+            lut->texture = {};
         }
     }
-    m_lutTextures.clear();
     if (m_whiteTexture.valid()) {
         m_device.destroyTexture(m_whiteTexture);
         m_whiteTexture = {};
+    }
+    if (m_eventBuffer.valid()) {
+        m_device.destroyBuffer(m_eventBuffer);
+        m_eventBuffer = {};
+    }
+    if (m_cpuEventBuffer.valid()) {
+        m_device.destroyBuffer(m_cpuEventBuffer);
+        m_cpuEventBuffer = {};
     }
 }
 
@@ -504,6 +707,8 @@ void EffectImpl::play() {
     }
     m_playing = true;
     m_paused = false;
+    m_stepPending = false;
+    m_stepFrame = false;
 }
 
 void EffectImpl::pause() {
@@ -516,6 +721,8 @@ void EffectImpl::stop() {
     m_playing = false;
     m_paused = false;
     m_stopped = true;
+    m_stepPending = false;
+    m_stepFrame = false;
     m_aliveEstimate = 0;
     m_deltaTime = 0.0f;
     resetCpuState();
@@ -525,7 +732,18 @@ void EffectImpl::stop() {
 void EffectImpl::reset() {
     resetCpuState();
     m_aliveEstimate = 0;
+    m_stepPending = false;
+    m_stepFrame = false;
     m_needsReset = true;
+}
+
+void EffectImpl::advanceOneFrame() {
+    if (m_stopped || !m_playing) {
+        m_stopped = false;
+        m_playing = true;
+    }
+    m_paused = true;
+    m_stepPending = true;
 }
 
 void EffectImpl::resetCpuState() {
@@ -540,6 +758,12 @@ void EffectImpl::resetCpuState() {
         system.aliveEstimate = 0;
         system.burstFired.assign(m_asset->systems[i].bursts.size(), 0u);
     }
+    for (std::vector<CpuEventRecord>& pending : m_cpuPending) {
+        pending.clear();
+    }
+    std::fill(m_cpuEventTotal.begin(), m_cpuEventTotal.end(), 0u);
+    std::fill(m_cpuEventDropped.begin(), m_cpuEventDropped.end(), 0u);
+    std::fill(m_cpuEventData.begin(), m_cpuEventData.end(), std::byte{0});
 }
 
 void EffectImpl::setTransform(const Mat4& world) {
@@ -658,8 +882,48 @@ bool EffectImpl::setGradient(std::string_view name, std::span<const GradientKey>
     return setProperty(name, propertyValue);
 }
 
-void EffectImpl::sendEvent(std::string_view, std::span<const EventAttribute>) {
-    report("VFX events are not supported until V1.2");
+void EffectImpl::sendEvent(std::string_view name, std::span<const EventAttribute> attributes) {
+    for (std::size_t linkIndex = 0; linkIndex < m_asset->eventLinks.size(); ++linkIndex) {
+        const AssetEventLink& link = m_asset->eventLinks[linkIndex];
+        if (link.name != name) {
+            continue;
+        }
+        if (!link.cpu) {
+            report("VFX event '" + std::string(name) + "' is a GPU event and cannot be sent from CPU");
+            return;
+        }
+        if (linkIndex >= m_cpuPending.size()) {
+            report("VFX CPU event link is unavailable");
+            return;
+        }
+        std::vector<CpuEventRecord>& pending = m_cpuPending[linkIndex];
+        if (pending.size() >= link.capacity) {
+            ++m_cpuEventDropped[linkIndex];
+            return;
+        }
+        CpuEventRecord record;
+        record.link = static_cast<std::uint32_t>(linkIndex);
+        for (const AssetEventPayload& payload : link.payload) {
+            record.payload[payload.slot] = payload.defaultFloat;
+            const auto found = std::find_if(attributes.begin(), attributes.end(),
+                                            [&](const EventAttribute& attribute) {
+                                                return attribute.name == payload.name;
+                                            });
+            if (found == attributes.end()) {
+                continue;
+            }
+            if (!eventPropertyTypeMatches(found->value.type, payload.type)) {
+                report("VFX event '" + std::string(name) + "' attribute '" + payload.name +
+                       "' has an incompatible type");
+                return;
+            }
+            record.payload[payload.slot] = eventPropertyToPayload(found->value, payload.type);
+        }
+        pending.push_back(record);
+        ++m_cpuEventTotal[linkIndex];
+        return;
+    }
+    report("VFX CPU event '" + std::string(name) + "' is not declared by the asset");
 }
 
 Bounds EffectImpl::bounds() const {
@@ -700,12 +964,23 @@ void EffectImpl::refreshBounds() {
 }
 
 void EffectImpl::update(float deltaSeconds) {
-    if (!m_playing || m_paused) {
+    if (!m_playing) {
         m_deltaTime = 0.0f;
         return;
     }
-    const float clamped = std::clamp(deltaSeconds, 0.0f, kMaxDeltaSeconds);
-    m_deltaTime = std::isfinite(clamped) ? clamped * m_playRate : 0.0f;
+
+    m_stepFrame = false;
+    if (m_stepPending) {
+        m_stepPending = false;
+        m_stepFrame = true;
+        m_deltaTime = kStepDeltaSeconds;
+    } else if (!m_paused) {
+        const float clamped = std::clamp(deltaSeconds, 0.0f, kMaxDeltaSeconds);
+        m_deltaTime = std::isfinite(clamped) ? clamped * m_playRate : 0.0f;
+    } else {
+        m_deltaTime = 0.0f;
+        return;
+    }
     m_time += m_deltaTime;
     for (std::size_t i = 0; i < m_systems.size(); ++i) {
         SystemRuntime& system = m_systems[i];
@@ -734,14 +1009,24 @@ void EffectImpl::update(float deltaSeconds) {
     }
 }
 
-void EffectImpl::setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate) {
+void EffectImpl::setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate,
+                             const FrameContext& frame) {
     const SystemRuntime& system = m_systems[systemIndex];
+    const AssetSystem& assetSystem = m_asset->systems[systemIndex];
     const Vec4 params{static_cast<float>(system.time), simulate ? m_deltaTime : 0.0f,
                       simulate ? static_cast<float>(system.spawnCount) : 0.0f,
                       static_cast<float>(m_randomSeed)};
     sink.setUniform(m_paramsUniform, &params);
     const Vec4 ids{static_cast<float>(m_nextParticleId), static_cast<float>(systemIndex), 0.0f, 0.0f};
     sink.setUniform(m_idsUniform, &ids);
+    if (assetSystem.sortMode == SortMode::Distance) {
+        const Mat4 world =
+            assetSystem.space == SystemSpace::Local ? m_transform : Mat4::identity();
+        const Vec4 cameraPosition{frame.cameraPosition.x, frame.cameraPosition.y,
+                                  frame.cameraPosition.z, 1.0f};
+        sink.setUniform(m_worldUniform, &world);
+        sink.setUniform(m_cameraPosUniform, &cameraPosition);
+    }
     for (std::size_t i = 0; i < m_propertyUniforms.size(); ++i) {
         if (!m_propertyUniforms[i].valid()) {
             continue;
@@ -758,6 +1043,22 @@ void EffectImpl::bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex,
         if (binding.kind == AssetBindingKind::Texture) {
             continue;
         }
+        if (binding.kind == AssetBindingKind::Event) {
+            if (!m_eventBuffer.valid()) {
+                report("VFX kernel references an unavailable event buffer");
+                continue;
+            }
+            sink.setStorageBuffer(binding.stage, m_eventBuffer, binding.access);
+            continue;
+        }
+        if (binding.kind == AssetBindingKind::CpuEvent) {
+            if (!m_cpuEventBuffer.valid()) {
+                report("VFX kernel references an unavailable CPU event buffer");
+                continue;
+            }
+            sink.setStorageBuffer(binding.stage, m_cpuEventBuffer, binding.access);
+            continue;
+        }
         if (binding.index >= system.buffers.size() || !system.buffers[binding.index].handle.valid()) {
             report("VFX kernel references an unavailable buffer");
             continue;
@@ -766,9 +1067,34 @@ void EffectImpl::bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex,
     }
 }
 
+void EffectImpl::bindKernelTextures(CommandSink& sink, const AssetProgram& program) {
+    for (const AssetBinding& binding : program.bindings) {
+        if (binding.kind != AssetBindingKind::Texture) {
+            continue;
+        }
+        if (binding.index >= m_asset->properties.size()) {
+            report("VFX kernel references an unknown texture property");
+            continue;
+        }
+        const AssetProperty& property = m_asset->properties[binding.index];
+        const LutRuntime* lut = nullptr;
+        if (property.type == PropertyType::Curve) {
+            lut = &m_curveLut;
+        } else if (property.type == PropertyType::Gradient) {
+            lut = &m_gradientLut;
+        }
+        if (lut == nullptr || !lut->texture.valid() || !lut->sampler.valid()) {
+            report("VFX kernel references an unavailable LUT texture");
+            continue;
+        }
+        sink.setTexture(binding.stage, lut->sampler, lut->texture);
+    }
+}
+
 void EffectImpl::dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, std::uint32_t programIndex) {
     const AssetProgram& program = m_asset->programs[programIndex];
     bindKernelBuffers(sink, systemIndex, program);
+    bindKernelTextures(sink, program);
     const ProgramHandle handle = m_programs[programIndex];
     if (!handle.valid()) {
         report("VFX kernel program is invalid");
@@ -776,13 +1102,65 @@ void EffectImpl::dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, st
     }
     sink.dispatch(handle, program.groups[0], program.groups[1], program.groups[2]);
     ++m_runtime.m_diagnostics.dispatches;
+    if (program.task == kTaskSortBitonic || program.task == kTaskSortPrepass ||
+        program.task == kTaskSortMerge) {
+        ++m_runtime.m_diagnostics.sortPasses;
+    }
 }
 
-void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext&) {
-    if (!m_needsReset && (!m_playing || m_paused)) {
+void EffectImpl::uploadCpuEvents() {
+    if (!m_cpuEventBuffer.valid() || m_cpuEventData.empty()) {
         return;
     }
-    const bool simulate = m_playing && !m_paused;
+    const auto storeWord = [&](std::size_t wordIndex, std::uint32_t value) {
+        const std::size_t offset = wordIndex * 4u;
+        std::memcpy(m_cpuEventData.data() + offset, &value, sizeof(value));
+    };
+    for (std::size_t linkIndex = 0; linkIndex < m_asset->eventLinks.size(); ++linkIndex) {
+        const AssetEventLink& link = m_asset->eventLinks[linkIndex];
+        if (!link.cpu) {
+            continue;
+        }
+        const std::size_t offset = link.bufferOffsetWords;
+        const std::size_t words = 5u + link.capacity + link.capacity * 16u;
+        if ((offset + words) * 4u > m_cpuEventData.size()) {
+            report("VFX CPU event buffer range is out of bounds");
+            return;
+        }
+        std::fill(m_cpuEventData.begin() + static_cast<std::ptrdiff_t>(offset * 4u),
+                  m_cpuEventData.begin() + static_cast<std::ptrdiff_t>((offset + words) * 4u),
+                  std::byte{0});
+        const std::vector<CpuEventRecord>& pending = m_cpuPending[linkIndex];
+        storeWord(offset, static_cast<std::uint32_t>(pending.size()));
+        storeWord(offset + 1u, m_cpuEventTotal[linkIndex]);
+        storeWord(offset + 3u, m_cpuEventDropped[linkIndex]);
+        for (std::size_t eventIndex = 0; eventIndex < pending.size(); ++eventIndex) {
+            storeWord(offset + 5u + eventIndex, static_cast<std::uint32_t>(eventIndex));
+            for (std::uint32_t slot = 0; slot < 4u; ++slot) {
+                for (std::uint32_t component = 0; component < 4u; ++component) {
+                    const float value = pending[eventIndex].payload[slot][component];
+                    std::uint32_t bits = 0;
+                    std::memcpy(&bits, &value, sizeof(bits));
+                    storeWord(link.payloadOffsetWords + eventIndex * 16u + slot * 4u + component, bits);
+                }
+            }
+        }
+    }
+    if (!m_device.updateBuffer(m_cpuEventBuffer, m_cpuEventData)) {
+        report("failed to upload VFX CPU event buffer");
+        return;
+    }
+    for (std::vector<CpuEventRecord>& pending : m_cpuPending) {
+        pending.clear();
+    }
+}
+
+void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
+    const bool stepFrame = m_stepFrame;
+    if (!m_needsReset && (!m_playing || (m_paused && !stepFrame))) {
+        return;
+    }
+    const bool simulate = m_playing && (!m_paused || stepFrame);
     if (m_needsReset) {
         m_aliveEstimate = 0;
         m_nextParticleId = 0;
@@ -790,14 +1168,49 @@ void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext&) {
             system.aliveEstimate = 0;
         }
     }
-    for (std::size_t systemIndex = 0; systemIndex < m_systems.size(); ++systemIndex) {
+
+    const bool hasEvents = !m_asset->eventLinks.empty();
+    if (hasEvents) {
+        m_runtime.m_diagnostics.eventCount += static_cast<std::uint32_t>(m_asset->eventLinks.size());
+        if (m_needsReset && m_eventBuffer.valid()) {
+            if (m_eventResetProgram != kInvalidIndex) {
+                sink.beginPass({"VFX Event Reset", true, false, false});
+                dispatchKernel(sink, 0u, m_eventResetProgram);
+                sink.endPass();
+            } else {
+                report("VFX event reset program is missing");
+            }
+        }
+        uploadCpuEvents();
+        if (m_cpuEventBuffer.valid()) {
+            if (m_eventCopyProgram != kInvalidIndex) {
+                sink.beginPass({"VFX CPU Event Upload", true, false, false});
+                dispatchKernel(sink, 0u, m_eventCopyProgram);
+                sink.endPass();
+            } else {
+                report("VFX event copy program is missing");
+            }
+        }
+    }
+    const auto encodeSystem = [&](std::size_t systemIndex) {
         SystemRuntime& system = m_systems[systemIndex];
         const std::string passName = "VFX " + m_asset->systems[systemIndex].name + " Simulation";
         sink.beginPass({passName, true, false, false});
-        setUniforms(sink, static_cast<std::uint32_t>(systemIndex), simulate);
+        setUniforms(sink, static_cast<std::uint32_t>(systemIndex), simulate, frame);
         for (const std::uint32_t programIndex : system.kernels) {
             const AssetProgram& program = m_asset->programs[programIndex];
             if (program.task == static_cast<std::uint8_t>(kTaskDeadListInit) && !m_needsReset) {
+                continue;
+            }
+            if (program.task == static_cast<std::uint8_t>(kTaskSortPrepass)) {
+                const std::uint32_t chunks =
+                    (m_asset->systems[systemIndex].capacity + kSortChunkSize - 1u) / kSortChunkSize;
+                for (std::uint32_t chunk = 0u; chunk < chunks; ++chunk) {
+                    const Vec4 ids{static_cast<float>(m_nextParticleId),
+                                   static_cast<float>(systemIndex), static_cast<float>(chunk), 0.0f};
+                    sink.setUniform(m_idsUniform, &ids);
+                    dispatchKernel(sink, static_cast<std::uint32_t>(systemIndex), programIndex);
+                }
                 continue;
             }
             dispatchKernel(sink, static_cast<std::uint32_t>(systemIndex), programIndex);
@@ -810,8 +1223,34 @@ void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext&) {
                 std::min(m_asset->systems[systemIndex].capacity, system.aliveEstimate + system.spawnCount);
         }
         sink.endPass();
+    };
+
+    if (!hasEvents) {
+        for (std::size_t systemIndex = 0; systemIndex < m_systems.size(); ++systemIndex) {
+            encodeSystem(systemIndex);
+        }
+    } else {
+        for (std::size_t systemIndex = 0; systemIndex < m_systems.size(); ++systemIndex) {
+            if (!m_systemHasEventInput[systemIndex]) {
+                encodeSystem(systemIndex);
+            }
+        }
+        if (m_eventPrefixProgram != kInvalidIndex) {
+            sink.beginPass({"VFX Event Prefix Sum", true, false, false});
+            dispatchKernel(sink, 0u, m_eventPrefixProgram);
+            sink.endPass();
+        } else {
+            report("VFX event prefix program is missing");
+        }
+        for (std::size_t systemIndex = 0; systemIndex < m_systems.size(); ++systemIndex) {
+            if (m_systemHasEventInput[systemIndex]) {
+                encodeSystem(systemIndex);
+            }
+        }
     }
+
     m_needsReset = false;
+    m_stepFrame = false;
     m_aliveEstimate = 0;
     for (const SystemRuntime& system : m_systems) {
         m_aliveEstimate += system.aliveEstimate;
@@ -823,9 +1262,7 @@ void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext&) {
             m_runtime.m_diagnostics.particles += impl->aliveEstimate();
         }
     }
-}
-
-void EffectImpl::bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex,
+}void EffectImpl::bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex,
                                    const AssetProgram& program) {
     const SystemRuntime& system = m_systems[systemIndex];
     for (const AssetBinding& binding : program.vertexBindings) {
@@ -840,10 +1277,16 @@ void EffectImpl::bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex,
     }
 }
 
-void EffectImpl::bindOutputTexture(CommandSink& sink, const AssetProgram& program) {
+void EffectImpl::bindOutputTexture(CommandSink& sink, const FrameContext& frame,
+                                   const AssetProgram& program) {
     TextureHandle texture = m_whiteTexture;
     for (const AssetBinding& binding : program.fragmentBindings) {
         if (binding.kind != AssetBindingKind::Texture) {
+            continue;
+        }
+        if (binding.index == kSceneDepthBindingIndex) {
+            const TextureHandle depth = frame.sceneDepth.valid() ? frame.sceneDepth : m_whiteTexture;
+            sink.setTexture(binding.stage, m_sceneDepthSampler, depth);
             continue;
         }
         if (binding.index < m_asset->properties.size() &&
@@ -870,13 +1313,36 @@ void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
         for (const std::uint32_t programIndex : system.outputs) {
             const AssetProgram& program = m_asset->programs[programIndex];
             const std::string passName = "VFX " + m_asset->systems[systemIndex].name + " Output";
-            sink.beginPass({passName, false, false, false});
+            sink.beginPass({passName, false, program.softParticles, false});
             sink.setUniform(m_worldUniform, &world);
-            sink.setUniform(m_invViewUniform, &invView);
-            sink.setUniform(m_viewProjUniform, &frame.viewProjection);
-            sink.setUniform(m_cameraPosUniform, &cameraPosition);
+            if (program.softParticles) {
+                const float width = std::max(frame.screenSize.x, 1.0f);
+                const float height = std::max(frame.screenSize.y, 1.0f);
+                const Vec4 softParams{program.softDistance, 1.0f / width, 1.0f / height, 0.0f};
+                sink.setUniform(m_softParamsUniform, &softParams);
+            }
+            const bool lit = program.lit && m_runtime.m_shading != nullptr;
+            if (lit) {
+                for (std::size_t i = 0; i < m_propertyUniforms.size(); ++i) {
+                    if (m_propertyUniforms[i].valid()) {
+                        sink.setUniform(m_propertyUniforms[i], m_propertyValues[i].data());
+                    }
+                }
+                LitSettings settings;
+                settings.softDistance = program.softDistance;
+                m_runtime.m_shading->bindLighting(sink, frame, settings);
+            } else {
+                sink.setUniform(m_invViewUniform, &invView);
+                sink.setUniform(m_viewProjUniform, &frame.viewProjection);
+                sink.setUniform(m_cameraPosUniform, &cameraPosition);
+                if (program.softParticles) {
+                    const Mat4 invViewProj = inverseMatrix(frame.viewProjection);
+                    sink.setUniform(m_viewUniform, &frame.view);
+                    sink.setUniform(m_invViewProjUniform, &invViewProj);
+                }
+            }
             bindOutputBuffers(sink, static_cast<std::uint32_t>(systemIndex), program);
-            bindOutputTexture(sink, program);
+            bindOutputTexture(sink, frame, program);
             DrawState state;
             state.depthTest = true;
             state.depthWrite = false;
@@ -894,28 +1360,70 @@ void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
     }
 }
 
+void EffectImpl::createLutTextures(std::string& error) {
+    const auto create = [&](LutRuntime& lut, std::string_view name, std::string_view samplerName) {
+        if (lut.properties.empty() || !error.empty()) {
+            return;
+        }
+        std::vector<std::byte> data;
+        data.reserve(lut.properties.size() * kLutRowPitch);
+        for (const std::uint32_t propertyIndex : lut.properties) {
+            if (propertyIndex >= m_lutData.size() || m_lutData[propertyIndex].size() != kLutRowPitch) {
+                error = "invalid VFX LUT row for property '" +
+                        std::string(m_asset->properties[propertyIndex].name) + "'";
+                return;
+            }
+            data.insert(data.end(), m_lutData[propertyIndex].begin(), m_lutData[propertyIndex].end());
+        }
+        TextureDesc desc;
+        desc.width = static_cast<std::uint16_t>(kLutSampleCount);
+        desc.height = static_cast<std::uint16_t>(lut.properties.size());
+        desc.format = TextureFormat::RGBA16F;
+        desc.initialData = data.data();
+        desc.dataSize = static_cast<std::uint32_t>(data.size());
+        desc.name = name;
+        lut.texture = m_device.createTexture(desc);
+        if (!lut.texture.valid()) {
+            error = "failed to create VFX " + std::string(name) + " texture";
+            return;
+        }
+        lut.sampler = m_device.findSampler(samplerName);
+        if (!lut.sampler.valid()) {
+            error = "failed to create VFX " + std::string(name) + " sampler";
+        }
+    };
+    create(m_curveLut, "vfx.lut.curves", "s_vfxCurveLut");
+    create(m_gradientLut, "vfx.lut.gradients", "s_vfxGradientLut");
+}
+
+void EffectImpl::updateLutTexture(LutRuntime& lut) {
+    if (!lut.texture.valid()) {
+        report("VFX LUT texture is unavailable");
+        return;
+    }
+    std::vector<std::byte> data;
+    data.reserve(lut.properties.size() * kLutRowPitch);
+    for (const std::uint32_t propertyIndex : lut.properties) {
+        if (propertyIndex >= m_lutData.size() || m_lutData[propertyIndex].size() != kLutRowPitch) {
+            report("VFX LUT row is invalid");
+            return;
+        }
+        data.insert(data.end(), m_lutData[propertyIndex].begin(), m_lutData[propertyIndex].end());
+    }
+    if (!m_device.updateTexture(lut.texture, data, kLutRowPitch)) {
+        report("failed to update VFX LUT texture");
+    }
+}
+
 void EffectImpl::updateLut(std::size_t propertyIndex) {
     if (propertyIndex >= m_lutData.size()) {
         return;
     }
     const AssetProperty& property = m_asset->properties[propertyIndex];
-    if (m_lutTextures[propertyIndex].valid()) {
-        if (!m_device.updateTexture(m_lutTextures[propertyIndex], m_lutData[propertyIndex], kLutRowPitch)) {
-            report("failed to update VFX LUT texture");
-        }
-        return;
-    }
-    TextureDesc desc;
-    desc.width = static_cast<std::uint16_t>(kLutSampleCount);
-    desc.height = 1;
-    desc.format = TextureFormat::RGBA16F;
-    desc.initialData = m_lutData[propertyIndex].data();
-    desc.dataSize = static_cast<std::uint32_t>(m_lutData[propertyIndex].size());
-    const std::string lutName = "vfx.lut." + property.name;
-    desc.name = lutName;
-    m_lutTextures[propertyIndex] = m_device.createTexture(desc);
-    if (!m_lutTextures[propertyIndex].valid()) {
-        report("failed to create VFX LUT texture");
+    if (property.type == PropertyType::Curve) {
+        updateLutTexture(m_curveLut);
+    } else if (property.type == PropertyType::Gradient) {
+        updateLutTexture(m_gradientLut);
     }
 }
 
@@ -964,6 +1472,7 @@ Effect* Runtime::createEffect(const Asset& asset, const EffectDesc& desc, std::s
             *error = localError;
         }
         reportError(localError);
+        pruneAssets();
         return nullptr;
     }
     Effect* result = effect.get();
@@ -971,15 +1480,57 @@ Effect* Runtime::createEffect(const Asset& asset, const EffectDesc& desc, std::s
     if (error != nullptr) {
         error->clear();
     }
-    m_diagnostics.effects = static_cast<std::uint32_t>(m_effects.size());
-    m_diagnostics.systems = 0;
-    for (const std::unique_ptr<Effect>& current : m_effects) {
-        const auto* impl = dynamic_cast<const EffectImpl*>(current.get());
-        if (impl != nullptr) {
-            m_diagnostics.systems += impl->systemCount();
+    refreshDiagnostics();
+    return result;
+}
+
+Effect* Runtime::reloadEffect(Effect* effect, const Asset& asset, const EffectDesc& desc,
+                              std::string* error) {
+    if (effect != nullptr) {
+        const auto existing = std::find_if(m_effects.begin(), m_effects.end(),
+                                           [effect](const std::unique_ptr<Effect>& candidate) {
+                                               return candidate.get() == effect;
+                                           });
+        if (existing == m_effects.end()) {
+            constexpr std::string_view message = "effect is not owned by this runtime";
+            if (error != nullptr) {
+                *error = message;
+            }
+            reportError(message);
+            pruneAssets();
+            return nullptr;
         }
     }
-    return result;
+
+    Effect* replacement = createEffect(asset, desc, error);
+    if (replacement == nullptr) {
+        pruneAssets();
+        return nullptr;
+    }
+    if (effect == nullptr) {
+        return replacement;
+    }
+    for (auto iterator = m_effects.begin(); iterator != m_effects.end(); ++iterator) {
+        if (iterator->get() == effect) {
+            m_effects.erase(iterator);
+            break;
+        }
+    }
+    refreshDiagnostics();
+    pruneAssets();
+    if (error != nullptr) {
+        error->clear();
+    }
+    return replacement;
+}
+
+Effect* Runtime::reloadEffect(Effect* effect, const std::filesystem::path& path, const EffectDesc& desc,
+                              std::string* error) {
+    const std::shared_ptr<const Asset> asset = loadAsset(path, error);
+    if (asset == nullptr) {
+        return nullptr;
+    }
+    return reloadEffect(effect, *asset, desc, error);
 }
 
 void Runtime::destroyEffect(Effect* effect) {
@@ -989,22 +1540,46 @@ void Runtime::destroyEffect(Effect* effect) {
     for (auto iterator = m_effects.begin(); iterator != m_effects.end(); ++iterator) {
         if (iterator->get() == effect) {
             m_effects.erase(iterator);
-            m_diagnostics.effects = static_cast<std::uint32_t>(m_effects.size());
-            m_diagnostics.systems = 0;
-            m_diagnostics.particles = 0;
-            for (const std::unique_ptr<Effect>& current : m_effects) {
-                const auto* impl = dynamic_cast<const EffectImpl*>(current.get());
-                if (impl != nullptr) {
-                    m_diagnostics.systems += impl->systemCount();
-                    m_diagnostics.particles += impl->aliveEstimate();
-                }
-            }
+            refreshDiagnostics();
+            pruneAssets();
             return;
         }
     }
 }
 
+void Runtime::refreshDiagnostics() {
+    m_diagnostics.effects = static_cast<std::uint32_t>(m_effects.size());
+    m_diagnostics.systems = 0;
+    m_diagnostics.particles = 0;
+    for (const std::unique_ptr<Effect>& current : m_effects) {
+        const auto* impl = dynamic_cast<const EffectImpl*>(current.get());
+        if (impl != nullptr) {
+            m_diagnostics.systems += impl->systemCount();
+            m_diagnostics.particles += impl->aliveEstimate();
+        }
+    }
+}
+
+void Runtime::pruneAssets() {
+    m_assets.erase(
+        std::remove_if(m_assets.begin(), m_assets.end(),
+                       [this](const std::shared_ptr<const Asset>& candidate) {
+                           for (const std::unique_ptr<Effect>& effect : m_effects) {
+                               const auto* impl = dynamic_cast<const EffectImpl*>(effect.get());
+                               if (impl != nullptr && impl->assetPtr() == candidate.get()) {
+                                   return false;
+                               }
+                           }
+                           return true;
+                       }),
+        m_assets.end());
+}
+
 void Runtime::update(float deltaSeconds) {
+    m_simulationMs = 0.0f;
+    m_outputMs = 0.0f;
+    m_diagnostics.simulationMs = 0.0f;
+    m_diagnostics.outputMs = 0.0f;
     const auto start = std::chrono::steady_clock::now();
     for (const std::unique_ptr<Effect>& effect : m_effects) {
         auto* impl = dynamic_cast<EffectImpl*>(effect.get());
@@ -1027,6 +1602,8 @@ void Runtime::update(float deltaSeconds) {
     m_diagnostics.systems = systems;
     m_diagnostics.particles = particles;
     m_diagnostics.updateMs = m_updateMs;
+    m_diagnostics.encodeMs = 0.0f;
+    m_diagnostics.totalMs = m_updateMs;
 }
 
 void Runtime::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
@@ -1042,8 +1619,11 @@ void Runtime::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    m_encodeMs = std::chrono::duration<float, std::milli>(end - start).count();
+    m_simulationMs = std::chrono::duration<float, std::milli>(end - start).count();
+    m_encodeMs = m_simulationMs + m_outputMs;
+    m_diagnostics.simulationMs = m_simulationMs;
     m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
 }
 
 void Runtime::encodeOutput(CommandSink& sink, const FrameContext& frame) {
@@ -1056,12 +1636,29 @@ void Runtime::encodeOutput(CommandSink& sink, const FrameContext& frame) {
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    m_encodeMs = std::chrono::duration<float, std::milli>(end - start).count();
+    m_outputMs = std::chrono::duration<float, std::milli>(end - start).count();
+    m_encodeMs = m_simulationMs + m_outputMs;
+    m_diagnostics.outputMs = m_outputMs;
     m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
 }
 
 void Runtime::setErrorCallback(std::function<void(std::string_view)> callback) {
     m_errorCallback = std::move(callback);
+}
+
+bool Runtime::hasLitOutputs() const {
+    for (const std::shared_ptr<const Asset>& asset : m_assets) {
+        if (asset == nullptr) {
+            continue;
+        }
+        for (const AssetProgram& program : asset->programs) {
+            if (program.output && program.lit) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 Diagnostics Runtime::diagnostics() const { return m_diagnostics; }

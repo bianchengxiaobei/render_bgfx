@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -66,6 +67,7 @@ Vec3 scale(const Vec3& value, float factor) {
 }
 Vec3 multiply(const Vec3& a, const Vec3& b) { return Vec3{a.x * b.x, a.y * b.y, a.z * b.z}; }
 float dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+float length(const Vec3& value) { return std::sqrt(dot(value, value)); }
 Vec3 cross(const Vec3& a, const Vec3& b) {
     return Vec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
@@ -302,6 +304,116 @@ bool parseRelativeMode(const Block& block, bool defaultRelative, bool& out,
     return true;
 }
 
+enum class CollisionMode { Kill, Bounce, Stick };
+
+bool parseCollisionMode(const Block& block, CollisionMode& out, const std::string& path,
+                        std::string* error) {
+    out = CollisionMode::Bounce;
+    const Value* value = block.parameter("mode");
+    if (value == nullptr) {
+        return true;
+    }
+    if (value->kind != Value::Kind::String) {
+        return fail(error, path + ".mode: expected 'kill', 'bounce', or 'stick'");
+    }
+    if (value->string == "kill") {
+        out = CollisionMode::Kill;
+    } else if (value->string == "bounce") {
+        out = CollisionMode::Bounce;
+    } else if (value->string == "stick") {
+        out = CollisionMode::Stick;
+    } else {
+        return fail(error, path + ".mode: expected 'kill', 'bounce', or 'stick'");
+    }
+    return true;
+}
+
+struct CollisionHit {
+    bool hit = false;
+    Vec3 position{};
+    Vec3 normal{};
+};
+
+CollisionHit intersectPlane(const Vec3& position, const Vec3& velocity, const Vec3& rawNormal,
+                            float distance, float deltaSeconds) {
+    CollisionHit result;
+    const float normalLength = std::sqrt(dot(rawNormal, rawNormal));
+    if (!(normalLength > 1.0e-6f)) {
+        return result;
+    }
+    const Vec3 normal = scale(rawNormal, 1.0f / normalLength);
+    const float distanceA = dot(position, normal) - distance;
+    const float normalSpeed = dot(velocity, normal);
+    const float distanceB = distanceA + normalSpeed * deltaSeconds;
+    if (distanceA < 0.0f || (distanceA <= 1.0e-5f && normalSpeed < 0.0f)) {
+        result.hit = true;
+        result.normal = normal;
+        result.position = sub(position, scale(normal, distanceA));
+        return result;
+    }
+    if (distanceA > 0.0f && distanceB < 0.0f) {
+        const float denominator = distanceA - distanceB;
+        const float t = denominator > 0.0f ? std::clamp(distanceA / denominator, 0.0f, 1.0f) : 0.0f;
+        result.hit = true;
+        result.normal = normal;
+        result.position = add(position, scale(velocity, t * deltaSeconds));
+    }
+    return result;
+}
+
+CollisionHit intersectSphere(const Vec3& position, const Vec3& velocity, const Vec3& center,
+                             float rawRadius, float deltaSeconds) {
+    CollisionHit result;
+    const float radius = std::max(rawRadius, 0.0f);
+    if (!(radius > 0.0f)) {
+        return result;
+    }
+    const Vec3 delta = sub(position, center);
+    const float distanceSquared = dot(delta, delta);
+    const float radiusSquared = radius * radius;
+    if (distanceSquared < radiusSquared) {
+        result.hit = true;
+        if (distanceSquared > 1.0e-12f) {
+            result.normal = scale(delta, 1.0f / std::sqrt(distanceSquared));
+        } else {
+            result.normal = length(velocity) > 1.0e-6f ? normalize(scale(velocity, -1.0f))
+                                                        : Vec3{0.0f, 1.0f, 0.0f};
+        }
+        result.position = add(center, scale(result.normal, radius));
+        return result;
+    }
+    const float a = dot(velocity, velocity);
+    if (!(a > 1.0e-12f)) {
+        return result;
+    }
+    const float b = dot(delta, velocity);
+    const float c = distanceSquared - radiusSquared;
+    const float discriminant = b * b - a * c;
+    if (discriminant < 0.0f) {
+        return result;
+    }
+    const float t = (-b - std::sqrt(discriminant)) / a;
+    if (t < 0.0f || t > deltaSeconds) {
+        return result;
+    }
+    result.hit = true;
+    result.position = add(position, scale(velocity, t));
+    result.normal = normalize(sub(result.position, center));
+    return result;
+}
+
+void applyBounce(Vec3& velocity, const Vec3& normal, float restitution, float friction,
+                 float deltaSeconds) {
+    const float normalSpeed = dot(velocity, normal);
+    if (normalSpeed < 0.0f) {
+        velocity = sub(velocity,
+                       scale(normal, (1.0f + std::max(restitution, 0.0f)) * normalSpeed));
+    }
+    const Vec3 tangent = sub(velocity, scale(normal, dot(velocity, normal)));
+    const float frictionFactor = 1.0f - std::exp(-std::max(friction, 0.0f) * deltaSeconds);
+    velocity = sub(velocity, scale(tangent, frictionFactor));
+}
+
 bool applyInitBlock(const Block& block, const std::string& path, ParticleState& state,
                     std::string* error) {
     const std::uint32_t seed = state.seed ^ blockSeed(path, block.type);
@@ -402,14 +514,95 @@ bool applyInitBlock(const Block& block, const std::string& path, ParticleState& 
     return fail(error, path + ".type: unsupported reference init block '" + block.type + "'");
 }
 
-bool applyUpdateBlock(const Block& block, const std::string& path, float deltaSeconds, float time,
-                      ParticleState& state, std::string* error) {
+const Property* findProperty(const Graph& graph, std::string_view name) {
+    for (const Property& property : graph.properties) {
+        if (property.name == name) {
+            return &property;
+        }
+    }
+    return nullptr;
+}
+
+float sampleCurve(std::span<const CurveKey> curve, float t) {
+    if (curve.empty()) {
+        return 0.0f;
+    }
+    t = std::clamp(t, 0.0f, 1.0f);
+    if (curve.size() == 1u || t <= curve.front().time) {
+        return curve.front().value;
+    }
+    for (std::size_t i = 1; i < curve.size(); ++i) {
+        const CurveKey& a = curve[i - 1u];
+        const CurveKey& b = curve[i];
+        if (t < b.time) {
+            const float span = b.time - a.time;
+            return span > 0.0f ? a.value + (b.value - a.value) * ((t - a.time) / span) : b.value;
+        }
+    }
+    return curve.back().value;
+}
+
+Vec4 sampleGradient(std::span<const GradientKey> gradient, float t) {
+    if (gradient.empty()) {
+        return Vec4{};
+    }
+    t = std::clamp(t, 0.0f, 1.0f);
+    if (gradient.size() == 1u || t <= gradient.front().time) {
+        return gradient.front().color;
+    }
+    for (std::size_t i = 1; i < gradient.size(); ++i) {
+        const GradientKey& a = gradient[i - 1u];
+        const GradientKey& b = gradient[i];
+        if (t < b.time) {
+            const float span = b.time - a.time;
+            if (span <= 0.0f) {
+                return b.color;
+            }
+            const float u = (t - a.time) / span;
+            return Vec4{a.color.x + (b.color.x - a.color.x) * u,
+                        a.color.y + (b.color.y - a.color.y) * u,
+                        a.color.z + (b.color.z - a.color.z) * u,
+                        a.color.w + (b.color.w - a.color.w) * u};
+        }
+    }
+    return gradient.back().color;
+}
+
+bool applyUpdateBlock(const Graph& graph, const Block& block, const std::string& path, float deltaSeconds,
+                      float time, ParticleState& state, std::string* error) {
+    if (block.type == "trigger_event") {
+        return true;
+    }
     if (block.type == "integrate") {
         state.position = add(state.position, scale(state.velocity, deltaSeconds));
         return true;
     }
     if (block.type == "age") {
         state.age += deltaSeconds;
+        return true;
+    }
+    if (block.type == "color_over_life" || block.type == "alpha_over_life" ||
+        block.type == "size_over_life") {
+        const bool gradient = block.type == "color_over_life";
+        const char* field = gradient ? "gradient" : "curve";
+        const Value* value = block.parameter(field);
+        if (value == nullptr || value->kind != Value::Kind::String) {
+            return fail(error, path + "." + field + ": must name a property");
+        }
+        const Property* property = findProperty(graph, value->string);
+        if (property == nullptr || property->type != (gradient ? PropertyType::Gradient : PropertyType::Curve)) {
+            return fail(error, path + "." + field + ": unknown " + std::string(field) + " property '" +
+                                    value->string + "'");
+        }
+        const float ratio = std::clamp(state.age / std::max(state.lifetime, 1.0e-6f), 0.0f, 1.0f);
+        if (gradient) {
+            const Vec4 sample = sampleGradient(property->gradient, ratio);
+            state.color = Vec3{sample.x, sample.y, sample.z};
+        } else if (block.type == "alpha_over_life") {
+            state.alpha = sampleCurve(property->curve, ratio);
+        } else {
+            state.size = sampleCurve(property->curve, ratio);
+        }
         return true;
     }
     if (block.type == "reap") {
@@ -481,6 +674,47 @@ bool applyUpdateBlock(const Block& block, const std::string& path, float deltaSe
                              scale(direction, (strength / (distanceSquared + falloff)) * deltaSeconds));
         return true;
     }
+    if (block.type == "collision_plane" || block.type == "collision_sphere") {
+        CollisionMode mode = CollisionMode::Bounce;
+        float restitution = 0.1f;
+        float friction = 0.0f;
+        if (!parseCollisionMode(block, mode, path, error) ||
+            !optionalFloat(block, "restitution", restitution, path, error) ||
+            !optionalFloat(block, "friction", friction, path, error)) {
+            return false;
+        }
+        CollisionHit hit;
+        if (block.type == "collision_plane") {
+            Vec3 normal;
+            float distance = 0.0f;
+            if (!requireFloat3(block, "normal", normal, path, error) ||
+                !requireFloat(block, "distance", distance, path, error)) {
+                return false;
+            }
+            hit = intersectPlane(state.position, state.velocity, normal, distance, deltaSeconds);
+        } else {
+            Vec3 center;
+            float radius = 0.0f;
+            if (!requireFloat3(block, "center", center, path, error) ||
+                !requireFloat(block, "radius", radius, path, error)) {
+                return false;
+            }
+            hit = intersectSphere(state.position, state.velocity, center, radius, deltaSeconds);
+        }
+        if (hit.hit) {
+            if (mode == CollisionMode::Kill) {
+                state.alive = false;
+            } else {
+                state.position = hit.position;
+                if (mode == CollisionMode::Stick) {
+                    state.velocity = Vec3{};
+                } else {
+                    applyBounce(state.velocity, hit.normal, restitution, friction, deltaSeconds);
+                }
+            }
+        }
+        return true;
+    }
     if (block.type == "turbulence") {
         float intensity = 1.0f;
         float frequency = 1.0f;
@@ -517,6 +751,15 @@ bool applyUpdateBlock(const Block& block, const std::string& path, float deltaSe
 }
 
 } // namespace
+
+void sortKVP(std::vector<SortKVP>& kvp, SortOrder order) {
+    std::sort(kvp.begin(), kvp.end(), [order](const SortKVP& a, const SortKVP& b) {
+        if (a.key == b.key) {
+            return a.value < b.value;
+        }
+        return order == SortOrder::Descending ? a.key > b.key : a.key < b.key;
+    });
+}
 
 void resetSpawner(const SpawnerDesc& spawner, SpawnerState& state) {
     state = SpawnerState{};
@@ -584,12 +827,62 @@ bool simulateParticle(const Graph& graph, std::uint32_t systemIndex, std::uint32
             }
             const std::string path = "systems[" + std::to_string(systemIndex) + "].update.blocks[" +
                                      std::to_string(blockIndex) + "]";
-            if (!applyUpdateBlock(block, path, delta, time, out, error)) {
+            if (!applyUpdateBlock(graph, block, path, delta, time, out, error)) {
                 return false;
             }
         }
     }
     return true;
+}
+
+std::uint32_t simulateEventCount(const Graph& graph, std::uint32_t producerSystem,
+                                 float deltaSeconds, std::uint32_t frameCount,
+                                 std::string* error) {
+    if (producerSystem >= graph.systems.size()) {
+        fail(error, "reference producer system index is out of range");
+        return 0u;
+    }
+    const SystemDesc& system = graph.systems[producerSystem];
+    SpawnerState spawner;
+    resetSpawner(system.spawner, spawner);
+    std::uint32_t spawnTotal = 0u;
+    for (std::uint32_t frame = 0; frame < frameCount; ++frame) {
+        const std::uint32_t spawnCount = updateSpawner(system.spawner, deltaSeconds, spawner);
+        if (spawnCount > std::numeric_limits<std::uint32_t>::max() - spawnTotal) {
+            fail(error, "reference event spawn count overflow");
+            return 0u;
+        }
+        spawnTotal += spawnCount;
+    }
+    std::uint32_t multiplier = 1u;
+    for (const Block& block : system.updateBlocks) {
+        if (!block.enabled || block.type != "trigger_event") {
+            continue;
+        }
+        const Value* count = block.parameter("count");
+        float value = 1.0f;
+        if (count != nullptr && !valueFloat(*count, value)) {
+            fail(error, "reference trigger_event count must be a literal number");
+            return 0u;
+        }
+        multiplier = static_cast<std::uint32_t>(std::max(0.0f, value));
+    }
+    std::uint32_t events = 0u;
+    for (std::uint32_t spawnIndex = 0; spawnIndex < spawnTotal; ++spawnIndex) {
+        ParticleState state;
+        if (!simulateParticle(graph, producerSystem, spawnIndex, 0u, deltaSeconds, frameCount, state,
+                              error)) {
+            return 0u;
+        }
+        if (!state.alive) {
+            if (events > std::numeric_limits<std::uint32_t>::max() - multiplier) {
+                fail(error, "reference event count overflow");
+                return 0u;
+            }
+            events += multiplier;
+        }
+    }
+    return events;
 }
 
 } // namespace vfx::reference

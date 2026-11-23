@@ -204,7 +204,8 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
     }
 
     ShaderBackend backend() const override { return ShaderBackend::Dxbc; }
-    Limits limits() const override { return Limits{16, 16}; }
+    Limits limits() const override { return m_limits; }
+    void setLimits(Limits limits) { m_limits = limits; }
 
     void beginPass(const PassDesc& desc) override {
         MockCommand command;
@@ -366,6 +367,7 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
     std::vector<ProgramSlot> m_programs;
     std::vector<UniformSlot> m_uniforms;
     std::vector<SamplerSlot> m_samplers;
+    Limits m_limits{16, 16};
     std::unordered_map<std::string, UniformHandle> m_uniformsByName;
     std::unordered_map<std::string, SamplerHandle> m_samplersByName;
     std::size_t m_destroyedBuffers = 0;

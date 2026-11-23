@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "ReferenceSorted262144",
+  "properties": [],
+  "systems": [
+    {
+      "name": "ReferenceSorted",
+      "capacity": 262144,
+      "space": "world",
+      "bounds": {"mode": "manual", "center": [0, 1, 0], "extents": [8, 4, 8]},
+      "sort": {"mode": "distance", "order": "ascending"},
+      "spawner": {
+        "rate": 0,
+        "bursts": [{"time": 0.0, "count": 262144}]
+      },
+      "init": {
+        "blocks": [
+          {"type": "set_position_box", "center": [0, 1, 0], "size": [2.0, 0.5, 4.0]},
+          {"type": "set_velocity_random", "minSpeed": 0.25, "maxSpeed": 0.75},
+          {"type": "set_color", "color": [0.2, 0.4, 0.6]},
+          {"type": "set_alpha", "alpha": 0.75},
+          {"type": "set_size", "size": 0.1},
+          {"type": "set_lifetime", "lifetime": 100.0}
+        ]
+      },
+      "update": {
+        "blocks": [
+          {"type": "integrate"},
+          {"type": "age"},
+          {"type": "reap"}
+        ]
+      },
+      "outputs": [
+        {"type": "quad", "lit": false, "blend": "additive", "texture": "", "sort": "distance"}
+      ]
+    }
+  ]
+}

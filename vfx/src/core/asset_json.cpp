@@ -1,5 +1,8 @@
 #include "vfx/asset.h"
 
+#include "block_catalog.h"
+#include "custom_hlsl.h"
+#include "subgraph.h"
 #include "vfx/attribute_layout.h"
 #include "vfx/expression.h"
 
@@ -7,6 +10,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +27,9 @@ namespace vfx {
 namespace {
 
 using Json = nlohmann::json;
+using detail::BlockSpec;
+using detail::FieldSpec;
+using detail::findBlockSpec;
 
 constexpr std::size_t kMaxJsonDepth = 64;
 constexpr std::uint32_t kMaxSortedCapacity = 262144u;
@@ -56,136 +63,395 @@ bool isIdentifier(std::string_view name) {
 
 bool isKnownExpressionOp(std::string_view op) {
     static constexpr std::string_view kOps[] = {
-        "attr",          "attribute",     "property",      "time",
-        "dt",            "lifetime_ratio","add",           "sub",
-        "mul",           "div",           "min",           "max",
-        "clamp",         "lerp",          "remap",         "sin",
-        "cos",           "abs",           "saturate",      "random",
-        "noise",         "sample_curve",  "sample_gradient","sample_texture",
-        "select",        "swizzle",
+        "attr",
+        "attribute",
+        "property",
+        "time",
+        "dt",
+        "lifetime_ratio",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "min",
+        "max",
+        "clamp",
+        "lerp",
+        "remap",
+        "sin",
+        "cos",
+        "abs",
+        "saturate",
+        "random",
+        "noise",
+        "sample_curve",
+        "sample_gradient",
+        "sample_texture",
+        "select",
+        "swizzle",
+        "subgraph",
+        "input",
+        "arg",
     };
     return std::find(std::begin(kOps), std::end(kOps), op) != std::end(kOps);
 }
 
-struct FieldSpec {
-    const char* name;
-    bool required;
+struct JsonPathAccess {
+    bool isIndex = false;
+    std::string key;
+    std::size_t index = 0;
 };
 
-struct BlockSpec {
-    std::string_view type;
-    std::span<const FieldSpec> fields;
+bool parseJsonPath(std::string_view path, std::vector<JsonPathAccess>& access) {
+    std::size_t cursor = 0;
+    if (!path.empty() && path.front() == '$') {
+        ++cursor;
+    }
+    while (cursor < path.size()) {
+        if (path[cursor] == '.') {
+            ++cursor;
+            continue;
+        }
+        if (path[cursor] == '[') {
+            ++cursor;
+            const std::size_t start = cursor;
+            std::size_t index = 0;
+            while (cursor < path.size() && path[cursor] >= '0' && path[cursor] <= '9') {
+                index = index * 10u + static_cast<std::size_t>(path[cursor] - '0');
+                ++cursor;
+            }
+            if (cursor == start || cursor >= path.size() || path[cursor] != ']') {
+                return false;
+            }
+            ++cursor;
+            access.push_back(JsonPathAccess{true, {}, index});
+            continue;
+        }
+        const std::size_t start = cursor;
+        while (cursor < path.size() && path[cursor] != '.' && path[cursor] != '[') {
+            ++cursor;
+        }
+        if (cursor == start) {
+            return false;
+        }
+        access.push_back(JsonPathAccess{false, std::string(path.substr(start, cursor - start)), 0});
+    }
+    return true;
+}
+
+class JsonLocationFinder {
+  public:
+    explicit JsonLocationFinder(std::string_view text) : m_text(text) {}
+
+    bool locate(std::string_view path, std::uint32_t& line, std::uint32_t& column) const {
+        std::size_t cursor = skipWhitespace(0);
+        if (cursor >= m_text.size()) {
+            return false;
+        }
+        if (path.empty() || path == "$") {
+            return setLocation(cursor, line, column);
+        }
+        std::vector<JsonPathAccess> access;
+        if (!parseJsonPath(path, access) || access.empty()) {
+            return false;
+        }
+        return findValue(cursor, access, 0, line, column);
+    }
+
+    void rootLocation(std::uint32_t& line, std::uint32_t& column) const {
+        const std::size_t cursor = skipWhitespace(0);
+        if (!setLocation(cursor, line, column)) {
+            line = 1;
+            column = 1;
+        }
+    }
+
+  private:
+    std::size_t skipWhitespace(std::size_t cursor) const {
+        if (cursor == 0 && m_text.size() >= 3 && static_cast<unsigned char>(m_text[0]) == 0xefu &&
+            static_cast<unsigned char>(m_text[1]) == 0xbbu && static_cast<unsigned char>(m_text[2]) == 0xbfu) {
+            cursor = 3;
+        }
+        while (cursor < m_text.size()) {
+            const char c = m_text[cursor];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                ++cursor;
+                continue;
+            }
+            break;
+        }
+        return cursor;
+    }
+
+    bool setLocation(std::size_t offset, std::uint32_t& line, std::uint32_t& column) const {
+        if (offset > m_text.size()) {
+            return false;
+        }
+        std::uint32_t currentLine = 1;
+        std::size_t lineStart = 0;
+        for (std::size_t i = 0; i < offset; ++i) {
+            if (m_text[i] == '\n') {
+                ++currentLine;
+                lineStart = i + 1;
+            }
+        }
+        line = currentLine;
+        column = static_cast<std::uint32_t>(offset - lineStart + 1u);
+        return true;
+    }
+
+    bool parseString(std::size_t& cursor, std::string& out) const {
+        if (cursor >= m_text.size() || m_text[cursor] != '"') {
+            return false;
+        }
+        ++cursor;
+        out.clear();
+        while (cursor < m_text.size()) {
+            const char c = m_text[cursor++];
+            if (c == '"') {
+                return true;
+            }
+            if (c != '\\') {
+                out.push_back(c);
+                continue;
+            }
+            if (cursor >= m_text.size()) {
+                return false;
+            }
+            const char escaped = m_text[cursor++];
+            switch (escaped) {
+            case '"':
+            case '\\':
+            case '/':
+                out.push_back(escaped);
+                break;
+            case 'b':
+                out.push_back('\b');
+                break;
+            case 'f':
+                out.push_back('\f');
+                break;
+            case 'n':
+                out.push_back('\n');
+                break;
+            case 'r':
+                out.push_back('\r');
+                break;
+            case 't':
+                out.push_back('\t');
+                break;
+            case 'u':
+                if (cursor + 4 > m_text.size()) {
+                    return false;
+                }
+                out.push_back('?');
+                cursor += 4;
+                break;
+            default:
+                return false;
+            }
+        }
+        return false;
+    }
+
+    bool skipObject(std::size_t& cursor) const {
+        ++cursor;
+        for (;;) {
+            cursor = skipWhitespace(cursor);
+            if (cursor >= m_text.size()) {
+                return false;
+            }
+            if (m_text[cursor] == '}') {
+                ++cursor;
+                return true;
+            }
+            std::string key;
+            if (!parseString(cursor, key)) {
+                return false;
+            }
+            cursor = skipWhitespace(cursor);
+            if (cursor >= m_text.size() || m_text[cursor] != ':') {
+                return false;
+            }
+            ++cursor;
+            if (!skipValue(cursor)) {
+                return false;
+            }
+            cursor = skipWhitespace(cursor);
+            if (cursor < m_text.size() && m_text[cursor] == ',') {
+                ++cursor;
+                continue;
+            }
+            if (cursor < m_text.size() && m_text[cursor] == '}') {
+                ++cursor;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    bool skipArray(std::size_t& cursor) const {
+        ++cursor;
+        for (;;) {
+            cursor = skipWhitespace(cursor);
+            if (cursor >= m_text.size()) {
+                return false;
+            }
+            if (m_text[cursor] == ']') {
+                ++cursor;
+                return true;
+            }
+            if (!skipValue(cursor)) {
+                return false;
+            }
+            cursor = skipWhitespace(cursor);
+            if (cursor < m_text.size() && m_text[cursor] == ',') {
+                ++cursor;
+                continue;
+            }
+            if (cursor < m_text.size() && m_text[cursor] == ']') {
+                ++cursor;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    bool skipValue(std::size_t& cursor) const {
+        cursor = skipWhitespace(cursor);
+        if (cursor >= m_text.size()) {
+            return false;
+        }
+        const char c = m_text[cursor];
+        if (c == '"') {
+            std::string ignored;
+            return parseString(cursor, ignored);
+        }
+        if (c == '{') {
+            return skipObject(cursor);
+        }
+        if (c == '[') {
+            return skipArray(cursor);
+        }
+        const std::size_t start = cursor;
+        while (cursor < m_text.size()) {
+            const char value = m_text[cursor];
+            if (value == ' ' || value == '\t' || value == '\r' || value == '\n' || value == ',' || value == ']' ||
+                value == '}') {
+                break;
+            }
+            ++cursor;
+        }
+        return cursor > start;
+    }
+
+    bool findValue(std::size_t& cursor, const std::vector<JsonPathAccess>& access, std::size_t index,
+                   std::uint32_t& line, std::uint32_t& column) const {
+        cursor = skipWhitespace(cursor);
+        if (cursor >= m_text.size()) {
+            return false;
+        }
+        const JsonPathAccess& current = access[index];
+        if (current.isIndex) {
+            if (m_text[cursor] != '[') {
+                return false;
+            }
+            ++cursor;
+            for (std::size_t item = 0;; ++item) {
+                cursor = skipWhitespace(cursor);
+                if (cursor >= m_text.size() || m_text[cursor] == ']') {
+                    return false;
+                }
+                if (item == current.index) {
+                    if (index + 1 == access.size()) {
+                        return setLocation(cursor, line, column);
+                    }
+                    return findValue(cursor, access, index + 1, line, column);
+                }
+                if (!skipValue(cursor)) {
+                    return false;
+                }
+                cursor = skipWhitespace(cursor);
+                if (cursor < m_text.size() && m_text[cursor] == ',') {
+                    ++cursor;
+                    continue;
+                }
+                if (cursor < m_text.size() && m_text[cursor] == ']') {
+                    return false;
+                }
+                return false;
+            }
+        }
+
+        if (m_text[cursor] != '{') {
+            return false;
+        }
+        ++cursor;
+        for (;;) {
+            cursor = skipWhitespace(cursor);
+            if (cursor >= m_text.size() || m_text[cursor] == '}') {
+                return false;
+            }
+            const std::size_t keyStart = cursor;
+            std::string key;
+            if (!parseString(cursor, key)) {
+                return false;
+            }
+            cursor = skipWhitespace(cursor);
+            if (cursor >= m_text.size() || m_text[cursor] != ':') {
+                return false;
+            }
+            ++cursor;
+            if (key == current.key) {
+                if (index + 1 == access.size()) {
+                    return setLocation(keyStart, line, column);
+                }
+                return findValue(cursor, access, index + 1, line, column);
+            }
+            if (!skipValue(cursor)) {
+                return false;
+            }
+            cursor = skipWhitespace(cursor);
+            if (cursor < m_text.size() && m_text[cursor] == ',') {
+                ++cursor;
+                continue;
+            }
+            if (cursor < m_text.size() && m_text[cursor] == '}') {
+                return false;
+            }
+            return false;
+        }
+    }
+
+    std::string_view m_text;
 };
 
-constexpr FieldSpec kSetPositionSphere[] = {
-    {"center", true}, {"radius", true}, {"surface", false},
-};
-constexpr FieldSpec kSetPositionBox[] = {
-    {"center", true}, {"size", true},
-};
-constexpr FieldSpec kSetVelocityRandom[] = {
-    {"minSpeed", true}, {"maxSpeed", true}, {"direction", false}, {"coneAngle", false},
-};
-constexpr FieldSpec kSetVelocityDirection[] = {
-    {"direction", true}, {"speed", true},
-};
-constexpr FieldSpec kSetColor[] = {
-    {"color", true},
-};
-constexpr FieldSpec kSetAlpha[] = {
-    {"alpha", true},
-};
-constexpr FieldSpec kSetSize[] = {
-    {"size", true},
-};
-constexpr FieldSpec kSetLifetime[] = {
-    {"lifetime", true},
-};
-constexpr FieldSpec kSetAngle[] = {
-    {"angle", true},
-};
-constexpr FieldSpec kSetScale[] = {
-    {"scale", true},
-};
-constexpr FieldSpec kSetAttribute[] = {
-    {"attribute", true}, {"value", true},
-};
-constexpr FieldSpec kSetRandom[] = {
-    {"attribute", true}, {"min", true}, {"max", true},
-};
-constexpr FieldSpec kGravity[] = {
-    {"gravity", true},
-};
-constexpr FieldSpec kDrag[] = {
-    {"drag", false}, {"useSize", false},
-};
-constexpr FieldSpec kForce[] = {
-    {"force", true}, {"mode", false}, {"drag", false}, {"space", false},
-};
-constexpr FieldSpec kAttractor[] = {
-    {"position", true}, {"strength", true}, {"falloff", false},
-};
-constexpr FieldSpec kTurbulence[] = {
-    {"intensity", false}, {"frequency", false},  {"octaves", false},
-    {"roughness", false}, {"lacunarity", false}, {"scroll", false},
-    {"mode", false},      {"drag", false},
-};
-constexpr FieldSpec kEmpty[] = {{"", false}};
-constexpr FieldSpec kReap[] = {
-    {"condition", false},
-};
-constexpr FieldSpec kCollisionPlane[] = {
-    {"normal", true}, {"distance", true}, {"mode", false}, {"restitution", false}, {"friction", false},
-};
-constexpr FieldSpec kCollisionSphere[] = {
-    {"center", true}, {"radius", true}, {"mode", false}, {"restitution", false}, {"friction", false},
-};
-constexpr FieldSpec kOverLife[] = {
-    {"gradient", false}, {"curve", false},
-};
-constexpr FieldSpec kCustomHlsl[] = {
-    {"code", true}, {"reads", false}, {"writes", false},
-};
-
-constexpr BlockSpec kInitBlockSpecs[] = {
-    {"set_position_sphere", std::span<const FieldSpec>(kSetPositionSphere)},
-    {"set_position_box", std::span<const FieldSpec>(kSetPositionBox)},
-    {"set_velocity_random", std::span<const FieldSpec>(kSetVelocityRandom)},
-    {"set_velocity_direction", std::span<const FieldSpec>(kSetVelocityDirection)},
-    {"set_color", std::span<const FieldSpec>(kSetColor)},
-    {"set_alpha", std::span<const FieldSpec>(kSetAlpha)},
-    {"set_size", std::span<const FieldSpec>(kSetSize)},
-    {"set_lifetime", std::span<const FieldSpec>(kSetLifetime)},
-    {"set_angle", std::span<const FieldSpec>(kSetAngle)},
-    {"set_scale", std::span<const FieldSpec>(kSetScale)},
-    {"set_attribute", std::span<const FieldSpec>(kSetAttribute)},
-    {"set_random", std::span<const FieldSpec>(kSetRandom)},
-};
-
-constexpr BlockSpec kUpdateBlockSpecs[] = {
-    {"gravity", std::span<const FieldSpec>(kGravity)},
-    {"drag", std::span<const FieldSpec>(kDrag)},
-    {"force", std::span<const FieldSpec>(kForce)},
-    {"attractor", std::span<const FieldSpec>(kAttractor)},
-    {"turbulence", std::span<const FieldSpec>(kTurbulence)},
-    {"integrate", std::span<const FieldSpec>(kEmpty)},
-    {"age", std::span<const FieldSpec>(kEmpty)},
-    {"reap", std::span<const FieldSpec>(kReap)},
-    {"collision_plane", std::span<const FieldSpec>(kCollisionPlane)},
-    {"collision_sphere", std::span<const FieldSpec>(kCollisionSphere)},
-    {"color_over_life", std::span<const FieldSpec>(kOverLife)},
-    {"alpha_over_life", std::span<const FieldSpec>(kOverLife)},
-    {"size_over_life", std::span<const FieldSpec>(kOverLife)},
-    {"custom_hlsl", std::span<const FieldSpec>(kCustomHlsl)},
-};
-
-const BlockSpec* findBlockSpec(std::string_view type, bool update) {
-    const auto specs = update ? std::span<const BlockSpec>(kUpdateBlockSpecs)
-                              : std::span<const BlockSpec>(kInitBlockSpecs);
-    const auto found = std::find_if(specs.begin(), specs.end(), [type](const BlockSpec& spec) {
-        return spec.type == type;
-    });
-    return found == specs.end() ? nullptr : &*found;
+void jsonParseErrorLocation(std::string_view message, std::uint32_t& line, std::uint32_t& column) {
+    line = 0;
+    column = 0;
+    const std::string_view marker = "parse error at line ";
+    const std::size_t markerPos = message.find(marker);
+    if (markerPos == std::string_view::npos) {
+        return;
+    }
+    std::size_t cursor = markerPos + marker.size();
+    std::uint32_t parsedLine = 0;
+    while (cursor < message.size() && message[cursor] >= '0' && message[cursor] <= '9') {
+        parsedLine = parsedLine * 10u + static_cast<std::uint32_t>(message[cursor] - '0');
+        ++cursor;
+    }
+    const std::string_view columnMarker = ", column ";
+    if (cursor + columnMarker.size() > message.size() || message.substr(cursor, columnMarker.size()) != columnMarker) {
+        return;
+    }
+    cursor += columnMarker.size();
+    std::uint32_t parsedColumn = 0;
+    while (cursor < message.size() && message[cursor] >= '0' && message[cursor] <= '9') {
+        parsedColumn = parsedColumn * 10u + static_cast<std::uint32_t>(message[cursor] - '0');
+        ++cursor;
+    }
+    line = parsedLine;
+    column = parsedColumn;
 }
 
 void validateExpressionValue(const Value& value, const ExpressionContext& context, const std::string& path,
@@ -233,6 +499,47 @@ void validateBlockExpressions(const std::vector<Block>& blocks, const std::strin
             validateExpressionValue(value, context, child(blockPath, name), errors);
         }
     }
+}
+
+void validateCustomHlslBlocks(const std::vector<Block>& blocks, const std::string& path, const Graph& graph,
+                              std::vector<ParseError>& errors) {
+    for (std::size_t i = 0; i < blocks.size() && errors.empty(); ++i) {
+        if (blocks[i].type != "custom_hlsl") {
+            continue;
+        }
+        CustomHlslBlock program;
+        CustomHlslError error;
+        if (readCustomHlslBlock(blocks[i], graph, element(path, i), program, error)) {
+            continue;
+        }
+        ParseError diagnostic;
+        diagnostic.path = std::move(error.path);
+        diagnostic.message = std::move(error.message);
+        diagnostic.line = error.line;
+        diagnostic.column = error.column;
+        if (error.line != 0) {
+            diagnostic.location = ErrorLocationKind::Hlsl;
+        }
+        errors.push_back(std::move(diagnostic));
+    }
+}
+
+bool validateGraphCustomHlsl(const Graph& graph, std::vector<ParseError>& errors) {
+    for (std::size_t i = 0; i < graph.subgraphs.size() && errors.empty(); ++i) {
+        const std::string subgraphPath = element("subgraphs", i);
+        validateCustomHlslBlocks(graph.subgraphs[i].initBlocks, child(child(subgraphPath, "init"), "blocks"), graph,
+                                 errors);
+        validateCustomHlslBlocks(graph.subgraphs[i].updateBlocks, child(child(subgraphPath, "update"), "blocks"), graph,
+                                 errors);
+    }
+    for (std::size_t i = 0; i < graph.systems.size() && errors.empty(); ++i) {
+        const std::string systemPath = element("systems", i);
+        validateCustomHlslBlocks(graph.systems[i].initBlocks, child(child(systemPath, "init"), "blocks"), graph,
+                                 errors);
+        validateCustomHlslBlocks(graph.systems[i].updateBlocks, child(child(systemPath, "update"), "blocks"), graph,
+                                 errors);
+    }
+    return errors.empty();
 }
 
 bool validateGraphExpressions(const Graph& graph, std::vector<ParseError>& errors) {
@@ -393,6 +700,12 @@ public:
             graph->systems.push_back(std::move(system));
         }
 
+        if (!detail::flattenSubgraphs(*graph, m_errors)) {
+            return nullptr;
+        }
+        if (!validateGraphCustomHlsl(*graph, m_errors)) {
+            return nullptr;
+        }
         if (!validateGraphExpressions(*graph, m_errors)) {
             return nullptr;
         }
@@ -1100,6 +1413,15 @@ private:
                 return fail(child(path, "curve"), "must be a curve property name or expression");
             }
         }
+        if (block.type == "trigger_event") {
+            if (!string("event") || !scalar("count")) {
+                return false;
+            }
+            const Value* condition = block.parameter("condition");
+            if (condition != nullptr && !condition->isExpression() && condition->kind != Value::Kind::Bool) {
+                return fail(child(path, "condition"), "must be a boolean or expression");
+            }
+        }
         if (block.type == "custom_hlsl") {
             const Value* code = block.parameter("code");
             if (code == nullptr || code->kind != Value::Kind::String) {
@@ -1123,12 +1445,13 @@ private:
         return true;
     }
 
-    bool parseOutput(const Json& value, const std::string& path, OutputDesc& out) {
+    bool parseOutput(const Json& value, const std::string& path, OutputDesc& out,
+                     const std::vector<Property>& properties) {
         if (!value.is_object()) {
             return fail(path, "must be an object");
         }
         static constexpr const char* kFields[] = {
-            "type", "lit", "blend", "texture", "softParticles", "sort",
+            "type", "lit", "blend", "texture", "softParticles", "softDistance", "metallic", "roughness", "sort",
         };
         if (!checkKnownFields(value, path, kFields)) {
             return false;
@@ -1148,6 +1471,52 @@ private:
 
         if (!readBool(value, "lit", child(path, "lit"), out.lit) ||
             !readBool(value, "softParticles", child(path, "softParticles"), out.softParticles)) {
+            return false;
+        }
+        const auto softDistance = value.find("softDistance");
+        if (softDistance != value.end()) {
+            const std::string fieldPath = child(path, "softDistance");
+            if (!readFloat(*softDistance, fieldPath, out.softDistance)) {
+                return false;
+            }
+            if (out.softDistance < 0.001f) {
+                return fail(fieldPath, "must be at least 0.001");
+            }
+        }
+
+        const auto readMaterialScalar = [&](const char* field, float& constant, std::string& property) {
+            const auto it = value.find(field);
+            if (it == value.end()) {
+                return true;
+            }
+            const std::string fieldPath = child(path, field);
+            if (it->is_number()) {
+                if (!readFloat(*it, fieldPath, constant)) {
+                    return false;
+                }
+                if (constant < 0.0f || constant > 1.0f) {
+                    return fail(fieldPath, "must be between 0 and 1");
+                }
+                return true;
+            }
+            if (!it->is_string()) {
+                return fail(fieldPath, "must be a number or float property name");
+            }
+            property = it->get<std::string>();
+            if (property.empty()) {
+                return fail(fieldPath, "must not be empty");
+            }
+            const Property* found = findProperty(properties, property);
+            if (found == nullptr) {
+                return fail(fieldPath, "unknown property '" + property + "'");
+            }
+            if (found->type != PropertyType::Float) {
+                return fail(fieldPath, "property '" + property + "' must be a float");
+            }
+            return true;
+        };
+        if (!readMaterialScalar("metallic", out.metallic, out.metallicProperty) ||
+            !readMaterialScalar("roughness", out.roughness, out.roughnessProperty)) {
             return false;
         }
 
@@ -1227,15 +1596,29 @@ private:
                     }
                     Value attributes;
                     attributes.kind = Value::Kind::Object;
-                    for (const auto& [name, nested] : item.items()) {
-                        if (name == "name") {
-                            continue;
+                    const auto nestedAttributes = item.find("attributes");
+                    if (nestedAttributes != item.end()) {
+                        if (!nestedAttributes->is_object()) {
+                            return fail(child(itemPath, "attributes"), "must be an object");
                         }
-                        std::optional<Value> parsed;
-                        if (parseValue(nested, child(itemPath, name), 0, parsed) == nullptr) {
-                            return false;
+                        for (const auto& [name, nested] : nestedAttributes->items()) {
+                            std::optional<Value> parsed;
+                            if (parseValue(nested, child(child(itemPath, "attributes"), name), 0, parsed) == nullptr) {
+                                return false;
+                            }
+                            attributes.object.emplace_back(name, std::move(*parsed));
                         }
-                        attributes.object.emplace_back(name, std::move(*parsed));
+                    } else {
+                        for (const auto& [name, nested] : item.items()) {
+                            if (name == "name") {
+                                continue;
+                            }
+                            std::optional<Value> parsed;
+                            if (parseValue(nested, child(itemPath, name), 0, parsed) == nullptr) {
+                                return false;
+                            }
+                            attributes.object.emplace_back(name, std::move(*parsed));
+                        }
                     }
                     event.attributes = std::move(attributes);
                 } else {
@@ -1521,7 +1904,7 @@ private:
         for (std::size_t i = 0; i < outputs->size(); ++i) {
             const std::string outputPath = element(child(path, "outputs"), i);
             OutputDesc output;
-            if (!parseOutput((*outputs)[i], outputPath, output)) {
+            if (!parseOutput((*outputs)[i], outputPath, output, properties)) {
                 return false;
             }
             if (out.sort.mode != SortMode::None && !output.sort.has_value()) {
@@ -1727,6 +2110,11 @@ std::uint64_t hashGraph(const Graph& graph) {
             hashU64(hash, static_cast<std::uint64_t>(output.blend));
             hashString(hash, output.texture);
             hashU64(hash, output.softParticles ? 1u : 0u);
+            hashFloat(hash, output.softDistance);
+            hashFloat(hash, output.metallic);
+            hashFloat(hash, output.roughness);
+            hashString(hash, output.metallicProperty);
+            hashString(hash, output.roughnessProperty);
             hashU64(hash, output.sort.has_value() ? 1u : 0u);
             if (output.sort.has_value()) {
                 hashU64(hash, static_cast<std::uint64_t>(output.sort->mode));
@@ -1749,14 +2137,54 @@ std::uint64_t hashGraph(const Graph& graph) {
 
 } // namespace
 
+std::string formatParseError(const ParseError& error) {
+    std::string result;
+    if (error.location == ErrorLocationKind::Json && !error.source.empty()) {
+        result += error.source;
+    }
+    if (error.hasLocation()) {
+        if (!result.empty()) {
+            result += ":";
+        }
+        result += std::to_string(error.line) + ":" + std::to_string(error.column);
+    }
+    if (!error.path.empty()) {
+        if (!result.empty()) {
+            result += ": ";
+        }
+        result += error.path;
+    }
+    if (!error.message.empty()) {
+        if (!result.empty()) {
+            result += ": ";
+        }
+        result += error.message;
+    }
+    return result;
+}
+
+bool locateJsonPath(std::string_view json, std::string_view path, std::uint32_t& line, std::uint32_t& column) {
+    const JsonLocationFinder finder(json);
+    if (finder.locate(path, line, column)) {
+        return true;
+    }
+    finder.rootLocation(line, column);
+    return false;
+}
+
 ParseResult parseGraphJson(std::string_view json, std::string_view sourceName) {
-    (void)sourceName;
     ParseResult result;
     Json root;
     try {
         root = Json::parse(json.begin(), json.end());
     } catch (const std::exception& exception) {
-        result.errors.push_back(ParseError{"$", exception.what()});
+        ParseError error;
+        error.path = "$";
+        error.message = exception.what();
+        error.source = std::string(sourceName);
+        error.location = ErrorLocationKind::Json;
+        jsonParseErrorLocation(error.message, error.line, error.column);
+        result.errors.push_back(std::move(error));
         return result;
     }
 
@@ -1764,6 +2192,20 @@ ParseResult parseGraphJson(std::string_view json, std::string_view sourceName) {
     result.graph = parser.parse();
     if (!result.errors.empty()) {
         result.graph.reset();
+        const JsonLocationFinder finder(json);
+        for (ParseError& error : result.errors) {
+            if (error.location == ErrorLocationKind::Hlsl) {
+                if (error.source.empty()) {
+                    error.source = std::string(sourceName);
+                }
+                continue;
+            }
+            error.source = std::string(sourceName);
+            error.location = ErrorLocationKind::Json;
+            if (!finder.locate(error.path, error.line, error.column)) {
+                finder.rootLocation(error.line, error.column);
+            }
+        }
     }
     return result;
 }
@@ -1771,7 +2213,10 @@ ParseResult parseGraphJson(std::string_view json, std::string_view sourceName) {
 ParseResult loadGraphFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file.good()) {
-        return ParseResult{nullptr, {ParseError{"", "failed to open '" + path.string() + "'"}}};
+        ParseError error;
+        error.message = "failed to open '" + path.string() + "'";
+        error.source = path.string();
+        return ParseResult{nullptr, {std::move(error)}};
     }
     const std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     return parseGraphJson(contents, path.string());

@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include "vfx/runtime.h"
+#include "runtime_asset.h"
 #include "support/mock_backend.h"
 
 #include <array>
@@ -90,7 +91,7 @@ TEST_CASE("vfx runtime loads a baked asset and owns effect resources") {
     INFO(error);
     REQUIRE(effect != nullptr);
 
-    CHECK(backend.liveBufferCount() == 7u);
+    CHECK(backend.liveBufferCount() == 9u);
     CHECK(backend.liveProgramCount() == 7u);
     CHECK(backend.liveTextureCount() == 1u);
     CHECK(runtime.diagnostics().effects == 1u);
@@ -107,9 +108,186 @@ TEST_CASE("vfx runtime loads a baked asset and owns effect resources") {
     CHECK(backend.liveBufferCount() == 0u);
     CHECK(backend.liveProgramCount() == 0u);
     CHECK(backend.liveTextureCount() == 0u);
-    CHECK(backend.destroyedBufferCount() == 7u);
+    CHECK(backend.destroyedBufferCount() == 9u);
     CHECK(backend.destroyedProgramCount() == 7u);
     CHECK(backend.destroyedTextureCount() == 1u);
+}
+
+TEST_CASE("vfx runtime reports whether loaded assets have lit outputs") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    CHECK_FALSE(runtime.hasLitOutputs());
+
+    const std::shared_ptr<const vfx::Asset> unlit = loadMinimal(runtime, backend);
+    CHECK_FALSE(runtime.hasLitOutputs());
+
+    std::string error;
+    const std::shared_ptr<const vfx::Asset> lit =
+        runtime.loadAsset(sourcePath() / "tests/assets/lit_visual.vfxb", &error);
+    INFO(error);
+    REQUIRE(lit != nullptr);
+    CHECK(runtime.hasLitOutputs());
+}
+
+TEST_CASE("vfx runtime reports device binding limit failures") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> unlit = loadMinimal(runtime, backend);
+
+    backend.setLimits({16, 2});
+    std::string error;
+    vfx::Effect* effect = runtime.createEffect(*unlit, {}, &error);
+    CHECK(effect == nullptr);
+    CHECK(error.find("compute binding stage") != std::string::npos);
+    CHECK(error.find("exceeds the device storage limit 2") != std::string::npos);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
+    CHECK(runtime.diagnostics().effects == 0u);
+
+    backend.setLimits({2, 16});
+    const std::shared_ptr<const vfx::Asset> soft =
+        runtime.loadAsset(sourcePath() / "tests/assets/soft_visual.vfxb", &error);
+    INFO(error);
+    REQUIRE(soft != nullptr);
+    effect = runtime.createEffect(*soft, {}, &error);
+    CHECK(effect == nullptr);
+    CHECK(error.find("fragment binding stage") != std::string::npos);
+    CHECK(error.find("exceeds the device texture sampler limit 2") != std::string::npos);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
+    CHECK(runtime.diagnostics().effects == 0u);
+}
+
+TEST_CASE("vfx runtime rejects oversized particle capacity without retaining the asset") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
+
+    vfx::Asset oversized = *asset;
+    oversized.systems[0].capacity = vfx::kMaxParticleCapacity + 1u;
+    std::string error;
+    vfx::Effect* effect = runtime.createEffect(oversized, {}, &error);
+    CHECK(effect == nullptr);
+    CHECK(error.find("exceeds the runtime limit") != std::string::npos);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
+    CHECK(runtime.diagnostics().effects == 0u);
+
+    effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    runtime.destroyEffect(effect);
+    CHECK(backend.liveBufferCount() == 0u);
+
+    vfx::Asset missingShader = *asset;
+    for (vfx::AssetProgram& program : missingShader.programs) {
+        for (std::vector<std::byte>& blob : program.computeBlobs) {
+            blob.clear();
+        }
+        for (std::vector<std::byte>& blob : program.vertexBlobs) {
+            blob.clear();
+        }
+        for (std::vector<std::byte>& blob : program.fragmentBlobs) {
+            blob.clear();
+        }
+    }
+    effect = runtime.createEffect(missingShader, {}, &error);
+    CHECK(effect == nullptr);
+    CHECK(error.find("missing the selected backend shader") != std::string::npos);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(runtime.diagnostics().effects == 0u);
+}
+
+TEST_CASE("vfx runtime reloads an effect without leaking the previous resources") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
+
+    vfx::EffectDesc desc;
+    desc.playOnAwake = true;
+    desc.playRate = 2.0f;
+    std::string error;
+    vfx::Effect* effect = runtime.createEffect(*asset, desc, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    runtime.update(0.1f);
+    CHECK(backend.liveBufferCount() == 9u);
+    CHECK(backend.liveProgramCount() == 7u);
+    CHECK(backend.liveTextureCount() == 1u);
+
+    vfx::Effect* reloaded = runtime.reloadEffect(effect, *asset, desc, &error);
+    INFO(error);
+    REQUIRE(reloaded != nullptr);
+    CHECK(reloaded != effect);
+    CHECK(reloaded->isAlive());
+    CHECK(backend.liveBufferCount() == 9u);
+    CHECK(backend.liveProgramCount() == 7u);
+    CHECK(backend.liveTextureCount() == 1u);
+    CHECK(backend.destroyedBufferCount() == 9u);
+    CHECK(backend.destroyedProgramCount() == 7u);
+    CHECK(backend.destroyedTextureCount() == 1u);
+    CHECK(runtime.diagnostics().effects == 1u);
+
+    runtime.destroyEffect(reloaded);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
+    CHECK(backend.liveTextureCount() == 0u);
+    CHECK(backend.destroyedBufferCount() == 18u);
+    CHECK(backend.destroyedProgramCount() == 14u);
+    CHECK(backend.destroyedTextureCount() == 2u);
+    CHECK(runtime.diagnostics().effects == 0u);
+}
+
+TEST_CASE("vfx runtime repeated create and destroy leaves no live resources") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
+
+    for (std::uint32_t iteration = 0; iteration < 16; ++iteration) {
+        vfx::Effect* effect = runtime.createEffect(*asset, {});
+        REQUIRE(effect != nullptr);
+        CHECK(backend.liveBufferCount() == 9u);
+        CHECK(backend.liveProgramCount() == 7u);
+        CHECK(backend.liveTextureCount() == 1u);
+        runtime.update(0.1f);
+        runtime.encodeSimulation(backend, {});
+        runtime.encodeOutput(backend, {});
+        CHECK(runtime.diagnostics().draws == 1u);
+        runtime.destroyEffect(effect);
+        CHECK(backend.liveBufferCount() == 0u);
+        CHECK(backend.liveProgramCount() == 0u);
+        CHECK(backend.liveTextureCount() == 0u);
+        CHECK(runtime.diagnostics().effects == 0u);
+    }
+    CHECK(backend.destroyedBufferCount() == 16u * 9u);
+    CHECK(backend.destroyedProgramCount() == 16u * 7u);
+    CHECK(backend.destroyedTextureCount() == 16u);
+}
+
+TEST_CASE("vfx runtime keeps the old effect when a reload fails") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
+
+    std::string error;
+    vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    const std::size_t liveBuffers = backend.liveBufferCount();
+    const std::size_t livePrograms = backend.liveProgramCount();
+
+    vfx::Effect* reloaded = runtime.reloadEffect(
+        effect, sourcePath() / "tests/assets/does_not_exist.vfxb", {}, &error);
+    CHECK(reloaded == nullptr);
+    CHECK_FALSE(error.empty());
+    CHECK(effect->isAlive());
+    CHECK(backend.liveBufferCount() == liveBuffers);
+    CHECK(backend.liveProgramCount() == livePrograms);
+    CHECK(runtime.diagnostics().effects == 1u);
+
+    runtime.destroyEffect(effect);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
 }
 
 TEST_CASE("vfx runtime schedules spawning and emits the simulation command sequence") {
@@ -159,6 +337,55 @@ TEST_CASE("vfx runtime schedules spawning and emits the simulation command seque
     CHECK(runtime.diagnostics().draws == 1u);
 }
 
+TEST_CASE("vfx runtime binds scene depth and soft particle parameters") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    std::string error;
+    const std::shared_ptr<const vfx::Asset> asset =
+        runtime.loadAsset(sourcePath() / "tests/assets/soft_visual.vfxb", &error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    runtime.update(0.0f);
+
+    vfx::FrameContext frame;
+    frame.screenSize = vfx::Vec2{640.0f, 360.0f};
+    frame.sceneDepth = backend.createTexture({1, 1, 1, vfx::TextureUsage::Sampled,
+                                              vfx::TextureFormat::D32F, nullptr, 0, "test.depth"});
+    REQUIRE(frame.sceneDepth.valid());
+
+    runtime.encodeSimulation(backend, frame);
+    backend.clearCommands();
+    runtime.encodeOutput(backend, frame);
+    REQUIRE(backend.commands().front().type == vfx::test::MockCommand::Type::BeginPass);
+    CHECK(backend.commands().front().readsSceneDepth);
+
+    bool depthBound = false;
+    for (const vfx::test::MockCommand& command : backend.commands()) {
+        if (command.type == vfx::test::MockCommand::Type::SetTexture && command.stage == 4u) {
+            CHECK(command.texture == frame.sceneDepth);
+            REQUIRE(command.sampler.index < backend.samplers().size());
+            CHECK(backend.samplers()[command.sampler.index].name == "s_vfxSceneDepth");
+            depthBound = true;
+        }
+    }
+    CHECK(depthBound);
+
+    const vfx::UniformHandle softParams = findUniform(backend, "u_vfxSoftParams");
+    REQUIRE(softParams.valid());
+    const vfx::test::MockCommand* softCommand = findUniformCommand(backend, softParams);
+    REQUIRE(softCommand != nullptr);
+    REQUIRE(softCommand->data.size() == sizeof(vfx::Vec4));
+    const auto* values = reinterpret_cast<const float*>(softCommand->data.data());
+    CHECK(values[0] == doctest::Approx(2.0f));
+    CHECK(values[1] == doctest::Approx(1.0f / 640.0f));
+    CHECK(values[2] == doctest::Approx(1.0f / 360.0f));
+    CHECK(runtime.diagnostics().draws == 1u);
+    runtime.destroyEffect(effect);
+}
+
 TEST_CASE("vfx runtime merges spawner bursts and clamps large frame deltas") {
     vfx::test::MockBackend backend;
     vfx::Runtime runtime(backend, &backend);
@@ -198,36 +425,106 @@ TEST_CASE("vfx runtime merges spawner bursts and clamps large frame deltas") {
     runtime.destroyEffect(effect);
 }
 
+TEST_CASE("vfx runtime dispatches bitonic pre-pass and merge sort passes") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    std::string error;
+    const std::shared_ptr<const vfx::Asset> asset =
+        runtime.loadAsset(sourcePath() / "tests/assets/reference_sorted_8192.vfxb", &error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+
+    runtime.update(0.1f);
+    backend.clearCommands();
+    runtime.encodeSimulation(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == 9u);
+    CHECK(runtime.diagnostics().sortPasses == 3u);
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::SetStorageBuffer) == 27u);
+
+    bool foundChunkBase = false;
+    const vfx::UniformHandle ids = findUniform(backend, "u_vfx_ids");
+    REQUIRE(ids.valid());
+    for (const vfx::test::MockCommand& command : backend.commands()) {
+        if (command.type == vfx::test::MockCommand::Type::SetUniform && command.uniform == ids) {
+            REQUIRE(command.data.size() == sizeof(vfx::Vec4));
+            const auto* values = reinterpret_cast<const float*>(command.data.data());
+            foundChunkBase = foundChunkBase || values[2] == doctest::Approx(1.0f);
+        }
+    }
+    CHECK(foundChunkBase);
+
+    backend.clearCommands();
+    runtime.update(0.1f);
+    runtime.encodeSimulation(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == 8u);
+    CHECK(runtime.diagnostics().sortPasses == 3u);
+    runtime.destroyEffect(effect);
+}
+
+TEST_CASE("vfx runtime reports phase timings and frame totals") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
+    vfx::Effect* effect = runtime.createEffect(*asset, {});
+    REQUIRE(effect != nullptr);
+
+    runtime.update(0.1f);
+    CHECK(runtime.diagnostics().updateMs >= 0.0f);
+    CHECK(runtime.diagnostics().simulationMs == doctest::Approx(0.0f));
+    CHECK(runtime.diagnostics().outputMs == doctest::Approx(0.0f));
+
+    runtime.encodeSimulation(backend, {});
+    const vfx::Diagnostics afterSimulation = runtime.diagnostics();
+    CHECK(afterSimulation.simulationMs >= 0.0f);
+    CHECK(afterSimulation.outputMs == doctest::Approx(0.0f));
+    CHECK(afterSimulation.encodeMs == doctest::Approx(afterSimulation.simulationMs));
+    CHECK(afterSimulation.totalMs ==
+          doctest::Approx(afterSimulation.updateMs + afterSimulation.simulationMs));
+
+    runtime.encodeOutput(backend, {});
+    const vfx::Diagnostics afterOutput = runtime.diagnostics();
+    CHECK(afterOutput.outputMs >= 0.0f);
+    CHECK(afterOutput.encodeMs ==
+          doctest::Approx(afterOutput.simulationMs + afterOutput.outputMs));
+    CHECK(afterOutput.totalMs == doctest::Approx(afterOutput.updateMs + afterOutput.encodeMs));
+
+    runtime.destroyEffect(effect);
+}
+
 TEST_CASE("vfx runtime emits deterministic dispatch order and buffer bindings") {
     vfx::test::MockBackend backend;
     vfx::Runtime runtime(backend, &backend);
     const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
     vfx::Effect* effect = runtime.createEffect(*asset, {});
     REQUIRE(effect != nullptr);
-    const std::array<const char*, 7> names = {
+    const std::array<const char*, 9> names = {
         "vfx.Sparks.buffer0", "vfx.Sparks.buffer1", "vfx.Sparks.buffer2", "vfx.Sparks.buffer3",
-        "vfx.Sparks.buffer4", "vfx.Sparks.buffer5", "vfx.Sparks.buffer6",
+        "vfx.Sparks.buffer4", "vfx.Sparks.buffer5", "vfx.Sparks.buffer6", "vfx.Sparks.buffer7",
+        "vfx.Sparks.buffer8",
     };
-    std::array<vfx::BufferHandle, 7> buffers{};
+    std::array<vfx::BufferHandle, 9> buffers{};
     for (std::size_t i = 0; i < buffers.size(); ++i) {
         buffers[i] = bufferByName(backend, names[i]);
         REQUIRE(buffers[i].valid());
     }
     using Binding = std::pair<std::uint8_t, vfx::BufferHandle>;
     const std::vector<std::vector<Binding>> resetSequence = {
-        {{0, buffers[4]}, {1, buffers[3]}},
+        {{0, buffers[4]}, {1, buffers[3]}, {2, buffers[7]}},
         {{0, buffers[1]}, {1, buffers[0]}, {2, buffers[2]}},
         {{0, buffers[0]}, {1, buffers[1]}, {2, buffers[4]}},
         {{0, buffers[0]}, {1, buffers[1]}},
-        {{0, buffers[0]}, {1, buffers[2]}, {2, buffers[3]}},
-        {{0, buffers[5]}, {1, buffers[3]}},
+        {{0, buffers[0]}, {1, buffers[7]}, {2, buffers[2]}, {3, buffers[3]}},
+        {{0, buffers[5]}, {1, buffers[3]}, {2, buffers[7]}},
     };
     const std::vector<std::vector<Binding>> continuousSequence = {
-        {{0, buffers[4]}, {1, buffers[3]}},
+        {{0, buffers[4]}, {1, buffers[3]}, {2, buffers[7]}},
         {{0, buffers[0]}, {1, buffers[1]}, {2, buffers[4]}},
         {{0, buffers[0]}, {1, buffers[1]}},
-        {{0, buffers[0]}, {1, buffers[2]}, {2, buffers[3]}},
-        {{0, buffers[5]}, {1, buffers[3]}},
+        {{0, buffers[0]}, {1, buffers[7]}, {2, buffers[2]}, {3, buffers[3]}},
+        {{0, buffers[5]}, {1, buffers[3]}, {2, buffers[7]}},
     };
     const auto verifySimulation = [&](std::uint32_t expectedDispatches, bool reset) {
         const std::vector<std::vector<Binding>>& sequence = reset ? resetSequence : continuousSequence;
@@ -248,7 +545,7 @@ TEST_CASE("vfx runtime emits deterministic dispatch order and buffer bindings") 
         CHECK(kernel == expectedDispatches);
         CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == expectedDispatches);
         CHECK(countCommands(backend, vfx::test::MockCommand::Type::SetStorageBuffer) ==
-              (reset ? 15u : 12u));
+              (reset ? 18u : 15u));
         CHECK(countCommands(backend, vfx::test::MockCommand::Type::BeginPass) == 1u);
         CHECK(countCommands(backend, vfx::test::MockCommand::Type::EndPass) == 1u);
         CHECK(countCommands(backend, vfx::test::MockCommand::Type::SetUniform) == 4u);
@@ -291,6 +588,8 @@ TEST_CASE("vfx runtime applies properties, pause, stop and restart") {
     const std::shared_ptr<const vfx::Asset> asset = loadMinimal(runtime, backend);
     vfx::Effect* effect = runtime.createEffect(*asset, {});
     REQUIRE(effect != nullptr);
+    const vfx::UniformHandle params = findUniform(backend, "u_vfx_params");
+    REQUIRE(params.valid());
 
     CHECK(effect->setFloat("Size", 0.75f));
     CHECK(effect->setColor("Tint", vfx::Vec4{0.1f, 0.2f, 0.3f, 0.4f}));
@@ -319,6 +618,19 @@ TEST_CASE("vfx runtime applies properties, pause, stop and restart") {
     runtime.update(0.1f);
     runtime.encodeSimulation(backend, {});
     CHECK(backend.commands().empty());
+
+    effect->advanceOneFrame();
+    backend.clearCommands();
+    runtime.update(0.0f);
+    runtime.encodeSimulation(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == 5u);
+    const vfx::test::MockCommand* stepParams = findUniformCommand(backend, params);
+    REQUIRE(stepParams != nullptr);
+    const auto* stepValues = reinterpret_cast<const float*>(stepParams->data.data());
+    CHECK(stepValues[1] == doctest::Approx(1.0f / 60.0f));
+    backend.clearCommands();
+    runtime.encodeOutput(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::DrawIndirect) == 1u);
 
     effect->stop();
     CHECK_FALSE(effect->isAlive());
@@ -383,6 +695,17 @@ TEST_CASE("vfx runtime updates curve and gradient LUTs and local bounds") {
     runtime.update(0.0f);
     backend.clearCommands();
     runtime.encodeSimulation(backend, {});
+    bool curveStage = false;
+    bool gradientStage = false;
+    for (const vfx::test::MockCommand& command : backend.commands()) {
+        if (command.type != vfx::test::MockCommand::Type::SetTexture) {
+            continue;
+        }
+        curveStage = curveStage || command.stage == 9u;
+        gradientStage = gradientStage || command.stage == 10u;
+    }
+    CHECK(curveStage);
+    CHECK(gradientStage);
     runtime.encodeOutput(backend, {});
     const vfx::UniformHandle world = findUniform(backend, "u_vfx_world");
     REQUIRE(world.valid());
@@ -394,7 +717,7 @@ TEST_CASE("vfx runtime updates curve and gradient LUTs and local bounds") {
     CHECK(worldValues[13] == doctest::Approx(0.0f));
     bool foundTexture = false;
     for (const vfx::test::MockCommand& command : backend.commands()) {
-        if (command.type == vfx::test::MockCommand::Type::SetTexture) {
+        if (command.type == vfx::test::MockCommand::Type::SetTexture && command.stage == 0u) {
             foundTexture = true;
             CHECK(command.texture == externalTexture);
         }
@@ -405,6 +728,117 @@ TEST_CASE("vfx runtime updates curve and gradient LUTs and local bounds") {
     CHECK(backend.liveTextureCount() == 1u);
     backend.destroyTexture(externalTexture);
     CHECK(backend.liveTextureCount() == 0u);
+}
+
+TEST_CASE("vfx runtime schedules GPU event reset, prefix sum and consumer init") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    std::string error;
+    const std::shared_ptr<const vfx::Asset> asset =
+        runtime.loadAsset(sourcePath() / "tests/assets/vfx_event.vfxb", &error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    CHECK(backend.liveBufferCount() == 19u);
+    CHECK(backend.liveProgramCount() == 16u);
+    const vfx::BufferHandle eventBuffer = bufferByName(backend, "vfx.events");
+    REQUIRE(eventBuffer.valid());
+    REQUIRE(backend.buffers()[eventBuffer.index].desc.size == 4372u);
+    CHECK(backend.buffers()[eventBuffer.index].desc.usage == vfx::BufferUsage::Storage);
+
+    runtime.update(0.1f);
+    backend.clearCommands();
+    runtime.encodeSimulation(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::BeginPass) == 4u);
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::EndPass) == 4u);
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == 14u);
+    CHECK(runtime.diagnostics().dispatches == 14u);
+    CHECK(runtime.diagnostics().eventCount == 1u);
+
+    std::vector<std::string> passes;
+    bool sawEventBind = false;
+    for (const vfx::test::MockCommand& command : backend.commands()) {
+        if (command.type == vfx::test::MockCommand::Type::BeginPass) {
+            passes.push_back(command.passName);
+        }
+        if (command.type == vfx::test::MockCommand::Type::SetStorageBuffer &&
+            command.buffer.index == eventBuffer.index) {
+            sawEventBind = true;
+        }
+    }
+    REQUIRE(passes.size() == 4u);
+    CHECK(passes[0] == "VFX Event Reset");
+    CHECK(passes[1] == "VFX Emitter Simulation");
+    CHECK(passes[2] == "VFX Event Prefix Sum");
+    CHECK(passes[3] == "VFX Receiver Simulation");
+    CHECK(sawEventBind);
+
+    runtime.destroyEffect(effect);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
+}
+
+TEST_CASE("vfx runtime queues CPU events and schedules the upload copy") {
+    vfx::test::MockBackend backend;
+    vfx::Runtime runtime(backend, &backend);
+    std::string error;
+    const std::shared_ptr<const vfx::Asset> asset =
+        runtime.loadAsset(sourcePath() / "tests/assets/vfx_cpu_event.vfxb", &error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    vfx::Effect* effect = runtime.createEffect(*asset, {}, &error);
+    INFO(error);
+    REQUIRE(effect != nullptr);
+    CHECK(backend.liveBufferCount() == 11u);
+    CHECK(backend.liveProgramCount() == 10u);
+    CHECK(bufferByName(backend, "vfx.cpu.events").valid());
+
+    std::string eventError;
+    runtime.setErrorCallback([&](std::string_view message) { eventError.assign(message); });
+    vfx::EventAttribute invalidPosition;
+    invalidPosition.name = "position";
+    invalidPosition.value.type = vfx::PropertyType::Float;
+    invalidPosition.value.f = {42.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<vfx::EventAttribute, 1> invalid = {invalidPosition};
+    effect->sendEvent("hit", invalid);
+    CHECK(eventError.find("incompatible type") != std::string::npos);
+    eventError.clear();
+    effect->sendEvent("missing", {});
+    CHECK(eventError.find("not declared") != std::string::npos);
+    runtime.setErrorCallback({});
+
+    vfx::EventAttribute position;
+    position.name = "position";
+    position.value.type = vfx::PropertyType::Vector3;
+    position.value.f = {1.0f, 2.0f, 3.0f, 0.0f};
+    const std::array<vfx::EventAttribute, 1> attributes = {position};
+    effect->sendEvent("hit", attributes);
+    effect->sendEvent("hit", attributes);
+
+    runtime.update(0.1f);
+    backend.clearCommands();
+    runtime.encodeSimulation(backend, {});
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::BeginPass) == 4u);
+    CHECK(countCommands(backend, vfx::test::MockCommand::Type::Dispatch) == 9u);
+    CHECK(runtime.diagnostics().eventCount == 1u);
+
+    std::vector<std::string> passes;
+    for (const vfx::test::MockCommand& command : backend.commands()) {
+        if (command.type == vfx::test::MockCommand::Type::BeginPass) {
+            passes.push_back(command.passName);
+        }
+    }
+    REQUIRE(passes.size() == 4u);
+    CHECK(passes[0] == "VFX Event Reset");
+    CHECK(passes[1] == "VFX CPU Event Upload");
+    CHECK(passes[2] == "VFX Event Prefix Sum");
+    CHECK(passes[3] == "VFX Receiver Simulation");
+
+    runtime.destroyEffect(effect);
+    CHECK(backend.liveBufferCount() == 0u);
+    CHECK(backend.liveProgramCount() == 0u);
 }
 
 TEST_CASE("vfx runtime reports load errors") {

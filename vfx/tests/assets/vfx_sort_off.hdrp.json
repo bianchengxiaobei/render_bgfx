@@ -1,0 +1,5 @@
+{
+  "vfx": [
+    {"name": "SortVisual", "asset": "sort_visual_off.vfxb", "position": [0, 0, 0], "play": true, "playRate": 0.1, "seed": 0}
+  ]
+}

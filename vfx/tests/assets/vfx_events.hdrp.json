@@ -1,0 +1,5 @@
+{
+  "vfx": [
+    {"name": "EventsVisual", "asset": "vfx_events_visual.vfxb", "position": [0, 0, 0], "play": true, "playRate": 1.0, "seed": 0}
+  ]
+}

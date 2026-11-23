@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "gfx/state.h"
+#include "render/passes/forward_lighting.h"
 
 #include <array>
 #include <cstring>
@@ -580,8 +581,14 @@ void HbgVfxBackend::drawIndirect(::vfx::ProgramHandle program, ::vfx::BufferHand
     m_encoder->submitIndirect(m_view, programEntry.handle, indirectEntry.handle, start, num);
 }
 
-void HbgVfxBackend::bindLighting(::vfx::CommandSink&, const ::vfx::FrameContext&, const ::vfx::LitSettings&) {
+void HbgVfxBackend::bindLighting(::vfx::CommandSink&, const ::vfx::FrameContext& frame,
+                                 const ::vfx::LitSettings&) {
     ++m_lightingBindCount;
+    if (m_encoder == nullptr || frame.lighting == nullptr) {
+        return;
+    }
+    const auto* lighting = static_cast<const ForwardLightingContext*>(frame.lighting);
+    bindForwardLighting(*m_encoder, *lighting);
 }
 
 ::vfx::ProgramHandle HbgVfxBackend::resolveProgram(const ::vfx::RenderOutputDesc&, ::vfx::ShaderBackend) {

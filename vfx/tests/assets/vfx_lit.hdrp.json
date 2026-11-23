@@ -1,0 +1,16 @@
+{
+  "vfx": [
+    {
+      "name": "LitVisual",
+      "asset": "lit_visual.vfxb",
+      "position": [0, 0, 1],
+      "play": true,
+      "playRate": 1.0,
+      "seed": 0,
+      "properties": [
+        {"name": "Metallic", "type": "float", "value": 0.1},
+        {"name": "Roughness", "type": "float", "value": 0.45}
+      ]
+    }
+  ]
+}

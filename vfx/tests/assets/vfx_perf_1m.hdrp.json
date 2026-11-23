@@ -1,0 +1,5 @@
+{
+  "vfx": [
+    {"name": "Perf1M", "asset": "perf_1m.vfxb", "position": [0, 0, 0], "play": true, "playRate": 0.1, "seed": 0}
+  ]
+}

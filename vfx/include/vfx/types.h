@@ -9,6 +9,7 @@ using Index = std::uint32_t;
 using ParticleIndex = std::uint32_t;
 
 inline constexpr Index kInvalidIndex = 0xffffffffu;
+inline constexpr Index kSceneDepthBindingIndex = 0xfffffffeu;
 inline constexpr ParticleIndex kInvalidParticle = 0xffffffffu;
 inline constexpr std::uint32_t kDefaultParticleCapacity = 1024u;
 inline constexpr std::uint32_t kMaxParticleCapacity = 1u << 20;

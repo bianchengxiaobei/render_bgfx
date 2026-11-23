@@ -38,11 +38,25 @@ std::string joinErrors(const std::vector<ParseError>& errors) {
         if (!message.empty()) {
             message += '\n';
         }
-        message += error.path;
-        message += ": ";
-        message += error.message;
+        const std::string formatted = formatParseError(error);
+        message += formatted.empty() ? "failed to parse graph" : formatted;
     }
     return message;
+}
+
+void captureCompilerError(CompileResult& result, std::string_view error, std::string_view json,
+                          std::string_view sourceName) {
+    const std::size_t separator = error.find(": ");
+    if (separator == std::string_view::npos || separator == 0) {
+        return;
+    }
+    ParseError diagnostic;
+    diagnostic.path = std::string(error.substr(0, separator));
+    diagnostic.message = std::string(error.substr(separator + 2));
+    diagnostic.source = std::string(sourceName);
+    diagnostic.location = ErrorLocationKind::Json;
+    locateJsonPath(json, diagnostic.path, diagnostic.line, diagnostic.column);
+    result.errors.push_back(std::move(diagnostic));
 }
 
 std::string quoteArgument(const std::string& value) {
@@ -187,7 +201,7 @@ struct TemporaryDirectory {
 bool runShaderc(const std::filesystem::path& shaderc, const std::filesystem::path& source,
                 const std::filesystem::path& output, const std::filesystem::path& varyingDef,
                 ShaderStage stage, ShaderBackend backend, const CompileOptions& options,
-                std::string& error) {
+                bool skipOptimization, std::string& error) {
     std::vector<std::string> arguments;
     arguments.push_back(quoteArgument(shaderc.string()));
     arguments.push_back("-f");
@@ -219,9 +233,11 @@ bool runShaderc(const std::filesystem::path& shaderc, const std::filesystem::pat
         arguments.push_back("-p");
         arguments.push_back("spirv");
     }
-    arguments.push_back("-O");
-    arguments.push_back("3");
-    arguments.push_back("--Werror");
+    if (!skipOptimization) {
+        arguments.push_back("-O");
+        arguments.push_back("3");
+        arguments.push_back("--Werror");
+    }
 
     std::string command;
     for (const std::string& argument : arguments) {
@@ -274,8 +290,11 @@ bool compileSource(const detail::ShaderSource& shader, const CompileOptions& opt
         const std::string suffix = backend == ShaderBackend::Dxbc ? ".dxbc" : ".spv";
         const std::filesystem::path outputPath =
             temp.path / ("shader_" + std::to_string(index) + suffix);
+        const bool skipOptimization =
+            backend == ShaderBackend::Dxbc && shader.stage == ShaderStage::Fragment &&
+            shader.source.find("hbgEvaluateLightLoop") != std::string::npos;
         if (!runShaderc(options.shaderc, sourcePath, outputPath, varyingDef, shader.stage, backend, options,
-                        error)) {
+                        skipOptimization, error)) {
             return false;
         }
         detail::BinaryBlob blob;
@@ -292,7 +311,8 @@ bool compileSource(const detail::ShaderSource& shader, const CompileOptions& opt
 
 } // namespace
 
-CompileResult compileGraph(std::string_view json, const CompileOptions& options) {
+CompileResult compileGraph(std::string_view json, const CompileOptions& options,
+                           std::string_view sourceName) {
     CompileResult result;
     if (options.shaderc.empty()) {
         result.error = "CompileOptions.shaderc is required";
@@ -316,14 +336,19 @@ CompileResult compileGraph(std::string_view json, const CompileOptions& options)
         return result;
     }
 
-    ParseResult parsed = parseGraphJson(json);
+    ParseResult parsed = parseGraphJson(json, sourceName);
     if (!parsed.ok()) {
+        result.errors = parsed.errors;
         result.error = joinErrors(parsed.errors);
         return result;
     }
     detail::CompiledAsset asset = detail::generatePrograms(std::move(parsed.graph));
     if (!asset.error.empty()) {
         result.error = asset.error;
+        captureCompilerError(result, asset.error, json, sourceName);
+        if (!sourceName.empty()) {
+            result.error = std::string(sourceName) + ": " + result.error;
+        }
         return result;
     }
     if (asset.graph == nullptr) {
@@ -344,21 +369,32 @@ CompileResult compileGraph(std::string_view json, const CompileOptions& options)
     std::vector<std::vector<detail::BinaryBlob>> kernelBlobs;
     std::map<std::string, std::vector<detail::BinaryBlob>> shaderCache;
     std::size_t shaderIndex = 0;
+    const auto compileKernel = [&](const detail::KernelProgram& kernel) {
+        const std::string cacheKey = std::to_string(static_cast<int>(kernel.shader.stage)) + "\n" +
+                                     kernel.shader.varyings + "\n" + kernel.shader.source;
+        const auto cached = shaderCache.find(cacheKey);
+        if (cached != shaderCache.end()) {
+            kernelBlobs.push_back(cached->second);
+            return true;
+        }
+        std::vector<detail::BinaryBlob> blobs;
+        if (!compileSource(kernel.shader, options, temp, shaderIndex++, blobs, result.error)) {
+            return false;
+        }
+        shaderCache.emplace(cacheKey, blobs);
+        kernelBlobs.push_back(std::move(blobs));
+        return true;
+    };
     for (const detail::CompiledSystem& system : asset.systems) {
         for (const detail::KernelProgram& kernel : system.kernels) {
-            const std::string cacheKey = std::to_string(static_cast<int>(kernel.shader.stage)) + "\n" +
-                                         kernel.shader.varyings + "\n" + kernel.shader.source;
-            const auto cached = shaderCache.find(cacheKey);
-            if (cached != shaderCache.end()) {
-                kernelBlobs.push_back(cached->second);
-                continue;
-            }
-            std::vector<detail::BinaryBlob> blobs;
-            if (!compileSource(kernel.shader, options, temp, shaderIndex++, blobs, result.error)) {
+            if (!compileKernel(kernel)) {
                 return result;
             }
-            shaderCache.emplace(cacheKey, blobs);
-            kernelBlobs.push_back(std::move(blobs));
+        }
+    }
+    for (const detail::KernelProgram& kernel : asset.globalKernels) {
+        if (!compileKernel(kernel)) {
+            return result;
         }
     }
 
@@ -370,6 +406,27 @@ CompileResult compileGraph(std::string_view json, const CompileOptions& options)
     }
     return result;
 }
+
+namespace {
+
+std::filesystem::path findShaderPack(const std::filesystem::path& assetPath) {
+    std::error_code error;
+    std::filesystem::path directory = std::filesystem::absolute(assetPath, error).parent_path();
+    while (!directory.empty()) {
+        const std::filesystem::path candidate = directory / "shaders";
+        if (std::filesystem::is_regular_file(candidate / "material" / "surface_data_types.sc", error)) {
+            return candidate;
+        }
+        const std::filesystem::path parent = directory.parent_path();
+        if (parent == directory) {
+            break;
+        }
+        directory = parent;
+    }
+    return {};
+}
+
+} // namespace
 
 CompileResult compileGraphFile(const std::filesystem::path& path, const CompileOptions& options) {
     CompileResult result;
@@ -384,7 +441,18 @@ CompileResult compileGraphFile(const std::filesystem::path& path, const CompileO
         result.error = "failed to read graph file: " + path.string();
         return result;
     }
-    return compileGraph(contents.str(), options);
+    CompileOptions resolved = options;
+    if (resolved.shaderPack.empty()) {
+        resolved.shaderPack = findShaderPack(path);
+    }
+    result = compileGraph(contents.str(), resolved, path.string());
+    if (!result.ok() && !result.error.empty()) {
+        const std::string sourcePrefix = path.string() + ":";
+        if (result.error.rfind(sourcePrefix, 0) != 0) {
+            result.error = path.string() + ": " + result.error;
+        }
+    }
+    return result;
 }
 
 } // namespace vfx

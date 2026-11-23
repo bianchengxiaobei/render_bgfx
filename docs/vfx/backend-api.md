@@ -18,7 +18,8 @@ vfx/include/vfx/
 ├─ command_sink.h     CommandSink 接口、Access、DrawState、PassDesc
 ├─ shading.h          ShadingProvider 接口、FrameContext、FrameLighting
 ├─ events.h           EventAttribute, PropertyValue
-└─ compiler.h         compileGraph（编辑器/工具）
+├─ compiler.h         compileGraph（编辑器/工具）
+└─ editor.h           V2 编辑器文档模型/布局（只读写 JSON，不进入 runtime）
 ```
 
 - `types.h` 的 `Mat4` 使用 `std::array<float,16>`，**column-major**，与 hdrp-bgfx `core/math.h` 布局一致；右手系 Y-up、CCW 正面。
@@ -179,8 +180,8 @@ public:
 }
 ```
 
-- `bindLighting` 只在 lit output 调用一次（或按需多次）；unlit 不调用。
-- Lit 的 stage 表必须与 `docs/vfx/architecture.md` §4.4 一致；适配层负责 `u_pass_*`/`u_global_*`/`u_object_*`/`u_cluster_*`/`u_environment_*` 上传。
+- `bindLighting` 只在 lit output 调用一次（或按需多次）；unlit 不调用。V1.4.3 的 lit VFX 优先绑定 cluster light list（`lightListParams.w=1`、`u_cluster_*`）；GPU buffer 路径使用 CPU cluster-texture mirror，无 cluster 时回退全局 light-list（`w=0`）。stage 12/13 仍保留给 attribute/indirection。
+- Lit 的 stage 表必须与 `docs/vfx/architecture.md` §4.4 一致；适配层负责 `u_pass_*`/`u_global_*`/`u_object_*`/`u_cluster_*`/`u_environment_*` 上传。`metallic`/`roughness` 由 effect 的 float property 或 output 常量提供。
 - 程序本体来自 `.vfxb` 的 shader blob；`resolveProgram` 默认返回资产内的 program。
 
 ## 5. Runtime / Effect
@@ -211,6 +212,7 @@ public:
     virtual void pause() = 0;
     virtual void stop() = 0;         // 重置到初始状态
     virtual void reset() = 0;
+    virtual void advanceOneFrame() = 0; // 暂停时推进固定 1/60s 仿真；输出保持可绘制
     virtual void setTransform(const Mat4& world) = 0;
     virtual void setPlayRate(float) = 0;
     virtual bool isAlive() const = 0;
@@ -236,6 +238,8 @@ public:
 
     std::shared_ptr<const Asset> loadAsset(const std::filesystem::path&, std::string* error = nullptr);
     Effect* createEffect(const Asset&, const EffectDesc&, std::string* error = nullptr);
+    Effect* reloadEffect(Effect*, const Asset&, const EffectDesc&, std::string* error = nullptr);
+    Effect* reloadEffect(Effect*, const std::filesystem::path&, const EffectDesc&, std::string* error = nullptr);
     void destroyEffect(Effect*);
 
     void update(float deltaSeconds);
@@ -254,12 +258,14 @@ public:
 - `update(dt)`：clamp dt、推进 spawner/事件、更新 bounds；不产生 GPU 命令。
 - `encodeSimulation`：按 system 依赖顺序 dispatch；内部 `beginPass({name, simulation=true, ...})`。
 - `encodeOutput`：按输出排序提交 indirect draw；内部 `beginPass({name, simulation=false, ...})`。
-- `setProperty` 的 Curve/Gradient 会立即重新生成并上传 LUT 纹理（`Device::updateTexture`）；V1 允许在播放中修改。
+- `setProperty` 的 Curve/Gradient 会立即重新生成并上传按类型打包的 LUT 纹理（`Device::updateTexture`）；V1 允许在播放中修改。compute shader 在 stage 9/10 采样，`setCurve/setGradient` 重传整张 256×N 类型纹理。
 - `PropertyValue` 中的 `std::span` 只在调用期间有效；库会立即拷贝控制点，不保留调用方内存。
-- `sendEvent` 在 V1.0b.6 只记录“不支持”，V1.2 前没有事件 buffer。
+- GPU 事件已在 V1.2.3 接入，CPU 事件在 V1.2.4 接入：runtime 创建全局 `vfx.events` Storage buffer 与 `vfx.cpu.events` staging；event copy/prefix/reset program 不进入 system kernel。`sendEvent` 按 CPU link 入队，缺省属性使用 consumer 默认值，类型错误通过 error callback 报告。
 - `Effect` 由 `Runtime` 拥有；`destroyEffect` 后指针失效。
+- `reloadEffect` 先创建替换 effect，成功后才销毁旧 effect；失败时旧指针和资源保持有效。V1 是销毁重建，不保留播放时间/pending 事件/属性覆盖；调用方需使用返回的新指针。
+- `reloadEffect` 后 runtime 会释放不再被任何 effect 引用的 `Asset` 内部持有；调用方自己的 `shared_ptr` 仍有效。
 - 多 effect 各自独立 buffer/program；同一 `Asset` 可创建多个 effect。
-- `Diagnostics::particles` 是 CPU spawn 估算，不是 GPU dead list 读回；`draws`/`dispatches` 为最近一次 encode 计数。V1.0b.8 的 `--vfx-reference` 测试路径会实际读回 GPU deadList，但不回写交互 diagnostics。
+- `Diagnostics::particles` 是 CPU spawn 估算，不是 GPU dead list 读回；`draws`/`dispatches`/`sortPasses` 为最近一次 encode 计数；`eventCount` 在 V1.2.3/4/V1.4.4 记录事件链数量；GPU/CPU 精确事件数需读 event buffer，V1 仅在 reference 测试路径读回。V1.0b.8 的 `--vfx-reference` 测试路径会实际读回 GPU deadList，但不回写交互 diagnostics。
 - `Device` 没有 uniform/sampler 销毁接口；runtime 创建的名称缓存由适配层 `HbgVfxBackend` 持有，随 backend 析构释放。buffer/program/texture 由 runtime/Effect 释放。
 - 输出 pass 由 runtime 设置 `u_vfx_world`：local system 用 effect transform，world system 用 identity；global camera uniforms 来自 `FrameContext`。
 - `Effect::isCulled()` 在 V1.0b.6 恒为 false；相机/包围盒剔除在 V1.0b.7 集成。
@@ -278,17 +284,18 @@ struct CompileOptions {
 struct CompileResult {
     std::vector<std::byte> binary;
     std::string error;
+    std::vector<ParseError> errors;
     bool ok() const { return error.empty(); }
 };
 
-CompileResult compileGraph(std::string_view json, const CompileOptions&);
+CompileResult compileGraph(std::string_view json, const CompileOptions&, std::string_view sourceName = {});
 CompileResult compileGraphFile(const std::filesystem::path&, const CompileOptions&);
 ```
 
 - `vfxbake` 直接调用 `compileGraphFile`。
-- 实现：`vfx/include/vfx/compiler.h`、`vfx/src/compiler/compiler.cpp`、`codegen.cpp`、`binary.cpp`；目标 `hbg_vfx_compiler`，不链接进 runtime/app。
-- `shaderc`/`bgfxSource` 必须显式提供；同源 shader 在单次 `compileGraph` 内缓存；错误包含 JSON 路径/shaderc 输出。
-- V1.0b.5 只生成 unlit quad；`debugInfo` 保留但暂不写 DEBUG section；`shaderPack` 仅追加 include 路径。
+- 实现：`vfx/include/vfx/compiler.h`、`vfx/src/compiler/compiler.cpp`、`codegen.cpp`、`binary.cpp`；目标 `hbg_vfx_compiler`，不链接进 runtime/app；CMake alias 为 `vfx_compiler`。
+- `shaderc`/`bgfxSource` 必须显式提供；同源 shader 在单次 `compileGraph` 内缓存；错误包含源文件、JSON 路径/可得的行号与 shaderc 输出。
+- V1.0b.5 生成 unlit quad；V1.4.1 为 `lit:true` 生成 lit FS（SurfaceData/light loop/shadow/contact shadow），`shaderPack` 是 lit shader 的 include 根（`material/`、`lighting/`）；`compileGraphFile` 未显式提供时会从资产路径向上查找 `shaders`。lit D3D 变体在 FXC 下省略 `-O 3` 并关闭 `--Werror`，规避 light-loop 的保守未初始化告警。`debugInfo` 仍保留但暂不写 DEBUG section。
 
 ## 7. 引擎接入（手动 update/encode）
 
@@ -318,7 +325,7 @@ sim.setRenderFunc([&](RenderGraphContext& ctx) {
 auto out = graph.addRasterPass("VFX Output");
 out.setColorAttachment(color);
 out.readTexture(depth);
-out.setDepthAttachment(depth);
+out.setDepthAttachment(depth, 0, true);
 out.allowCulling(false);
 out.setRenderFunc([&](RenderGraphContext& ctx) {
     backend.begin(ctx.encoder(), ctx.viewId());
@@ -329,6 +336,7 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
 ```
 
 - `HbgVfxBackend` 同时实现 `Device`、`CommandSink`、`ShadingProvider`（或拆成三个对象）。
+- soft particles（V1.4.2）需要适配层把当前 scene depth import 到 `FrameContext::sceneDepth`；runtime 将 `s_vfxSceneDepth` 绑定到 stage 4，并上传 `u_vfxSoftParams`。输出 pass 必须显式 `readTexture(depth)`，且 depth attachment 使用只读模式。
 - `begin(encoder, viewId)` 保存当前 encoder/view，供后续 bind/dispatch/draw。
 - `makeFrameContext` 填充相机矩阵/屏幕/时间；V1.0b.7 的 `ForwardRenderer` 直接构造 `FrameContext`，适配层公开 helper 仍待后续。
 - RenderGraph buffer 声明：适配层可 `importBuffer` 关键 VFX buffer（尤其是 indirect args）；V1 以 `allowCulling(false)` + 固定顺序保证执行，V1.4 再完善。
@@ -351,6 +359,8 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
 
 ## 9. 错误、诊断、生命周期
 
+- `vfx::ParseError`：`path`、`message`、`source`、`line`、`column`、`location(Json/Hlsl)`；`formatParseError` 输出 `file:line:column: path: message`。JSON 路径由轻量 locator 定位到 key；缺失字段回退到根。自定义 HLSL 的 `.code` 错误使用代码内行列。
+- `CompileResult` 同时保留 `error` 摘要和 `errors` 结构化列表；`compileGraph(json, options, sourceName)` 可传源文件名，`compileGraphFile` 自动传入文件路径。
 - `Runtime::setErrorCallback`：编译/加载/资源失败时回调；V1 只记录一次同类错误（避免刷屏）。
 - `Diagnostics`：
   ```cpp
@@ -363,9 +373,14 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
       uint32_t sortPasses = 0;
       uint32_t eventCount = 0;
       float updateMs = 0.0f;
+      float simulationMs = 0.0f;
+      float outputMs = 0.0f;
       float encodeMs = 0.0f;
+      float totalMs = 0.0f;
   };
   ```
+- `encodeMs = simulationMs + outputMs`，`totalMs = updateMs + encodeMs`；`Runtime::update` 每帧重置 phase 计时。`eventCount` 仍是事件链数量，精确 GPU 计数由 reference 读回，默认帧循环不做同步读回。
+- `EffectImpl` 在创建资源前校验 capacity、当前后端 shader blob 和 binding stage 上限；失败时返回空 effect 且回收未引用 asset。
 - 资源：`Runtime` 只销毁自己创建的 buffer/texture/program；外部纹理（engine 绑定）不销毁。
 - 适配层 `ResourceManager` 负责两帧延迟销毁；`Runtime` 在 `destroyEffect` 时释放自己持有的句柄。
 - 不支持多线程调用；V1 不做 job 化。
@@ -380,24 +395,41 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
   - spawn/init/update/outputUpdate/fillIndirect 的 dispatch 顺序与数量；
   - indirect args 的 8×uint 内容；
   - sort pass 数与 KVP 索引；
-  - 事件 prefix sum 调用。
+  - GPU event reset/prefix sum 调用、event buffer stage binding；
+  - event buffer 头部/容量。
 
-## 11. 实现状态（V1.0b.7）
+## 11. 实现状态（V1.2.4）
 
 - 公共接口已落地：`vfx/include/vfx/device.h`、`command_sink.h`、`shading.h`、`runtime.h`、`events.h`；`types.h`/`handles.h` 补齐 `Mat4`、格式、opaque buffer/uniform/sampler handle。
 - Mock：`vfx/tests/support/mock_backend.h`；测试 `vfx/tests/test_vfx_backend.cpp`。
 - Runtime：`vfx/src/runtime/runtime_asset.cpp` 校验/读取 `.vfxb`；`vfx/src/runtime/runtime.cpp` 实现 effect 资源、常量/Burst 累积、simulation/output encode、LUT 上传和诊断。CMake target `hbg_vfx_runtime`；测试 target `hbg_vfx_runtime_tests`。
-- CPU reference：`vfx/include/vfx/reference.h` 的 `SpawnerState`/`updateSpawner` 提供与 runtime 相同的 rate/burst/dt clamp 语义；`simulateParticle` 提供粒子 init/update 参考。
+- CPU reference：`vfx/include/vfx/reference.h` 的 `SpawnerState`/`updateSpawner` 提供与 runtime 相同的 rate/burst/dt clamp 语义；`simulateParticle` 提供粒子 init/update 参考；`simulateEventCount` 提供 GPU 事件死亡计数参考。
 - 适配层：`src/render/vfx/hbg_vfx_backend.h`、`hbg_vfx_backend.cpp`；CMake target `hbg_vfx_adapter`。测试 target `hbg_vfx_adapter_tests`。
 - `HbgVfxBackend::createProgram` 消费 `.vfxb` shader section 的 `vfx::ShaderBlob`；runtime reader 在 V1.0b.6 落地，适配层不解析容器。
 - `StorageVertex` 用 `BufferDesc::stride` 合成 `gfx::VertexLayout`，仅满足 `bgfx::createDynamicVertexBuffer` 的 stride 校验；VS 仍通过 `BUFFER_RAW_RO` + word offset 读取，不依赖该 layout 属性顺序。
-- 带 `initialData` 的 Storage/StorageVertex 以 `BGFX_BUFFER_COMPUTE_READ` 创建；可写 storage 创建空 buffer。runtime 对 attributes/indirection 不传 initialData；reset 时额外 dispatch `dead_list_init`，由 GPU 清空 attributes/indirection 并重建 deadList。
+- 带 `initialData` 的 Storage/StorageVertex 以 `BGFX_BUFFER_COMPUTE_READ` 创建；可写 storage 创建空 buffer。runtime 对 attributes/indirection/renderKVP/sortScratch 不传 initialData；attributes/indirection/renderKVP/sortScratch 以 StorageVertex 创建（KVP/scratch stride 8），避免 >64KB 的 DynamicIndex storage 在 Vulkan compute 绑定下 device lost；reset 时额外 dispatch `dead_list_init`，由 GPU 清空 attributes/indirection 并重建 deadList；spawner 清 renderKVP counter。
+- V1.2.2 起每个 system 有 9 个 buffer；`renderKVP`（kind 7）为 `(1 + capacity) * 8`B、`sortScratch`（kind 8）为 `capacity * 8`B。`output_update` 写 key/index，sort 读 renderKVP、在 sortScratch 中 merge，最终写 indirection；`fill_indirect` 把 renderCount 同步为 KVP counter。
+- V1.2.3 起事件资产额外创建全局 `vfx.events` Storage buffer；V1.2.4 为 CPU link 增加 `vfx.cpu.events` staging buffer（Storage + COMPUTE_READ），每帧 `Device::updateBuffer` 后由 `event_cpu_upload`（task 13）复制 CPU link 到全局 event buffer。runtime 在首帧/reset dispatch `event_reset`（task 12），再 CPU upload，producer simulation 后 dispatch `event_prefix_sum`（task 11，128-thread Sklansky），最后 consumer simulation。event buffer 每 link 为 `elementCount/totalCount/prefix/dropped/frameCount + sourceIndex[capacity] + payload[capacity*16]`；producer `update`/consumer `init` stage 2，CPU copy staging stage 0 / event stage 1。V1 限制每 effect 总 event buffer ≤64 KiB；GPU event buffer 不能 CPU update，CPU 数据必须经 staging + copy。
 - `ForwardRenderer::ensureVfx` 在 `supportVFX` 开启且 scene 有 VFX 实例时惰性创建 `HbgVfxBackend`/`vfx::Runtime`；`updateVfx`、simulation pass、output pass 已接入 RenderGraph。
-- `bindLighting` 仍只记录调用；`resolveProgram` 返回无效 handle；ForwardRenderer 自行构造 `FrameContext`（相机/时间/尺寸），未走 `HbgVfxBackend::makeFrameContext`。Runtime unlit 不调用 `bindLighting`；lit 留到 V1.4。
+- `bindLighting` 在 V1.4.1 通过 `FrameContext::lighting` 读取 `ForwardLightingContext`，调用共享 `bindForwardLighting()` 绑定 stage 5/6/7/8/9/10/11/14/15；不绑定 stage 12/13。`resolveProgram` 返回无效 handle；ForwardRenderer 自行构造 `FrameContext`（相机/时间/尺寸）。Runtime 只在 lit output 调用 `bindLighting` 并上传 float property uniforms。
 - `HbgVfxBackend` 对 uniform/sampler 名称缓存区分“自己创建”和“共享的 `u_global_*`”；shutdown 不销毁共享 handle。
 - `drawIndirect` 首次调用时懒创建 6 顶点 dummy vertex buffer；与 V0 的 D3D11 indirect draw 约束一致。
 - 适配层测试使用 bgfx `Noop` 后端验证 100 个 buffer/program 的资源生命周期、encoder 命令映射、从 checked-in `.vfxb` 创建 7 个 program，以及 runtime effect 资源路径；`vfx_scene.gltf` 已在 D3D11/Vulkan render-test 出图且两后端 PNG 0 diff。
-- Runtime 测试使用 MockBackend 验证资源生命周期、6 次首次 dispatch/5 次后续 dispatch、逐 kernel stage/buffer binding、spawnCount、property/Curve/Gradient LUT、local bounds、indirect output、reset/stop/play 和损坏 hash 拒绝；V1.1.1 新增 `spawner_bursts` 固定 dt 序列（同帧合并、period/repeat、dt clamp）。
+- Runtime 测试使用 MockBackend 验证资源生命周期、9 个 buffer、6 次首次 dispatch/5 次后续 dispatch、逐 kernel stage/buffer binding（含 renderKVP/sortScratch）、spawnCount、property/Curve/Gradient LUT、local bounds、indirect output、reset/stop/play 和损坏 hash 拒绝；V1.1.1 新增 `spawner_bursts` 固定 dt 序列（同帧合并、period/repeat、dt clamp）；V1.2.2 新增 sorted 8192 的 pre-pass×2 + merge 调度/`sortPasses` 测试。
 - V1.1.2 新增 `forces_1024.vfx.json/.vfxb`（gravity、useSize drag、absolute/relative force、turbulence、attractor）与 D3D11/Vulkan `hbg_vfx_reference_forces_*` CTest；CPU reference 与 GPU readback 在 10 帧内逐粒子 1e-3 比较，turbulence 关闭的 `minimal_unlit` golden 保持 0 diff。
-- V1.0b.8 `src/render/vfx/vfx_reference.cpp` 通过 `HbgVfxBackend::nativeBuffer`/`findBuffer` 在测试路径执行真实 compute，并 `bgfx::read` 读回 attributes/deadList/indirection/renderCount/indirect；`--vfx-reference=<asset.vfxb>` 与 `--vfx-reference-graph=<effect.vfx.json>` 逐粒子比较 CPU reference（1024 粒子、10 帧、1e-3）。
-- `vfx/tests/run_vfx_golden.cmake` 固定 640×360、3 帧、camera/seed，对 D3D11/Vulkan 截图与 `vfx/tests/golden/vfx_scene.png` 做逐字节比较。
+- V1.1.4 新增 `curve_1024.vfx.json/.vfxb`（color/alpha/size over-life、256×1 RGBA16F LUT、同类型打包 256×N、compute stage 9/10）与 D3D11/Vulkan `hbg_vfx_reference_curves_*` CTest；LUT 字节、runtime binding、表达式 codegen 与 CPU reference 均有单测。
+- V1.1.5 新增 `vfx_{bursts,forces,collision,curves}.gltf` + sidecar 和每后端 feature golden；`curve_visual` 用 8 个不同 `playRate` 实例展示 LUT。`run_vfx_golden.cmake` 支持可变帧数；1080p×300 帧性能记录见 `v1-checklist.md`。
+- V1.0b.8 `src/render/vfx/vfx_reference.cpp` 通过 `HbgVfxBackend::nativeBuffer`/`findBuffer` 在测试路径执行真实 compute，并 `bgfx::read` 读回 attributes/deadList/indirection/renderCount/indirect；V1.2.1 增加 renderKVP counter/index 校验；V1.2.2 增加 distance KVP key、sorted indirection 与 pre-pass scratch 校验，支持 1024/8192/262144 容量。`--vfx-reference=<asset.vfxb>` 与 `--vfx-reference-graph=<effect.vfx.json>` 逐粒子比较 CPU reference（10 帧、1e-3）。`--vfx-event-reference` 读回 event buffer、receiver attributes/deadList/renderCount，校验 frameCount/prefix/dropped、payload 属性、particleId 与 CPU `simulateEventCount`；`--vfx-cpu-event-reference` 校验 CPU sendEvent 顺序/默认属性/类型拒绝、64 上限与 2 个 dropped。V1.2.3/4 覆盖单链、count=2、双链并发、capacity 丢弃和 CPU 事件。
+- `vfx/tests/run_vfx_golden.cmake` 默认 640×360、3 帧、camera/seed，对 D3D11/Vulkan 截图与 golden 做逐字节比较；V1.1.5 feature golden 通过 `HBG_FRAMES` 使用 90/30/30/300 帧，并各自保存每后端 golden。
+
+## 12. V2 编辑器文档 API（不属于 renderer 契约）
+
+- `vfx/include/vfx/editor.h`：`Document::load/save`、system/output/block/property typed setter、结构 add/remove/move、block 参数、Curve/Gradient、undo/redo、layout sidecar、`ParseError`、`defaultBinaryPath()`、`errorFocus()`；不暴露 nlohmann、ImGui、bgfx。
+- `vfx/src/editor/document.cpp`：编辑原始 `.vfx.json`（`ordered_json`），每次修改后重新 `parseGraphJson()`；失败恢复旧 JSON；snapshot undo/redo 只保存图/脏标记，布局仍由 sidecar 管理。`errorFocus()` 将 `systems[i].{init,update}.blocks[j]` / `outputs[j]` / `properties[j]` 映射为选择目标。
+- layout sidecar `<asset>.editor.json` 只由编辑器读写；`vfxbake`、runtime、graph hash 和 `.vfxb` 都不包含它。`defaultBinaryPath()` 与 `vfxbake` 使用同一 `.vfx.json` → `.vfxb` 规则。
+- `src/app/vfx_editor_ui.cpp` 是 app 层 ImGui 消费者，复用 DebugUI context；不是 runtime 依赖。`HBG_BUILD_VFX=OFF` 时由 `vfx_editor_ui_stub.cpp` 提供明确失败。block 默认参数来自 `vfx/src/core/block_catalog.{h,cpp}`，与 V1 parser 共用 field 表。
+- `VfxEditorUI::setCompileOptions()`/`setReloadCallback()` 注入 app 层 shaderc/bgfx source/shader pack 路径和 hot reload handler；`Save`/`Compile` 直接调用 `vfx::compileGraphFile()`（链接 `hbg_vfx_compiler`），不 shell 到 `vfxbake`。CLI `--vfx-shaderc`、`--vfx-bgfx-src`、`--vfx-shader-pack` 与 env/CMake 默认均可覆盖。
+- `VfxEditorUI::setPreviewCallback()`/`setPlaybackCallback()`/`setPlaybackStatusProvider()`/`setDiagnosticsProvider()` 由 app 注入；preview 使用 `vfx::compileGraph(document->serialize())` 写临时 `.vfxb`，再调 `ForwardRenderer::previewVfxAsset(sourceAsset, binary)`，不触碰 canonical graph/binary。playback 映射到 `ForwardRenderer::{toggleVfxPaused,stepVfx,restartVfx,setVfxPlayRate}`，status 映射 `VfxPlaybackStatus`，诊断映射 `FrameDiagnostics.vfx*`。
+- `--vfx-editor-compile` 只加载 graph、编译并退出，供 CI 校验 `.vfxb` 生成；`--vfx-editor-preview` 走未保存图 → 临时 `.vfxb` → preview effect 并退出；`VfxEditorUI::compile()/preview()` 均不写 graph/layout，适合在复制的 fixture 上运行。
+- `ForwardRenderer::reloadVfxAsset(binaryPath)` 只影响匹配 scene `VfxInstance.asset` 的已经运行 effect；内部调用 `Runtime::reloadEffect()`，不改 `.vfxb`/既有 runtime API 语义（V2.4 新增 additive `Effect::advanceOneFrame()`）。没有匹配 instance 时返回失败文本，但编译和 binary 写入仍成功。
+- `src/app/window.{h,cpp}`/`debug_ui.cpp` 只在 app 层注入 ImGui key/char 事件；不改变 runtime/backend API。

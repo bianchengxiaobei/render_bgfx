@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "EmptyVisual",
+  "properties": [],
+  "systems": [
+    {
+      "name": "Empty",
+      "capacity": 16,
+      "space": "world",
+      "bounds": {"mode": "manual", "center": [0, 0, 0], "extents": [1, 1, 1]},
+      "spawner": {
+        "rate": 0,
+        "bursts": []
+      },
+      "init": {
+        "blocks": [
+          {"type": "set_position_box", "center": [0, 0, 0], "size": [0, 0, 0]},
+          {"type": "set_color", "color": [1, 1, 1, 1]},
+          {"type": "set_size", "size": 0.1},
+          {"type": "set_lifetime", "lifetime": 1.0}
+        ]
+      },
+      "update": {
+        "blocks": [
+          {"type": "age"}
+        ]
+      },
+      "outputs": [
+        {"type": "quad", "lit": false, "blend": "additive", "texture": ""}
+      ]
+    }
+  ]
+}

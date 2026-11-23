@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "CurveVisual",
+  "properties": [
+    {"name": "AlphaCurve", "type": "curve", "keys": [[0.0, 0.8], [0.5, 0.55], [1.0, 0.0]]},
+    {"name": "SizeCurve", "type": "curve", "keys": [[0.0, 0.15], [0.5, 0.5], [1.0, 0.15]]},
+    {"name": "ColorRamp", "type": "gradient", "keys": [
+      {"t": 0.0, "color": [0.1, 0.35, 1.0, 1.0]},
+      {"t": 0.5, "color": [0.2, 1.0, 0.4, 1.0]},
+      {"t": 1.0, "color": [1.0, 0.2, 0.1, 1.0]}
+    ]}
+  ],
+  "systems": [
+    {
+      "name": "CurveVisual",
+      "capacity": 16,
+      "space": "local",
+      "bounds": {"mode": "manual", "center": [0, 0, 0], "extents": [1, 1, 1]},
+      "spawner": {
+        "rate": 0,
+        "bursts": [{"time": 0.0, "count": 1}]
+      },
+      "init": {
+        "blocks": [
+          {"type": "set_position_box", "center": [0, 0, 0], "size": [0.0, 0.0, 0.0]},
+          {"type": "set_velocity_direction", "direction": [0, 0, 0], "speed": 0.0},
+          {"type": "set_color", "color": [0, 0, 0]},
+          {"type": "set_alpha", "alpha": 1.0},
+          {"type": "set_size", "size": 0.1},
+          {"type": "set_lifetime", "lifetime": 5.0}
+        ]
+      },
+      "update": {
+        "blocks": [
+          {"type": "age"},
+          {"type": "color_over_life", "gradient": "ColorRamp"},
+          {"type": "alpha_over_life", "curve": "AlphaCurve"},
+          {"type": "size_over_life", "curve": "SizeCurve"},
+          {"type": "reap"}
+        ]
+      },
+      "outputs": [
+        {"type": "quad", "lit": false, "blend": "alpha", "texture": ""}
+      ]
+    }
+  ]
+}
+

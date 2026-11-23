@@ -1,0 +1,13 @@
+{
+  "asset": {"version": "2.0"},
+  "cameras": [
+    {"type": "perspective", "perspective": {"yfov": 0.7, "znear": 0.1, "zfar": 100.0}}
+  ],
+  "nodes": [
+    {"name": "Camera", "camera": 0, "translation": [0.0, 2.0, 12.0]}
+  ],
+  "scenes": [
+    {"name": "VfxPerf100K", "nodes": [0]}
+  ],
+  "scene": 0
+}

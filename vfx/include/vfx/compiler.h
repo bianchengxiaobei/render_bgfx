@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vfx/asset.h"
 #include "vfx/device.h"
 
 #include <cstddef>
@@ -21,11 +22,13 @@ struct CompileOptions {
 struct CompileResult {
     std::vector<std::byte> binary;
     std::string error;
+    std::vector<ParseError> errors;
 
     bool ok() const noexcept { return error.empty(); }
 };
 
-CompileResult compileGraph(std::string_view json, const CompileOptions& options);
+CompileResult compileGraph(std::string_view json, const CompileOptions& options,
+                           std::string_view sourceName = {});
 CompileResult compileGraphFile(const std::filesystem::path& path, const CompileOptions& options);
 
 } // namespace vfx

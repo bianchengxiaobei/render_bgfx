@@ -16,7 +16,7 @@ namespace vfx::detail {
 namespace {
 
 constexpr std::uint32_t kHeaderSize = 64u;
-constexpr std::uint16_t kBinaryVersion = 1u;
+constexpr std::uint16_t kBinaryVersion = 6u;
 constexpr std::uint32_t kCompilerVersion = 0x00010000u;
 constexpr std::uint32_t kFlagsLittleEndian = 1u;
 constexpr std::uint32_t kInvalidOffset = 0xffffffffu;
@@ -212,7 +212,7 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
         error = "compiled asset has no graph";
         return {};
     }
-    std::size_t kernelCount = 0;
+    std::size_t kernelCount = asset.globalKernels.size();
     for (const CompiledSystem& system : asset.systems) {
         kernelCount += system.kernels.size();
     }
@@ -244,6 +244,18 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     for (const CompiledSystem& system : asset.systems) {
         for (const KernelProgram& kernel : system.kernels) {
             addString(kernel.shader.name);
+        }
+    }
+    for (const KernelProgram& kernel : asset.globalKernels) {
+        addString(kernel.shader.name);
+    }
+    for (const CompiledEventLink& link : asset.eventLinks) {
+        addString(link.name);
+        for (const EventPayloadAttribute& payload : link.payload) {
+            addString(payload.name);
+        }
+        for (const EventReceiveMapping& receive : link.receives) {
+            addString(receive.attribute);
         }
     }
     std::uint32_t stringOffset = 0;
@@ -314,7 +326,8 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     }
 
     std::vector<std::byte> buffersData;
-    appendU32(buffersData, static_cast<std::uint32_t>(asset.systems.size() * 7u));
+    appendU32(buffersData, static_cast<std::uint32_t>(
+                                asset.systems.size() * static_cast<std::uint32_t>(BufferKind::Count)));
     for (std::size_t systemIndex = 0; systemIndex < asset.systems.size(); ++systemIndex) {
         const CompiledSystem& system = asset.systems[systemIndex];
         const std::uint32_t capacity = system.layout.capacity;
@@ -335,6 +348,8 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
         appendBuffer(BufferKind::SpawnCount, 4u, 4u);
         appendBuffer(BufferKind::IndirectArgs, 32u, 32u);
         appendBuffer(BufferKind::Bounds, 24u, 4u);
+        appendBuffer(BufferKind::RenderKVP, (1u + capacity) * 8u, 8u);
+        appendBuffer(BufferKind::SortScratch, capacity * 8u, 8u);
     }
 
     std::vector<std::byte> systemsData;
@@ -360,22 +375,28 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
 
     std::vector<std::byte> bindingsData;
     std::vector<std::uint32_t> bindingCounts;
+    const auto appendKernelBindings = [&](const KernelProgram& kernel) {
+        bindingsData.resize(bindingsData.size() + kernel.shader.bindings.size() * 8u);
+        std::size_t cursor = bindingsData.size() - kernel.shader.bindings.size() * 8u;
+        for (const KernelBinding& binding : kernel.shader.bindings) {
+            bindingsData[cursor++] = static_cast<std::byte>(binding.kind);
+            bindingsData[cursor++] = static_cast<std::byte>(binding.stage);
+            bindingsData[cursor++] = static_cast<std::byte>(binding.access);
+            bindingsData[cursor++] = std::byte{0};
+            const std::uint32_t index = binding.index;
+            for (unsigned shift = 0; shift < 32; shift += 8) {
+                bindingsData[cursor++] = static_cast<std::byte>((index >> shift) & 0xffu);
+            }
+        }
+        bindingCounts.push_back(static_cast<std::uint32_t>(kernel.shader.bindings.size()));
+    };
     for (const CompiledSystem& system : asset.systems) {
         for (const KernelProgram& kernel : system.kernels) {
-            bindingsData.resize(bindingsData.size() + kernel.shader.bindings.size() * 8u);
-            std::size_t cursor = bindingsData.size() - kernel.shader.bindings.size() * 8u;
-            for (const KernelBinding& binding : kernel.shader.bindings) {
-                bindingsData[cursor++] = static_cast<std::byte>(binding.kind);
-                bindingsData[cursor++] = static_cast<std::byte>(binding.stage);
-                bindingsData[cursor++] = static_cast<std::byte>(binding.access);
-                bindingsData[cursor++] = std::byte{0};
-                const std::uint32_t index = binding.index;
-                for (unsigned shift = 0; shift < 32; shift += 8) {
-                    bindingsData[cursor++] = static_cast<std::byte>((index >> shift) & 0xffu);
-                }
-            }
-            bindingCounts.push_back(static_cast<std::uint32_t>(kernel.shader.bindings.size()));
+            appendKernelBindings(kernel);
         }
+    }
+    for (const KernelProgram& kernel : asset.globalKernels) {
+        appendKernelBindings(kernel);
     }
     std::vector<std::byte> bindingsSection;
     appendU32(bindingsSection, static_cast<std::uint32_t>(bindingsData.size() / 8u));
@@ -385,25 +406,31 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     std::vector<KernelRecord> kernelRecords;
     std::uint32_t bindingStart = 0;
     std::size_t blobSetIndex = 0;
+    const auto appendKernelRecords = [&](const KernelProgram& kernel, const SystemDesc* system) {
+        const std::vector<BinaryBlob>& blobs = kernelBlobs[blobSetIndex++];
+        const std::uint32_t count = bindingCounts[blobSetIndex - 1u];
+        for (const BinaryBlob& blob : blobs) {
+            KernelRecord record;
+            record.system = system;
+            record.task = kernel.task;
+            record.stage = blob.stage;
+            record.backend = blob.backend;
+            record.groups = kernel.groups;
+            record.bindingStart = bindingStart;
+            record.bindingCount = count;
+            record.program = kernel.program;
+            record.blob = &blob.data;
+            kernelRecords.push_back(record);
+        }
+        bindingStart += count;
+    };
     for (const CompiledSystem& system : asset.systems) {
         for (const KernelProgram& kernel : system.kernels) {
-            const std::vector<BinaryBlob>& blobs = kernelBlobs[blobSetIndex++];
-            const std::uint32_t count = bindingCounts[blobSetIndex - 1u];
-            for (const BinaryBlob& blob : blobs) {
-                KernelRecord record;
-                record.system = &*system.desc;
-                record.task = kernel.task;
-                record.stage = blob.stage;
-                record.backend = blob.backend;
-                record.groups = kernel.groups;
-                record.bindingStart = bindingStart;
-                record.bindingCount = count;
-                record.program = kernel.program;
-                record.blob = &blob.data;
-                kernelRecords.push_back(record);
-            }
-            bindingStart += count;
+            appendKernelRecords(kernel, &*system.desc);
         }
+    }
+    for (const KernelProgram& kernel : asset.globalKernels) {
+        appendKernelRecords(kernel, nullptr);
     }
     const std::uint32_t kernelRecordBytes = static_cast<std::uint32_t>(4u + kernelRecords.size() * 44u);
     const std::uint32_t blobStart = alignUp(kernelRecordBytes, 4u);
@@ -414,7 +441,10 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     }
     appendU32(kernelsSection, static_cast<std::uint32_t>(kernelRecords.size()));
     for (const KernelRecord& record : kernelRecords) {
-        appendU32(kernelsSection, static_cast<std::uint32_t>(record.system - asset.graph->systems.data()));
+        appendU32(kernelsSection,
+                  record.system == nullptr
+                      ? kInvalidOffset
+                      : static_cast<std::uint32_t>(record.system - asset.graph->systems.data()));
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.task));
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.stage));
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.backend));
@@ -455,6 +485,10 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
             appendU8(outputsSection, static_cast<std::uint8_t>(output.sortOrder));
             appendU32(outputsSection, output.textureProperty);
             appendU32(outputsSection, output.textureProperty != kInvalidIndex ? 1u : 0u);
+            appendU8(outputsSection, output.softParticles ? 1u : 0u);
+            appendU8(outputsSection, 0u);
+            appendU16(outputsSection, 0u);
+            appendU32(outputsSection, std::bit_cast<std::uint32_t>(output.softDistance));
             appendU32(outputsSection, 0u);
         }
     }
@@ -488,7 +522,35 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     systemsData.insert(systemsData.end(), burstData.begin(), burstData.end());
 
     std::vector<std::byte> eventsData;
-    appendU32(eventsData, 0u);
+    appendU32(eventsData, static_cast<std::uint32_t>(asset.eventLinks.size()));
+    appendU32(eventsData, asset.eventBufferSize);
+    for (const CompiledEventLink& link : asset.eventLinks) {
+        const auto linkName = strings.find(link.name);
+        appendU32(eventsData, link.producerSystem);
+        appendU32(eventsData, link.consumerSystem);
+        appendU32(eventsData, link.capacity);
+        appendU32(eventsData, link.bufferOffsetWords);
+        appendU32(eventsData, link.payloadOffsetWords);
+        appendU32(eventsData, linkName == strings.end() ? 0u : linkName->second);
+        appendU32(eventsData, static_cast<std::uint32_t>(link.payload.size()));
+        appendU32(eventsData, static_cast<std::uint32_t>(link.receives.size()));
+        for (const EventPayloadAttribute& payload : link.payload) {
+            const auto payloadName = strings.find(payload.name);
+            appendU32(eventsData, payloadName == strings.end() ? 0u : payloadName->second);
+            appendU32(eventsData, payload.slot);
+            appendU8(eventsData, static_cast<std::uint8_t>(payload.targetType));
+            appendU8(eventsData, 0u);
+            appendU16(eventsData, 0u);
+            for (const std::uint32_t word : payload.defaultWords) {
+                appendU32(eventsData, word);
+            }
+        }
+        for (const EventReceiveMapping& receive : link.receives) {
+            const auto receiveName = strings.find(receive.attribute);
+            appendU32(eventsData, receiveName == strings.end() ? 0u : receiveName->second);
+            appendU32(eventsData, receive.slot);
+        }
+    }
 
     std::vector<Section> sections;
     sections.push_back(Section{kStrings, 4, std::move(stringsData)});

@@ -156,6 +156,11 @@ struct OutputDesc {
     BlendMode blend = BlendMode::Alpha;
     std::string texture;
     bool softParticles = false;
+    float softDistance = 0.1f;
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    std::string metallicProperty;
+    std::string roughnessProperty;
     std::optional<SortDesc> sort;
 };
 

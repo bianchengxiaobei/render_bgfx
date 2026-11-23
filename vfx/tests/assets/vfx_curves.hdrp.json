@@ -1,0 +1,12 @@
+{
+  "vfx": [
+    {"name": "Curve015", "asset": "curve_visual.vfxb", "position": [-2.8, 1.0, 0.0], "play": true, "playRate": 0.15, "seed": 0},
+    {"name": "Curve025", "asset": "curve_visual.vfxb", "position": [-2.0, 1.0, 0.0], "play": true, "playRate": 0.25, "seed": 0},
+    {"name": "Curve035", "asset": "curve_visual.vfxb", "position": [-1.2, 1.0, 0.0], "play": true, "playRate": 0.35, "seed": 0},
+    {"name": "Curve045", "asset": "curve_visual.vfxb", "position": [-0.4, 1.0, 0.0], "play": true, "playRate": 0.45, "seed": 0},
+    {"name": "Curve055", "asset": "curve_visual.vfxb", "position": [0.4, 1.0, 0.0], "play": true, "playRate": 0.55, "seed": 0},
+    {"name": "Curve065", "asset": "curve_visual.vfxb", "position": [1.2, 1.0, 0.0], "play": true, "playRate": 0.65, "seed": 0},
+    {"name": "Curve075", "asset": "curve_visual.vfxb", "position": [2.0, 1.0, 0.0], "play": true, "playRate": 0.75, "seed": 0},
+    {"name": "Curve085", "asset": "curve_visual.vfxb", "position": [2.8, 1.0, 0.0], "play": true, "playRate": 0.85, "seed": 0}
+  ]
+}

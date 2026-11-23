@@ -34,6 +34,7 @@ class Effect {
     virtual void pause() = 0;
     virtual void stop() = 0;
     virtual void reset() = 0;
+    virtual void advanceOneFrame() = 0;
     virtual void setTransform(const Mat4& world) = 0;
     virtual void setPlayRate(float rate) = 0;
     virtual bool isAlive() const = 0;
@@ -63,7 +64,10 @@ struct Diagnostics {
     std::uint32_t sortPasses = 0;
     std::uint32_t eventCount = 0;
     float updateMs = 0.0f;
+    float simulationMs = 0.0f;
+    float outputMs = 0.0f;
     float encodeMs = 0.0f;
+    float totalMs = 0.0f;
 };
 
 class Runtime {
@@ -76,6 +80,10 @@ class Runtime {
 
     std::shared_ptr<const Asset> loadAsset(const std::filesystem::path& path, std::string* error = nullptr);
     Effect* createEffect(const Asset& asset, const EffectDesc& desc, std::string* error = nullptr);
+    Effect* reloadEffect(Effect* effect, const Asset& asset, const EffectDesc& desc,
+                         std::string* error = nullptr);
+    Effect* reloadEffect(Effect* effect, const std::filesystem::path& path, const EffectDesc& desc,
+                         std::string* error = nullptr);
     void destroyEffect(Effect* effect);
 
     void update(float deltaSeconds);
@@ -83,11 +91,14 @@ class Runtime {
     void encodeOutput(CommandSink& sink, const FrameContext& frame);
 
     void setErrorCallback(std::function<void(std::string_view)> callback);
+    bool hasLitOutputs() const;
     Diagnostics diagnostics() const;
 
   private:
     friend class EffectImpl;
     void reportError(std::string_view message);
+    void refreshDiagnostics();
+    void pruneAssets();
 
     Device& m_device;
     ShadingProvider* m_shading = nullptr;
@@ -97,6 +108,8 @@ class Runtime {
     std::string m_lastError;
     Diagnostics m_diagnostics{};
     float m_updateMs = 0.0f;
+    float m_simulationMs = 0.0f;
+    float m_outputMs = 0.0f;
     float m_encodeMs = 0.0f;
 };
 

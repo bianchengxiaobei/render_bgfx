@@ -9,6 +9,13 @@
 
 namespace vfx::reference {
 
+struct SortKVP {
+    float key = 0.0f;
+    std::uint32_t value = 0;
+};
+
+void sortKVP(std::vector<SortKVP>& kvp, SortOrder order);
+
 struct SpawnerState {
     double time = 0.0;
     double accumulator = 0.0;
@@ -37,5 +44,9 @@ struct ParticleState {
 bool simulateParticle(const Graph& graph, std::uint32_t systemIndex, std::uint32_t spawnIndex,
                       std::uint32_t systemSeed, float deltaSeconds, std::uint32_t frameCount,
                       ParticleState& out, std::string* error = nullptr);
+
+std::uint32_t simulateEventCount(const Graph& graph, std::uint32_t producerSystem,
+                                 float deltaSeconds, std::uint32_t frameCount,
+                                 std::string* error = nullptr);
 
 } // namespace vfx::reference

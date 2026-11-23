@@ -18,6 +18,8 @@ struct GpuMesh {
     gfx::BufferHandle indexBuffer;
     gfx::BufferHandle wireframeIndexBuffer;
     uint32_t wireframeIndexCount = 0;
+    bool dynamicVertex = false;
+    std::vector<Vec3> previousPositions;
 };
 
 struct GpuMaterial {
@@ -58,6 +60,7 @@ class MaterialSystem {
 
     bool init(gfx::ResourceManager& resources, const RenderScene& scene);
     bool ensureWireframeBuffers(gfx::ResourceManager& resources, const RenderScene& scene);
+    bool updateDeformedMeshes(RenderScene& scene);
     void shutdown(gfx::ResourceManager& resources);
 
     const std::vector<GpuMesh>& meshes() const { return m_meshes; }
@@ -68,12 +71,15 @@ class MaterialSystem {
   private:
     gfx::TextureHandle textureForImage(gfx::ResourceManager& resources, const RenderScene& scene,
                                        const asset::TextureRef& ref, bool srgb, bool normalMap);
+    gfx::TextureHandle packedMaskTexture(gfx::ResourceManager& resources, const RenderScene& scene,
+                                         const asset::Material& material);
 
     gfx::ResourceManager* m_resources = nullptr;
     std::vector<GpuMesh> m_meshes;
     std::vector<GpuMaterial> m_materials;
     std::vector<GpuDecalTextures> m_decals;
     std::unordered_map<uint64_t, gfx::TextureHandle> m_textureCache;
+    std::unordered_map<uint64_t, gfx::TextureHandle> m_packedMaskCache;
     MaterialSamplers m_samplers;
     gfx::TextureHandle m_whiteSrgb;
     gfx::TextureHandle m_whiteLinear;

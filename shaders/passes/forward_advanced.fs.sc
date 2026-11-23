@@ -2,6 +2,7 @@ $input v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
 
 #define HBG_FORWARD_LIGHTMAP_GI 1
 #define HBG_SHADOW_ADVANCED_DEPTH_FILTERS 1
+#define HBG_SHADOW_IMS_SAT_STAGE 12
 
 #include "material/surface_data.sc"
 #include "material/surface_data_advanced.sc"

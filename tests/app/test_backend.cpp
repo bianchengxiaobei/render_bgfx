@@ -39,6 +39,7 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK_FALSE(result.options.lightListFeatureFlags.has_value());
     CHECK_FALSE(result.options.lightListCapacity.has_value());
     CHECK_FALSE(result.options.cameraOrbit);
+    CHECK_FALSE(result.options.resizeTest);
     CHECK_FALSE(result.options.debugWireframe);
     CHECK_FALSE(result.options.disableShadows);
     CHECK(result.options.debugUi);
@@ -76,6 +77,14 @@ TEST_CASE("parseCommandLine parses the VFX spike switch") {
     const CommandLineResult result = parseCommandLine(2, argv);
     REQUIRE(result.ok);
     CHECK(result.options.vfxSpike);
+}
+
+TEST_CASE("parseCommandLine parses the render-test resize switch") {
+    const char* argv[] = {"hbg", "--render-test=scene.gltf", "--resize-test"};
+    const CommandLineResult result = parseCommandLine(3, argv);
+    REQUIRE(result.ok);
+    CHECK(result.options.renderTestPath == "scene.gltf");
+    CHECK(result.options.resizeTest);
 }
 
 TEST_CASE("parseCommandLine parses options") {

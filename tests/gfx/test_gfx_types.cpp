@@ -1,4 +1,4 @@
-﻿#include "gfx/buffer.h"
+#include "gfx/buffer.h"
 #include "gfx/framebuffer_cache.h"
 #include "gfx/state.h"
 #include "gfx/texture.h"
@@ -52,21 +52,26 @@ TEST_CASE("framebuffer keys compare and hash consistently") {
     const FrameBufferKey b{{first, second}};
     const FrameBufferKey c{{second, first}};
     const FrameBufferKey withMip{{first, second}, {0, 2}};
+    const FrameBufferKey readOnlyDepth{{first, second}, {0, 0},
+                                       {0, kFrameBufferAttachmentReadOnlyDepth}};
 
     CHECK(a == b);
     CHECK_FALSE(a == c);
     CHECK_FALSE(a == withMip);
+    CHECK_FALSE(a == readOnlyDepth);
 
     const FrameBufferKeyHash hash;
     CHECK(hash(a) == hash(b));
     CHECK(hash(a) != hash(withMip));
+    CHECK(hash(a) != hash(readOnlyDepth));
 
     std::unordered_set<FrameBufferKey, FrameBufferKeyHash> keys;
     keys.insert(a);
     keys.insert(b);
     keys.insert(c);
     keys.insert(withMip);
-    CHECK(keys.size() == 3);
+    keys.insert(readOnlyDepth);
+    CHECK(keys.size() == 4);
 
     FrameBufferCache cache;
     const FrameBufferHandle firstFrameBuffer{4, 1};

@@ -73,8 +73,11 @@ enum class PassId : uint8_t {
     DecalClear,
     DeferredLighting,
     DeferredLightingAdvanced,
+    DeferredLightingAdvancedIms,
     DeferredLightingVariant,
+    DeferredLightingVariantIms,
     DeferredLightingVariantCompute,
+    DeferredLightingVariantComputeIms,
     LitMaterialFlags,
     LitVariantIndirectClear,
     LitVariantIndirect,
@@ -110,6 +113,7 @@ enum class PassId : uint8_t {
     Ui,
     ShadowEvsmBlur,
     ShadowEvsmBlurMoments,
+    ShadowCopyDepth,
 };
 
 enum MaterialVariant : uint32_t {

@@ -4,21 +4,35 @@
 #include "common/common.sc"
 #include "bgfx_compute.sh"
 
-SAMPLER2D(s_shadowMap, 6);
+// Standard/forward IMS binds SAT at stage 12. Advanced deferred has GBuffer4
+// at stage 12, but its stage 6 directional raw depth is unused when the
+// (global) directional filter is IMS, so the non-variant advanced deferred
+// pass reuses stage 6 for SAT. Advanced lit variants keep raw stage 6 and
+// stay on the local fallback.
 SAMPLER2D(s_shadowMapPunctual, 9);
 
 #ifdef HBG_SHADOW_POINT_SAMPLER
 #define HBG_SHADOW_AREA_SAMPLER
 #endif
-// Advanced-material shaders cannot bind the point/IMS stage 12 (it carries
-// GBuffer4), but their directional (stage 6), point (stage 9) and area
-// (stage 13) raw-depth textures are available, so PCF/PCSS/EVSM/VSM/MSM
-// remain usable there. Only IMS still falls back because its SAT uses stage 12.
-#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_ADVANCED_DEPTH_FILTERS)
+#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_IMS_SAT_STAGE) || \
+    defined(HBG_SHADOW_IMS_STAGE6)
+#define HBG_SHADOW_IMS 1
+#endif
+#if defined(HBG_SHADOW_POINT_SAMPLER) || defined(HBG_SHADOW_ADVANCED_DEPTH_FILTERS) || \
+    defined(HBG_SHADOW_IMS_SAT_STAGE) || defined(HBG_SHADOW_IMS_STAGE6)
 #define HBG_SHADOW_LOCAL_DEPTH_FILTERS 1
 #endif
-#ifdef HBG_SHADOW_POINT_SAMPLER
-USAMPLER2D(s_shadowMapPoint, 12);
+#ifndef HBG_SHADOW_IMS_STAGE6
+SAMPLER2D(s_shadowMap, 6);
+#endif
+#ifdef HBG_SHADOW_IMS
+#ifdef HBG_SHADOW_IMS_STAGE6
+#undef HBG_SHADOW_IMS_SAT_STAGE
+#define HBG_SHADOW_IMS_SAT_STAGE 6
+#elif !defined(HBG_SHADOW_IMS_SAT_STAGE)
+#define HBG_SHADOW_IMS_SAT_STAGE 12
+#endif
+USAMPLER2D(s_shadowMapPoint, HBG_SHADOW_IMS_SAT_STAGE);
 #endif
 #ifdef HBG_SHADOW_AREA_SAMPLER
 SAMPLER2D(s_shadowMapPointPunctual, 13);
@@ -26,7 +40,11 @@ SAMPLER2D(s_shadowMapPointPunctual, 13);
 
 float hbgShadowMapCompare(vec2 uv, float depth)
 {
+#ifdef HBG_SHADOW_IMS_STAGE6
+    return 1.0;
+#else
     return texture2DLod(s_shadowMap, uv, 0.0).x >= depth ? 1.0 : 0.0;
+#endif
 }
 
 float hbgShadowPunctualCompare(vec2 uv, float depth)
@@ -52,7 +70,11 @@ float hbgShadowMomentRawDepth(vec2 uv, int space)
 #ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
     if (space == 0)
     {
+#ifdef HBG_SHADOW_IMS_STAGE6
+        return 1.0;
+#else
         return texture2DLod(s_shadowMap, uv, 0.0).x;
+#endif
     }
 #endif
     return 1.0;
@@ -63,12 +85,31 @@ float hbgShadowEvsmWarp(float depth, float exponent)
     return exp2(exponent * (2.0 * depth - 1.0));
 }
 
-// HDRP SampleShadow_VSM_1tap reads a blurred moment atlas. This v1 uses the
-// same Chebyshev test but gathers the first two raw-depth moments locally.
-float hbgSampleVsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space)
+// HDRP SampleShadow_VSM_1tap reads a blurred moment atlas. Directional VSM
+// binds that atlas to stage 6; punctual/area keep the local fallback.
+float hbgEvalVsmMoments(vec2 moments, float depth)
 {
     const float lightLeakBias = 0.0;
     const float varianceBias = 1.0e-5;
+    const float variance = max(moments.y - moments.x * moments.x, varianceBias);
+    const float delta = depth - moments.x;
+    float probability = variance / max(variance + delta * delta, 1.0e-20);
+    probability = hbgSaturate((probability - lightLeakBias) / max(1.0 - lightLeakBias, 1.0e-6));
+    return max(probability, depth <= moments.x ? 1.0 : 0.0);
+}
+
+float hbgSampleVsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space)
+{
+    if (space == 0)
+    {
+#ifdef HBG_SHADOW_IMS_STAGE6
+        return 1.0;
+#else
+        const vec2 moments = texture2DLod(s_shadowMap, clamp(atlasUV, uvMin, uvMax), 0.0).xy;
+        return hbgEvalVsmMoments(moments, depth);
+#endif
+    }
+
     float moment1 = 0.0;
     float moment2 = 0.0;
     float weightSum = 0.0;
@@ -84,14 +125,7 @@ float hbgSampleVsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax
             weightSum += weight;
         }
     }
-    moment1 /= weightSum;
-    moment2 /= weightSum;
-
-    const float variance = max(moment2 - moment1 * moment1, varianceBias);
-    const float delta = depth - moment1;
-    float probability = variance / max(variance + delta * delta, 1.0e-20);
-    probability = hbgSaturate((probability - lightLeakBias) / max(1.0 - lightLeakBias, 1.0e-6));
-    return max(probability, depth <= moment1 ? 1.0 : 0.0);
+    return hbgEvalVsmMoments(vec2(moment1 / weightSum, moment2 / weightSum), depth);
 }
 
 #ifdef HBG_SHADOW_AREA_SAMPLER
@@ -221,7 +255,7 @@ float hbgMsmDelta4(float z0, float zFree, float b0, float b1, float b2, float b3
     return hbgSaturate(1.0 - attenuation);
 }
 
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_IMS
 // HDRP HDIMS.hlsl: optimized moments are integrated in a summed-area table
 // (MomentShadows.compute) and sampled with a 4-moment rectangle integral.
 // This path is directional-only, matching HDRP's improved moment shadows.
@@ -520,43 +554,18 @@ float hbgSampleIms(vec2 atlasUV, float depth, vec2 texel, vec4 atlasRect, int re
 }
 #endif
 
-// HDRP's 1-tap MSM samples a blurred 4-moment atlas and solves the two
-// Dirac-delta approximations. This v1 gathers the four raw-depth moments over
-// the same local 3x3 window; it does not implement the HDRP moment atlas/SAT.
-float hbgSampleMsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space)
+// HDRP SampleShadow_MSM_1tap consumes a filtered four-moment atlas and
+// solves the two Dirac-delta approximations. Directional MSM binds the
+// half-res blurred atlas at stage 6; punctual/area keep the local gather.
+float hbgMsmEvaluate(vec4 moments, float depth)
 {
     const float momentBias = 6.0e-7;
-    float moment0 = 0.0;
-    float moment1 = 0.0;
-    float moment2 = 0.0;
-    float moment3 = 0.0;
-    float weightSum = 0.0;
-    for (int y = -1; y <= 1; ++y)
-    {
-        for (int x = -1; x <= 1; ++x)
-        {
-            const vec2 uv = clamp(atlasUV + vec2(float(x), float(y)) * texel * 1.5, uvMin, uvMax);
-            const float d = hbgShadowMomentRawDepth(uv, space);
-            const float d2 = d * d;
-            const float weight = (x == 0 && y == 0) ? 2.0 : 1.0;
-            moment0 += d * weight;
-            moment1 += d2 * weight;
-            moment2 += d2 * d * weight;
-            moment3 += d2 * d2 * weight;
-            weightSum += weight;
-        }
-    }
-    moment0 /= weightSum;
-    moment1 /= weightSum;
-    moment2 /= weightSum;
-    moment3 /= weightSum;
-
-    const float mean = moment0;
-    const float variance = moment1 - mean * mean;
-    const float b0 = lerp(moment0, 0.5, momentBias);
-    const float b1 = lerp(moment1, 0.5, momentBias);
-    const float b2 = lerp(moment2, 0.5, momentBias);
-    const float b3 = lerp(moment3, 0.5, momentBias);
+    const float mean = moments.x;
+    const float variance = moments.y - mean * mean;
+    const float b0 = lerp(moments.x, 0.5, momentBias);
+    const float b1 = lerp(moments.y, 0.5, momentBias);
+    const float b2 = lerp(moments.z, 0.5, momentBias);
+    const float b3 = lerp(moments.w, 0.5, momentBias);
 
     const float L32D22 = -b0 * b1 + b2;
     const float D22 = -b0 * b0 + b1;
@@ -604,6 +613,43 @@ float hbgSampleMsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax
         return hbgMsmDelta4(depth, zFree, b0, b1, b2, b3);
     }
     return hbgMsmDelta3(depth, z1, z2, b0, b1);
+}
+
+float hbgSampleMsm(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, int space)
+{
+#if !defined(HBG_SHADOW_IMS_STAGE6)
+    if (space == 0)
+    {
+#ifdef HBG_SHADOW_LOCAL_DEPTH_FILTERS
+        const vec4 moments = texture2DLod(s_shadowMap, clamp(atlasUV, uvMin, uvMax), 0.0);
+        return hbgMsmEvaluate(moments, depth);
+#else
+        return 1.0;
+#endif
+    }
+#endif
+
+    float moment0 = 0.0;
+    float moment1 = 0.0;
+    float moment2 = 0.0;
+    float moment3 = 0.0;
+    float weightSum = 0.0;
+    for (int y = -1; y <= 1; ++y)
+    {
+        for (int x = -1; x <= 1; ++x)
+        {
+            const vec2 uv = clamp(atlasUV + vec2(float(x), float(y)) * texel * 1.5, uvMin, uvMax);
+            const float d = hbgShadowMomentRawDepth(uv, space);
+            const float d2 = d * d;
+            const float weight = (x == 0 && y == 0) ? 2.0 : 1.0;
+            moment0 += d * weight;
+            moment1 += d2 * weight;
+            moment2 += d2 * d * weight;
+            moment3 += d2 * d2 * weight;
+            weightSum += weight;
+        }
+    }
+    return hbgMsmEvaluate(vec4(moment0, moment1, moment2, moment3) / weightSum, depth);
 }
 
 // HDRP keeps HDShadowData in StructuredBuffer<HDShadowData>; stage 8 uses the
@@ -924,7 +970,11 @@ float hbgPcssRawDepth(vec2 uv, bool punctual)
     {
         return texture2DLod(s_shadowMapPunctual, uv, 0.0).x;
     }
+#ifdef HBG_SHADOW_IMS_STAGE6
+    return 1.0;
+#else
     return texture2DLod(s_shadowMap, uv, 0.0).x;
+#endif
 }
 
 float hbgSamplePcss(vec2 atlasUV, float depth, vec2 texel, vec2 uvMin, vec2 uvMax, bool punctual,
@@ -1051,7 +1101,7 @@ float hbgSampleDirectionalRequest(int request, vec3 worldPosition, vec3 normalWS
     const int filterMode = int(requestInfo.z + 0.5);
     if (filterMode == 8)
     {
-#ifdef HBG_SHADOW_POINT_SAMPLER
+#ifdef HBG_SHADOW_IMS
         return hbgSampleIms(atlasUV, depth, texel, atlasRect, request);
 #else
         return hbgSampleTent7(atlasUV, depth, texel, uvMin, uvMax, false);

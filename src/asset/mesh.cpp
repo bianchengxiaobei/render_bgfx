@@ -2,6 +2,7 @@
 
 #include "mikktspace.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace hbg::asset {
@@ -71,11 +72,16 @@ void mikkSetTSpaceBasic(const SMikkTSpaceContext* context, const float tangent[3
 
 } // namespace
 
-void Mesh::recomputeBounds() {
-    bounds = {};
+Bounds Mesh::computeBounds(const std::vector<MeshVertex>& vertices) {
+    Bounds result;
     for (const MeshVertex& vertex : vertices) {
-        bounds.expand(vertex.position);
+        result.expand(vertex.position);
     }
+    return result;
+}
+
+void Mesh::recomputeBounds() {
+    bounds = computeBounds(vertices);
 }
 
 void Mesh::generateNormals() {
@@ -134,6 +140,113 @@ void Mesh::generateTangents() {
     context.m_pUserData = &userData;
 
     hasTangents = genTangSpaceDefault(&context) != 0;
+}
+
+void Mesh::applyMorphWeights(const std::vector<float>& weights, std::vector<MeshVertex>& output) const {
+    output = vertices;
+    const std::size_t targetCount = std::min(morphTargets.size(), weights.size());
+    if (targetCount == 0) {
+        return;
+    }
+
+    bool hasMorphedNormals = false;
+    bool hasMorphedTangents = false;
+    for (std::size_t targetIndex = 0; targetIndex < targetCount; ++targetIndex) {
+        const float weight = weights[targetIndex];
+        if (std::abs(weight) <= 1.0e-8f) {
+            continue;
+        }
+        const MorphTarget& target = morphTargets[targetIndex];
+        if (target.positionDeltas.size() < output.size()) {
+            continue;
+        }
+        hasMorphedNormals = hasMorphedNormals || target.hasNormals;
+        hasMorphedTangents = hasMorphedTangents || target.hasTangents;
+        for (std::size_t vertex = 0; vertex < output.size(); ++vertex) {
+            MeshVertex& result = output[vertex];
+            const Vec3 positionDelta = target.positionDeltas[vertex] * weight;
+            result.position = result.position + positionDelta;
+            if (target.hasNormals && vertex < target.normalDeltas.size()) {
+                result.normal = result.normal + target.normalDeltas[vertex] * weight;
+            }
+            if (target.hasTangents && vertex < target.tangentDeltas.size()) {
+                const Vec4 delta = target.tangentDeltas[vertex];
+                result.tangent.x += delta.x * weight;
+                result.tangent.y += delta.y * weight;
+                result.tangent.z += delta.z * weight;
+            }
+        }
+    }
+
+    if (hasMorphedNormals) {
+        for (MeshVertex& vertex : output) {
+            const Vec3 baseNormal = vertex.normal;
+            normalize(vertex.normal);
+            if (length(baseNormal) <= 1.0e-8f) {
+                vertex.normal = Vec3(0.0f, 0.0f, 1.0f);
+            }
+        }
+    }
+    if (hasMorphedTangents) {
+        for (MeshVertex& vertex : output) {
+            Vec3 tangent(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z);
+            normalize(tangent);
+            vertex.tangent = Vec4(tangent.x, tangent.y, tangent.z, vertex.tangent.w);
+        }
+    }
+}
+
+void Mesh::applySkinning(const std::vector<Mat4>& jointMatrices, std::vector<MeshVertex>& output) const {
+    if (skinVertices.size() != vertices.size()) {
+        return;
+    }
+    if (output.size() != vertices.size()) {
+        output = vertices;
+    }
+
+    for (std::size_t vertexIndex = 0; vertexIndex < output.size(); ++vertexIndex) {
+        const MeshVertex& source = output[vertexIndex];
+        const SkinVertex& skin = skinVertices[vertexIndex];
+        Vec3 position(0.0f, 0.0f, 0.0f);
+        Vec3 normal(0.0f, 0.0f, 0.0f);
+        Vec3 tangent(0.0f, 0.0f, 0.0f);
+        float totalWeight = 0.0f;
+        const std::size_t influenceBegin = skin.influenceOffset;
+        const std::size_t influenceEnd =
+            std::min(skinInfluences.size(), influenceBegin + static_cast<std::size_t>(skin.influenceCount));
+        for (std::size_t influenceIndex = influenceBegin; influenceIndex < influenceEnd; ++influenceIndex) {
+            const SkinInfluence& influence = skinInfluences[influenceIndex];
+            const float weight = influence.weight;
+            if (std::abs(weight) <= 1.0e-8f) {
+                continue;
+            }
+            const uint32_t joint = influence.joint;
+            if (joint >= jointMatrices.size()) {
+                continue;
+            }
+            const Mat4& matrix = jointMatrices[joint];
+            const Vec3 sourceTangent(source.tangent.x, source.tangent.y, source.tangent.z);
+            position = position + transformPoint(matrix, source.position) * weight;
+            normal = normal + transformDirection(matrix, source.normal) * weight;
+            tangent = tangent + transformDirection(matrix, sourceTangent) * weight;
+            totalWeight += weight;
+        }
+        if (totalWeight <= 1.0e-8f) {
+            continue;
+        }
+        if (std::abs(totalWeight - 1.0f) > 1.0e-5f) {
+            position = position * (1.0f / totalWeight);
+        }
+        output[vertexIndex].position = position;
+        if (length(normal) > 1.0e-8f) {
+            output[vertexIndex].normal = hbg::normalize(normal);
+        }
+        if (length(tangent) > 1.0e-8f) {
+            const Vec3 normalizedTangent = hbg::normalize(tangent);
+            output[vertexIndex].tangent =
+                Vec4(normalizedTangent.x, normalizedTangent.y, normalizedTangent.z, source.tangent.w);
+        }
+    }
 }
 
 } // namespace hbg::asset

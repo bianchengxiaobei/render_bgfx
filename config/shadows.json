@@ -45,6 +45,7 @@
   "shadowFadeDistance": 10000.0,
   "shadowTint": [0.0, 0.0, 0.0],
   "cachedDirectionalShadows": false,
+  "cachedDirectionalMixedShadows": true,
   "cachedPunctualShadows": false,
   "cachedAreaShadows": false
 }

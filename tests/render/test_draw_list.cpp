@@ -485,3 +485,35 @@ TEST_CASE("draw distance quantization is monotonic") {
     CHECK(quantizeDrawDistance(1.0f) < quantizeDrawDistance(2.0f));
     CHECK(quantizeDrawDistance(2.0f) < quantizeDrawDistance(10.0f));
 }
+
+TEST_CASE("draw list separates static and dynamic shadow casters") {
+    RenderScene scene;
+    const uint32_t material = addMaterial(scene, asset::MaterialType::Lit, asset::AlphaMode::Opaque, 2000);
+    const uint32_t mesh = addMesh(scene, material);
+    addObject(scene, mesh, Vec3(-1.0f, 0.0f, 0.0f));
+    const uint32_t dynamic = addObject(scene, mesh, Vec3(1.0f, 0.0f, 0.0f));
+    scene.objects[dynamic].staticShadowCaster = false;
+
+    ViewState viewState;
+    buildViewState(viewState, makeCamera());
+    DrawListDesc desc;
+    desc.passTags = shaderPassMask(ShaderPass::ShadowCaster);
+    desc.queueRange = kRenderQueueRangeAllOpaque;
+    desc.frustumCull = false;
+
+    DrawList all;
+    all.build(scene, viewState, desc);
+    REQUIRE(all.size() == 2);
+
+    desc.shadowCasterFilter = ShadowCasterFilter::StaticOnly;
+    DrawList staticCasters;
+    staticCasters.build(scene, viewState, desc);
+    REQUIRE(staticCasters.size() == 1);
+    CHECK(staticCasters.items()[0].staticShadowCaster);
+
+    desc.shadowCasterFilter = ShadowCasterFilter::DynamicOnly;
+    DrawList dynamicCasters;
+    dynamicCasters.build(scene, viewState, desc);
+    REQUIRE(dynamicCasters.size() == 1);
+    CHECK_FALSE(dynamicCasters.items()[0].staticShadowCaster);
+}

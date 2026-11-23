@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "core/handle.h"
 #include "gfx/texture.h"
@@ -15,9 +15,12 @@ namespace hbg::gfx {
 struct FrameBufferTag {};
 using FrameBufferHandle = Handle<FrameBufferTag>;
 
+inline constexpr uint8_t kFrameBufferAttachmentReadOnlyDepth = 1u << 0;
+
 struct FrameBufferKey {
     std::vector<TextureHandle> attachments;
     std::vector<uint16_t> mips;
+    std::vector<uint8_t> attachmentFlags{};
 
     friend bool operator==(const FrameBufferKey&, const FrameBufferKey&) = default;
 };
@@ -29,6 +32,8 @@ struct FrameBufferKeyHash {
             seed ^= HandleHash{}(key.attachments[index]) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
             const uint16_t mip = index < key.mips.size() ? key.mips[index] : 0;
             seed ^= static_cast<std::size_t>(mip) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+            const uint8_t flags = index < key.attachmentFlags.size() ? key.attachmentFlags[index] : 0;
+            seed ^= static_cast<std::size_t>(flags) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
         }
         return seed;
     }

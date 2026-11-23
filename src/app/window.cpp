@@ -13,6 +13,7 @@
 #endif
 
 #include <string>
+#include <utility>
 
 namespace hbg {
 
@@ -45,6 +46,8 @@ bool Window::init(const WindowDesc& desc) {
     glfwSetWindowUserPointer(m_window, this);
     glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
     glfwSetScrollCallback(m_window, scrollCallback);
+    glfwSetKeyCallback(m_window, keyCallback);
+    glfwSetCharCallback(m_window, charCallback);
 
     glfwGetFramebufferSize(m_window, &m_width, &m_height);
     m_resized = false;
@@ -65,6 +68,10 @@ void Window::shutdown() {
     m_width = 0;
     m_height = 0;
     m_resized = false;
+    m_pendingScrollX = 0.0;
+    m_pendingScrollY = 0.0;
+    m_pendingKeyEvents.clear();
+    m_pendingChars.clear();
 }
 
 bool Window::pollEvents() {
@@ -120,8 +127,12 @@ void Window::sampleInput(WindowInput& input) {
                      glfwGetKey(m_window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
     input.keyCtrl = glfwGetKey(m_window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                     glfwGetKey(m_window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-    input.keyAlt = glfwGetKey(m_window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
-                   glfwGetKey(m_window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+    input.keyAlt =
+        glfwGetKey(m_window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+    input.keyEvents = std::move(m_pendingKeyEvents);
+    input.chars = std::move(m_pendingChars);
+    m_pendingKeyEvents.clear();
+    m_pendingChars.clear();
 }
 
 void* Window::nativeHandle() const {
@@ -151,6 +162,22 @@ void Window::scrollCallback(GLFWwindow* window, double xOffset, double yOffset) 
 
     self->m_pendingScrollX += xOffset;
     self->m_pendingScrollY += yOffset;
+}
+
+void Window::keyCallback(GLFWwindow* window, int key, int, int action, int) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (self == nullptr || action == GLFW_REPEAT) {
+        return;
+    }
+    self->m_pendingKeyEvents.push_back(WindowKeyEvent{key, action == GLFW_PRESS, false});
+}
+
+void Window::charCallback(GLFWwindow* window, unsigned int codepoint) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (self == nullptr) {
+        return;
+    }
+    self->m_pendingChars.push_back(static_cast<std::uint32_t>(codepoint));
 }
 
 } // namespace hbg

@@ -185,6 +185,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto shadowSatVertical = backend->find("shadowSatVertical");
     const auto shadowEvsmBlur = backend->find("shadowEvsmBlur");
     const auto shadowEvsmBlurMoments = backend->find("shadowEvsmBlurMoments");
+    const auto shadowCopyDepth = backend->find("shadowCopyDepth");
     const auto prepass = backend->find("prepass");
     const auto motionVectors = backend->find("motionVectors");
     const auto cameraMotionVectors = backend->find("cameraMotionVectors");
@@ -213,8 +214,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto decalClear = backend->find("decalClear");
     const auto deferredLighting = backend->find("deferredLighting");
     const auto deferredLightingAdvanced = backend->find("deferredLightingAdvanced");
+    const auto deferredLightingAdvancedIms = backend->find("deferredLightingAdvancedIms");
     const auto deferredLightingVariant = backend->find("deferredLightingVariant");
+    const auto deferredLightingVariantIms = backend->find("deferredLightingVariantIms");
     const auto deferredLightingVariantCompute = backend->find("deferredLightingVariantCompute");
+    const auto deferredLightingVariantComputeIms = backend->find("deferredLightingVariantComputeIms");
     const auto litMaterialFlags = backend->find("litMaterialFlags");
     const auto litVariantIndirectClear = backend->find("litVariantIndirectClear");
     const auto litVariantIndirect = backend->find("litVariantIndirect");
@@ -255,7 +259,8 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         shadow == backend->end() || shadowInstanced == backend->end() || shadowCull == backend->end() ||
         shadowMoments == backend->end() || shadowSatHorizontal == backend->end() ||
         shadowSatVertical == backend->end() || shadowEvsmBlur == backend->end() ||
-        shadowEvsmBlurMoments == backend->end() || prepass == backend->end() ||
+        shadowEvsmBlurMoments == backend->end() || shadowCopyDepth == backend->end() ||
+        prepass == backend->end() ||
         motionVectors == backend->end() || cameraMotionVectors == backend->end() ||
         depthPyramidCopy == backend->end() || depthPyramidDownsample == backend->end() || sky == backend->end() ||
         volumetricFog == backend->end() || volumetricFogComposite == backend->end() ||
@@ -267,9 +272,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         debugRoughness == backend->end() || debugGbuffer == backend->end() || wireframe == backend->end() ||
         gbufferDecals == backend->end() ||
         decal == backend->end() || decalClear == backend->end() || deferredLighting == backend->end() ||
-        deferredLightingAdvanced == backend->end() ||
+        deferredLightingAdvanced == backend->end() || deferredLightingAdvancedIms == backend->end() ||
         deferredLightingVariant == backend->end() ||
-        deferredLightingVariantCompute == backend->end() || litMaterialFlags == backend->end() ||
+        deferredLightingVariantIms == backend->end() ||
+        deferredLightingVariantCompute == backend->end() ||
+        deferredLightingVariantComputeIms == backend->end() || litMaterialFlags == backend->end() ||
         litVariantIndirectClear == backend->end() || litVariantIndirect == backend->end() ||
         ssao == backend->end() || ssaoBlur == backend->end() || ssaoTemporal == backend->end() ||
         ssaoUpsample == backend->end() || debugSsao == backend->end() || ssrTrace == backend->end() ||
@@ -384,6 +391,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.shadowSatVertical = readCompute(*shadowSatVertical);
     m_files.shadowEvsmBlur = readCompute(*shadowEvsmBlur);
     m_files.shadowEvsmBlurMoments = readCompute(*shadowEvsmBlurMoments);
+    m_files.shadowCopyDepth = readFiles(*shadowCopyDepth, false);
     m_files.prepass = readFiles(*prepass, true);
     m_files.motionVectors = readFiles(*motionVectors, false);
     m_files.cameraMotionVectors = readFiles(*cameraMotionVectors, false);
@@ -416,8 +424,11 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.decalClear = readFiles(*decalClear, false);
     m_files.deferredLighting = readFiles(*deferredLighting, false);
     m_files.deferredLightingAdvanced = readFiles(*deferredLightingAdvanced, false);
+    m_files.deferredLightingAdvancedIms = readFiles(*deferredLightingAdvancedIms, false);
     m_files.deferredLightingVariant = readFiles(*deferredLightingVariant, true);
+    m_files.deferredLightingVariantIms = readFiles(*deferredLightingVariantIms, true);
     m_files.deferredLightingVariantCompute = readCompute(*deferredLightingVariantCompute);
+    m_files.deferredLightingVariantComputeIms = readCompute(*deferredLightingVariantComputeIms);
     m_files.litMaterialFlags = readCompute(*litMaterialFlags);
     m_files.litVariantIndirectClear = readCompute(*litVariantIndirectClear);
     m_files.litVariantIndirect = readCompute(*litVariantIndirect);
@@ -496,9 +507,14 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.deferredLighting.fragments.empty() &&
               !m_files.deferredLightingAdvanced.vertex.empty() &&
               !m_files.deferredLightingAdvanced.fragments.empty() &&
+              !m_files.deferredLightingAdvancedIms.vertex.empty() &&
+              !m_files.deferredLightingAdvancedIms.fragments.empty() &&
               !m_files.deferredLightingVariant.vertex.empty() &&
               !m_files.deferredLightingVariant.fragments.empty() &&
               !m_files.deferredLightingVariant.bufferFragments.empty() &&
+              !m_files.deferredLightingVariantIms.vertex.empty() &&
+              !m_files.deferredLightingVariantIms.fragments.empty() &&
+              !m_files.deferredLightingVariantIms.bufferFragments.empty() &&
               !m_files.ssao.vertex.empty() &&
               !m_files.ssao.fragments.empty() && !m_files.ssaoBlur.vertex.empty() &&
               !m_files.ssaoBlur.fragments.empty() && !m_files.ssaoTemporal.vertex.empty() &&
@@ -519,6 +535,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
                !m_files.shadowCull.compute.empty() && !m_files.shadowMoments.compute.empty() &&
                !m_files.shadowSatHorizontal.compute.empty() && !m_files.shadowSatVertical.compute.empty() &&
                !m_files.shadowEvsmBlur.compute.empty() && !m_files.shadowEvsmBlurMoments.compute.empty() &&
+              !m_files.shadowCopyDepth.vertex.empty() && !m_files.shadowCopyDepth.fragments.empty() &&
               !m_files.debugContactShadows.vertex.empty() && !m_files.debugContactShadows.fragments.empty() &&
               !m_files.debugShadowCascade.vertex.empty() && !m_files.debugShadowCascade.fragments.empty() &&
               !m_files.debugShadowFilter.vertex.empty() && !m_files.debugShadowFilter.fragments.empty() &&
@@ -760,6 +777,10 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.shadowEvsmBlurMoments;
         variant = 0;
         break;
+    case PassId::ShadowCopyDepth:
+        files = &m_files.shadowCopyDepth;
+        variant = 0;
+        break;
     case PassId::Prepass:
         files = &m_files.prepass;
         break;
@@ -867,12 +888,24 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.deferredLightingAdvanced;
         variant = 0;
         break;
+    case PassId::DeferredLightingAdvancedIms:
+        files = &m_files.deferredLightingAdvancedIms;
+        variant = 0;
+        break;
     case PassId::DeferredLightingVariant:
         files = &m_files.deferredLightingVariant;
         variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
         break;
+    case PassId::DeferredLightingVariantIms:
+        files = &m_files.deferredLightingVariantIms;
+        variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
+        break;
     case PassId::DeferredLightingVariantCompute:
         files = &m_files.deferredLightingVariantCompute;
+        variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
+        break;
+    case PassId::DeferredLightingVariantComputeIms:
+        files = &m_files.deferredLightingVariantComputeIms;
         variant = static_cast<uint32_t>(materialKey) % kDeferredLightingVariantCount;
         break;
     case PassId::LitMaterialFlags:

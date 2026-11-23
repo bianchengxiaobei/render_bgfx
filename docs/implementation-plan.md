@@ -1,7 +1,7 @@
 # hdrp-bgfx 总体实现方案（收敛版）
 
 > 工程根：`E:\Learn\hdrp-bgfx`。
-> 范围：Windows + D3D11/Vulkan、Forward + Deferred、SSR/SSAO/SSGI/体积雾、glTF、暂无编辑器。
+> 范围：Windows + D3D11/Vulkan、Forward + Deferred、SSR/SSAO/SSGI/体积雾、glTF、VFX V1 运行时与 V2 ImGui 编辑器骨架。
 > 实现状态：M0 见 `docs/m0-checklist.md`，M1 见 `docs/m1-checklist.md`，M2/M3 见对应清单，M4.0–M4.3 见 `docs/m4-checklist.md`；M5.0/M5.1/M5.2/M5.3/M5.4 已完成，见 `docs/m5-checklist.md`；M6.0/M6.1/M6.2/M6.3/M6.4 已完成，见 `docs/m6-checklist.md`；M7.0–M7.8 完成并验收（buffer path 默认开启），见 `docs/m7-checklist.md`；M8.0–M8.7 已完成，见 `docs/m8-checklist.md`。
 
 ---
@@ -19,14 +19,15 @@
 - `docs/m7-checklist.md`：M7.0–M7.8 完成：buffer path 默认开启；indirect/GPU shadow/async 保持 opt-in。alpha/cache/cascade 组合双后端 0 diff；1080p 300 帧 full post 双后端 >60 fps。
 - `docs/m8-checklist.md`：M8.0–M8.7 已完成：32/64/128 设置、CPU reference、动态 stride、GPU producers/consumers、cluster 32/cell 与 overflow 诊断、texture/CPU capacity clamp 与 consumer 审计、CLI/UI 诊断与 GPU cluster overflow 数值 readback、1080p 性能与默认 64 决策、最终双后端验收；M9 规划与实现记录见 `docs/m9-checklist.md`（M9.0–M9.6 核心完成；M9.7 部分完成）。
 - 后续每个大模块新建独立清单：`docs/m9-checklist.md`……，不把新模块写回旧清单。
-- `docs/vfx/README.md`：VFX 运行时 V1 规划索引（独立 V 编号，不与 M13 冲突）。
+- `docs/vfx/README.md`：VFX 运行时/编辑器规划索引（独立 V 编号，不与 M13 冲突）。
 - `docs/vfx/architecture.md`：独立库/适配层边界、编译与运行时流水线、渲染集成、binding/stage 表、测试与风险。
 - `docs/vfx/asset-format.md`：`.vfx.json` schema 与 `.vfxb` 二进制格式（dxbc+spirv、确定性规则）。
 - `docs/vfx/backend-api.md`：公开 C++ API、Device/CommandSink/ShadingProvider、hdrp-bgfx 映射。
 - `docs/vfx/source-alignment.md`：Unity VFX Graph / HDRP / hdrp-bgfx 的 `file:line` 对齐与偏差登记。
 - `docs/vfx/v0-checklist.md`：V0 技术 spike 任务/参考/验收。
 - `docs/vfx/v1-checklist.md`：V1.0b–V1.4 逐任务清单/参考/验收。
-- `docs/vfx/v2-editor-outline.md`：编辑器后续边界（占位，不实现）。
+- `docs/vfx/v2-editor-outline.md`：编辑器边界、ImGui/布局 sidecar 决策。
+- `docs/vfx/v2-checklist.md`：V2.0–V2.5 逐任务清单、实现位置、参考与验收。
 
 ---
 
@@ -188,10 +189,11 @@
 
 ---
 
-## VFX 运行时（V1）规划
+## VFX 运行时（V1）与编辑器（V2）规划
 
-> 状态：**V0 技术 spike 已通过（D3D11 + Vulkan，2026-11-20）；V1.0b.1（JSON/schema）、V1.0b.2（attribute layout/codegen）、V1.0b.3（表达式 DAG/类型/折叠）、V1.0b.4（Backend 接口/Mock/hdrp-bgfx 适配）、V1.0b.5（compiler/`vfxbake`/最小 kernel + unlit quad）、V1.0b.6（`.vfxb` reader/Runtime/Effect/unlit 执行）、V1.0b.7（scene/CLI/RenderGraph pass，D3D11+Vulkan 出图）与 V1.0b.8（CPU reference、GPU readback、D3D11/Vulkan golden、文档回填）已完成；V1.1.1（常量/单次/周期 Burst、dt clamp、spawner CPU reference）与 V1.1.2（Gravity/Drag/Force/Attractor/Turbulence、CPU/GPU curl reference、双后端 golden）已完成；下一步 V1.1.3**。独立 V 编号，避免占用 M13 及后续 HDRP 边界任务。
+> 状态：**V0 技术 spike 已通过（D3D11 + Vulkan，2026-11-20）；V1.0b.1（JSON/schema）、V1.0b.2（attribute layout/codegen）、V1.0b.3（表达式 DAG/类型/折叠）、V1.0b.4（Backend 接口/Mock/hdrp-bgfx 适配）、V1.0b.5（compiler/`vfxbake`/最小 kernel + unlit quad）、V1.0b.6（`.vfxb` reader/Runtime/Effect/unlit 执行）、V1.0b.7（scene/CLI/RenderGraph pass，D3D11+Vulkan 出图）与 V1.0b.8（CPU reference、GPU readback、D3D11/Vulkan golden、文档回填）已完成；V1.1.1（常量/单次/周期 Burst、dt clamp、spawner CPU reference）、V1.1.2（Gravity/Drag/Force/Attractor/Turbulence、CPU/GPU curl reference、双后端 golden）、V1.1.3（平面/球碰撞、kill/bounce/stick、CPU/GPU reference）与 V1.1.4（Curve/Gradient LUT、over-life、sample 表达式、双后端 reference）及 V1.1.5（bursts/forces/collision/curves 双后端 feature golden、固定 seed/dt reference、1080p 性能记录）已完成；V1.2.1（binary v2、renderKVP/indirection、alive KVP、GPU readback）、V1.2.2（binary v3、sortScratch、distance/custom key、bitonic+merge、sorted 1024/8192/262144、sort golden）、V1.2.3（binary v4、全局 event buffer、GPU event append/prefix/reset、死亡/trigger 子发射器、event reference D3D11/Vulkan）与 V1.2.4（binary v5、CPU sendEvent/pending/staging、eventCpuUpload、默认属性/类型校验、CPU event reference）与 V1.2.5（events/sort 双后端 golden、固定 seed/dt/frame 确定性、1080p/大规模 sort 性能记录、文档回填）与 V1.3.1（纯函数/block 子图、输入/output 重映射、嵌套、循环/深度校验、CPU reference/生成 shader 等价）及 V1.3.2（受限自定义 HLSL 语句、reads/writes 声明与安全校验、VFX_ATTR/VFX_SET_ATTR/VFX_PROP 宏、双后端 shaderc 门禁）与 V1.3.3（`ParseError` 源文件/JSON 路径/行列、`vfxbake --check` CTest、`Runtime::reloadEffect` 销毁重建与资产回收、`vfx_compiler` alias）及 V1.3.4（子图/自定义 HLSL checked-in fixture、双后端编译、D3D11/Vulkan golden、21 个 asset-check）与 V1.4.1（lit shading pack、共享 `bindForwardLighting`、metallic/roughness、forward/deferred lit golden）及 V1.4.2（softDistance、scene depth stage 4、smoothstep fade、read-only depth、soft on/off 双后端 golden）及 V1.4.3（deferred VFX 输出顺序、lit VFX cluster light list、order/transparent 双后端 golden、VFX off 0-diff、D8 成本评估）及 V1.4.4（FrameDiagnostics/render performance VFX 指标、10k/100k/1M 双后端基准、resize/create-destroy/shutdown 泄漏测试、capacity/shader/binding 失败降级）及 V1.4.5（V1 发布验收：28 个资产、双后端 feature golden 全矩阵、VFX off/empty effect 0 diff、CPU 1024×10 reference、资源/validation 清零、CTest 111/111）已完成，**V1 完成**。独立 V 编号，避免占用 M13 及后续 HDRP 边界任务。
 > 文档入口：`docs/vfx/README.md`。
+> V2 状态：V2.0 文档模型/布局 sidecar、V2.1 ImGui 节点视图/Inspector、V2.2 结构 authoring/undo/文本输入/Curve-Gradient 主体已完成；`--vfx-editor=<json> --scene=<gltf>` 打开，Save 写 `.vfx.json` + `.vfx.editor.json`，D3D11/Vulkan editor smoke 通过，全量 CTest 113/113。V2.2b 与 V2.3–V2.5 见 `docs/vfx/v2-checklist.md`。
 
 ### 决策
 
@@ -227,7 +229,7 @@ Mesh/Line/Ribbon/Point/Decal/SDF；Unity `.vfx` 导入；编辑器 UI；effect G
 - 64 threads/group；capacity 对齐 64：`Editor/NewCompiler/VfxDispatch.cs:11-21`。
 - 属性布局/切片：`Editor/GraphCommon/Compiler/AttributeSetLayout.cs:18-103`、`ParticleSystemDataDescriptionWriter.cs:61-82`。
 - 表达式：JSON 内联表达式 → `vfx::compileExpression` 类型/折叠/DAG 校验 → `VFX_*` 宏 HLSL；参考 `VFXExpressionGraph.cs:59-113`、`VFXExpressionMath.cs:9-604`；V1.0b.3 已接入 parser。
-- 编译器：`vfx/include/vfx/compiler.h` → `vfx/src/compiler/codegen.cpp` 生成 spawner/deadListInit/init/update/outputUpdate/fillIndirect/VS/FS；`vfx/src/compiler/compiler.cpp` 调 shaderc；`binary.cpp` 写 `.vfxb`；`vfxbake` 支持 `--check`。当前最小 kernel 为 unlit quad，lit/sort/events/subgraph/custom HLSL 后续里程碑。
+- 编译器：`vfx/include/vfx/compiler.h` → `vfx/src/compiler/codegen.cpp` 生成 spawner/deadListInit/init/update/outputUpdate/fillIndirect/VS/FS；`vfx/src/compiler/compiler.cpp` 调 shaderc；`binary.cpp` 写 `.vfxb`；`vfxbake` 支持 `--check`。当前最小 kernel 为 unlit quad；sort/GPU event/CPU event、V1.3.1 subgraph flatten、V1.3.2 受限 custom HLSL、V1.3.3 reload/diagnostics、V1.3.4 双后端 golden/asset-check、V1.4.1 lit shading/共享 lighting binding、V1.4.2 soft particles/read-only depth 与 V1.4.3 帧顺序/lit cluster 已接入。
 - quad：Unity 4 顶点 + 6 index（`VFXConfigPlanarPrimitive.template.hlsl:13-58`）；本项目 V1 非索引 **6 顶点/粒子**（V0 确认 4 顶点不能组成两个三角形），`numVertices=6*alive`；indirect draw 必须绑定非空 vertex stream（V0 dummy VB）。
 - indirect 32B/条：`src/gfx/buffer.cpp:132-138`；`setStorageBuffer` offset 256B 对齐：`src/gfx/encoder.cpp:241-274`。
 - 16 samplers / 16 compute bindings：`build/vs2022/_deps/bgfx-src/src/config.h:498-500`、`src/bgfx_p.h:211`；VFX lit 关闭 point/area sampler 后，texture 5/6/7/9/10/11/14/15 + buffer 12/13 可用。

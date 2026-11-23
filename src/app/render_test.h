@@ -27,6 +27,6 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                    const render::SsgiSettings& ssgiSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
-                   const std::string& skyPath, float skyIntensity, float skyRotation);
+                   const std::string& skyPath, float skyIntensity, float skyRotation, bool resizeTest);
 
 } // namespace hbg

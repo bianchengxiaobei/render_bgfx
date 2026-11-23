@@ -68,7 +68,9 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
     for (uint32_t objectIndex = 0; objectIndex < scene.objects.size(); ++objectIndex) {
         const RenderObject& object = scene.objects[objectIndex];
         if (object.meshIndex >= scene.meshes.size() ||
-            (desc.requireLightmap && !object.hasLightmap())) {
+            (desc.requireLightmap && !object.hasLightmap()) ||
+            (desc.shadowCasterFilter == ShadowCasterFilter::StaticOnly && !object.staticShadowCaster) ||
+            (desc.shadowCasterFilter == ShadowCasterFilter::DynamicOnly && object.staticShadowCaster)) {
             ++m_filteredCount;
             continue;
         }
@@ -93,8 +95,11 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
                 continue;
             }
 
+            const bool dynamicBounds = object.skinIndex >= 0 || !mesh.morphTargets.empty();
             const Bounds worldBounds =
-                subMesh.bounds.valid() ? transformBounds(object.world, subMesh.bounds) : object.worldBounds;
+                dynamicBounds ? object.worldBounds
+                              : (subMesh.bounds.valid() ? transformBounds(object.world, subMesh.bounds)
+                                                        : object.worldBounds);
             if (desc.frustumCull && !intersectsFrustum(planes, worldBounds)) {
                 ++m_culledCount;
                 continue;
@@ -113,6 +118,7 @@ void DrawList::build(const RenderScene& scene, const ViewState& viewState, const
             item.world = object.world;
             item.prevWorld = object.prevWorld;
             item.worldBounds = worldBounds;
+            item.staticShadowCaster = object.staticShadowCaster;
             item.distance = itemDistance(cameraPosition, object.world, worldBounds);
             item.queueType = queueType;
             item.passMask = passMask;

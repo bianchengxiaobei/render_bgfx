@@ -2,6 +2,7 @@
 
 #include "app/backend.h"
 #include "app/debug_ui.h"
+#include "app/vfx_editor_ui.h"
 #include "app/window.h"
 #include "gfx/device.h"
 #include "render/atmosphere/volumetric_fog_settings.h"
@@ -12,6 +13,7 @@
 #include "render/scene/render_scene.h"
 
 #include <memory>
+#include <optional>
 
 namespace hbg {
 
@@ -40,7 +42,9 @@ class Application {
     render::VolumetricFogSettings m_volumetricFogSettings;
     render::ShadowSettings m_shadowSettings;
     DebugUI m_debugUi;
+    VfxEditorUI m_vfxEditor;
     float m_time = 0.0f;
+    std::optional<float> m_animationTime;
     double m_lastFrameTime = 0.0;
 };
 

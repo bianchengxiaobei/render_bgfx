@@ -5,19 +5,75 @@
 #include "app/render_test.h"
 #include "render/vfx/vfx_reference.h"
 #include "render/vfx/vfx_spike.h"
+#include "asset/animation.h"
 #include "asset/scene_loader.h"
 #include "core/log.h"
+#include "vfx/editor.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
+
+#ifndef HBG_VFX_SHADERC_DEFAULT
+#define HBG_VFX_SHADERC_DEFAULT ""
+#endif
+#ifndef HBG_VFX_BGFX_SOURCE_DEFAULT
+#define HBG_VFX_BGFX_SOURCE_DEFAULT ""
+#endif
+#ifndef HBG_VFX_SHADER_PACK_DEFAULT
+#define HBG_VFX_SHADER_PACK_DEFAULT ""
+#endif
 
 namespace hbg {
 namespace {
 
 double nowSeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::string environmentValue(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) == 0 && value != nullptr) {
+        std::string result(value);
+        std::free(value);
+        return result;
+    }
+    return {};
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? value : std::string();
+#endif
+}
+
+std::filesystem::path compilePath(const std::string& cli, const char* environment, const char* fallback) {
+    if (!cli.empty()) {
+        return cli;
+    }
+    std::string value = environmentValue(environment);
+    if (!value.empty()) {
+        return value;
+    }
+    return fallback;
+}
+
+VfxEditorCompileOptions editorCompileOptions(const AppOptions& options) {
+    VfxEditorCompileOptions compile;
+    compile.shaderc =
+        compilePath(options.vfxShadercPath, "HBG_SHADERC", HBG_VFX_SHADERC_DEFAULT);
+    compile.bgfxSource =
+        compilePath(options.vfxBgfxSourcePath, "HBG_BGFX_SOURCE_DIR", HBG_VFX_BGFX_SOURCE_DEFAULT);
+    compile.shaderPack =
+        compilePath(options.vfxShaderPackPath, "HBG_VFX_SHADER_PACK", HBG_VFX_SHADER_PACK_DEFAULT);
+    return compile;
+}
+
+std::filesystem::path sceneVfxPath(const std::filesystem::path& editorAssetPath) {
+    return vfx::editor::defaultBinaryPath(editorAssetPath);
 }
 
 } // namespace
@@ -28,6 +84,7 @@ int Application::run(const AppOptions& options) {
     if (!loadSettings(options)) {
         return 1;
     }
+    m_animationTime = options.animationTime;
 
     if (!init(options)) {
         shutdown();
@@ -54,6 +111,26 @@ int Application::run(const AppOptions& options) {
         return ok ? 0 : 1;
     }
 
+    if (options.vfxCpuEventReference) {
+        const std::string assetPath = options.vfxReferencePath.empty()
+                                          ? std::string("vfx/tests/assets/vfx_cpu_event.vfxb")
+                                          : options.vfxReferencePath;
+        const bool ok =
+            runVfxCpuEventReference(m_device.resources(), assetPath, options.vfxReferenceGraphPath);
+        shutdown();
+        return ok ? 0 : 1;
+    }
+
+    if (options.vfxEventReference) {
+        const std::string assetPath = options.vfxReferencePath.empty()
+                                          ? std::string("vfx/tests/assets/vfx_event.vfxb")
+                                          : options.vfxReferencePath;
+        const bool ok =
+            runVfxEventReference(m_device.resources(), assetPath, options.vfxReferenceGraphPath);
+        shutdown();
+        return ok ? 0 : 1;
+    }
+
     if (options.vfxReference) {
         const std::string assetPath = options.vfxReferencePath.empty()
                                           ? std::string("vfx/tests/assets/reference_1024.vfxb")
@@ -71,11 +148,27 @@ int Application::run(const AppOptions& options) {
             !options.disableLightCluster, options.cameraOrbit,
             !options.disableShadows, options.clusterStatsReadback, m_pipelineSettings, m_frameSettings,
             m_shadowSettings, m_ssaoSettings, m_ssrSettings, m_ssgiSettings, m_postProcessProfile,
-            m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation);
+            m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation,
+            options.resizeTest);
         shutdown();
         return ok ? 0 : 1;
     }
 
+    if (options.vfxEditorCompile && options.vfxEditorPath.empty()) {
+        HBG_LOGE("--vfx-editor-compile requires --vfx-editor=<path>");
+        shutdown();
+        return 1;
+    }
+    if (options.vfxEditorPreview && options.vfxEditorPath.empty()) {
+        HBG_LOGE("--vfx-editor-preview requires --vfx-editor=<path>");
+        shutdown();
+        return 1;
+    }
+    if (!options.vfxEditorPath.empty() && options.scenePath.empty()) {
+        HBG_LOGE("--vfx-editor requires --scene=<path> for the preview window");
+        shutdown();
+        return 1;
+    }
     if (!options.scenePath.empty() && !loadScene(options.scenePath)) {
         shutdown();
         return 1;
@@ -91,7 +184,8 @@ int Application::run(const AppOptions& options) {
         m_forwardRenderer.setVolumetricFogSettings(m_volumetricFogSettings);
     }
 
-    if (m_forwardRenderer.valid() && options.debugUi) {
+    const bool needsUi = options.debugUi || !options.vfxEditorPath.empty();
+    if (m_forwardRenderer.valid() && needsUi) {
         if (!m_debugUi.init(m_device.resources(), m_forwardRenderer.shaderLibrary())) {
             HBG_LOGW("debug ui initialization failed; continuing without the panel");
         }
@@ -110,6 +204,113 @@ int Application::run(const AppOptions& options) {
         m_forwardRenderer.setDebugLightClusterSlice(options.debugLightClusterSlice);
         m_forwardRenderer.setWireframe(options.debugWireframe);
         m_forwardRenderer.setShadowsEnabled(!options.disableShadows);
+    }
+
+    if (!options.vfxEditorPath.empty()) {
+        if (!m_debugUi.valid()) {
+            HBG_LOGE("VFX editor requires an initialized debug UI");
+            shutdown();
+            return 1;
+        }
+        const VfxEditorCompileOptions compile = editorCompileOptions(options);
+        m_vfxEditor.setCompileOptions(compile);
+        m_vfxEditor.setReloadCallback(
+            [this](const std::filesystem::path& binaryPath, std::string& error) {
+                return m_forwardRenderer.reloadVfxAsset(binaryPath, error);
+            });
+        m_vfxEditor.setPreviewCallback(
+            [this](const std::filesystem::path& sourceAssetPath,
+                   const std::filesystem::path& binaryPath, std::string& error) {
+                return m_forwardRenderer.previewVfxAsset(sceneVfxPath(sourceAssetPath), binaryPath,
+                                                         error);
+            });
+        m_vfxEditor.setPlaybackCallback(
+            [this](const std::filesystem::path& assetPath, VfxEditorPlaybackAction action,
+                   float value, std::string& error) {
+                const std::filesystem::path sceneAssetPath = sceneVfxPath(assetPath);
+                switch (action) {
+                case VfxEditorPlaybackAction::TogglePlayPause:
+                    return m_forwardRenderer.toggleVfxPaused(sceneAssetPath, error);
+                case VfxEditorPlaybackAction::Step:
+                    return m_forwardRenderer.stepVfx(sceneAssetPath, error);
+                case VfxEditorPlaybackAction::Restart:
+                    return m_forwardRenderer.restartVfx(sceneAssetPath, error);
+                case VfxEditorPlaybackAction::SetPlayRate:
+                    return m_forwardRenderer.setVfxPlayRate(sceneAssetPath, value, error);
+                }
+                error = "unknown VFX playback action";
+                return false;
+            });
+        m_vfxEditor.setPlaybackStatusProvider([this](const std::filesystem::path& assetPath) {
+            const render::ForwardRenderer::VfxPlaybackStatus playback =
+                m_forwardRenderer.vfxPlaybackStatus(sceneVfxPath(assetPath));
+            VfxEditorPlaybackStatus status;
+            status.available = playback.available;
+            status.paused = playback.paused;
+            status.playRate = playback.playRate;
+            status.randomSeed = playback.randomSeed;
+            status.instances = playback.instances;
+            status.preview = playback.preview;
+            status.boundsValid = playback.bounds.valid();
+            if (status.boundsValid) {
+                status.boundsMin[0] = playback.bounds.min.x;
+                status.boundsMin[1] = playback.bounds.min.y;
+                status.boundsMin[2] = playback.bounds.min.z;
+                status.boundsMax[0] = playback.bounds.max.x;
+                status.boundsMax[1] = playback.bounds.max.y;
+                status.boundsMax[2] = playback.bounds.max.z;
+            }
+            return status;
+        });
+        m_vfxEditor.setDiagnosticsProvider([this] {
+            const render::ForwardRenderer::FrameDiagnostics diagnostics =
+                m_forwardRenderer.frameDiagnostics();
+            VfxEditorRuntimeDiagnostics result;
+            result.active = diagnostics.vfxActive;
+            result.effects = diagnostics.vfxEffects;
+            result.systems = diagnostics.vfxSystems;
+            result.particles = diagnostics.vfxParticles;
+            result.draws = diagnostics.vfxDraws;
+            result.dispatches = diagnostics.vfxDispatches;
+            result.sortPasses = diagnostics.vfxSortPasses;
+            result.events = diagnostics.vfxEvents;
+            result.updateMs = diagnostics.vfxUpdateMs;
+            result.simulationMs = diagnostics.vfxSimulationMs;
+            result.outputMs = diagnostics.vfxOutputMs;
+            result.totalMs = diagnostics.vfxMs;
+            return result;
+        });
+        std::string editorError;
+        if (!m_vfxEditor.open(options.vfxEditorPath, editorError)) {
+            HBG_LOGE("VFX editor load failed: {}", editorError);
+            shutdown();
+            return 1;
+        }
+        m_debugUi.setPanelVisible(false);
+        HBG_LOGI("VFX editor: '{}' (layout '{}', shaderc '{}')", options.vfxEditorPath,
+                 m_vfxEditor.valid() ? "loaded" : "unavailable", compile.shaderc.string());
+        if (options.vfxEditorCompile) {
+            std::string compileError;
+            const bool compiled = m_vfxEditor.compile(compileError);
+            if (!compiled) {
+                HBG_LOGE("VFX editor compile failed: {}", compileError);
+            } else {
+                HBG_LOGI("VFX editor headless compile succeeded");
+            }
+            shutdown();
+            return compiled ? 0 : 1;
+        }
+        if (options.vfxEditorPreview) {
+            std::string previewError;
+            const bool previewed = m_vfxEditor.preview(previewError);
+            if (!previewed) {
+                HBG_LOGE("VFX editor preview failed: {}", previewError);
+            } else {
+                HBG_LOGI("VFX editor headless preview succeeded");
+            }
+            shutdown();
+            return previewed ? 0 : 1;
+        }
     }
 
     if (m_forwardRenderer.valid()) {
@@ -174,6 +375,9 @@ int Application::run(const AppOptions& options) {
         }
     }
 
+    if (m_vfxEditor.valid() && m_vfxEditor.dirty()) {
+        HBG_LOGW("VFX editor closed with unsaved graph or layout changes");
+    }
     shutdown();
     return 0;
 }
@@ -338,6 +542,8 @@ bool Application::loadSettings(const AppOptions& options) {
     }
     if (options.vfx) {
         m_pipelineSettings.supportVFX = *options.vfx;
+    } else if (!options.vfxEditorPath.empty()) {
+        m_pipelineSettings.supportVFX = true;
     }
     if (options.gpuLightList) {
         m_pipelineSettings.supportGpuLightList = *options.gpuLightList;
@@ -447,6 +653,9 @@ void Application::frame(const WindowInput& input, double deltaSeconds, bool fina
             diagnostics.clusterStatsOverflowClusters, diagnostics.clusterStatsOverflowLights,
             diagnostics.clusterStatsMaxOverflow, diagnostics.clusterStatsMaxLights);
         m_debugUi.beginFrame(input, width, height, deltaSeconds);
+        if (m_vfxEditor.valid()) {
+            m_vfxEditor.draw();
+        }
         if (m_debugUi.consumeClusterStatsReadbackRequest() && m_forwardRenderer.valid()) {
             m_forwardRenderer.requestClusterStatsReadback();
         }
@@ -464,7 +673,9 @@ void Application::frame(const WindowInput& input, double deltaSeconds, bool fina
     }
 
     if (m_scene != nullptr && m_forwardRenderer.valid()) {
-        m_forwardRenderer.render(*m_scene, width, height, m_time);
+        const float animationTime = m_animationTime.value_or(m_time);
+        asset::applyAnimation(*m_scene, animationTime);
+        m_forwardRenderer.render(*m_scene, width, height, animationTime);
         if (!m_debugUi.valid() || !m_debugUi.settings().freezeTime) {
             m_time += static_cast<float>(deltaSeconds);
         }

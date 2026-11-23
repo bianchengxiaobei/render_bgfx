@@ -15,6 +15,7 @@
 #include "render/lightmap/lightmap.h"
 #include "render/material/material_system.h"
 #include "render/passes/deferred_variant.h"
+#include "render/passes/forward_lighting.h"
 #include "render/pipeline/frame_settings.h"
 #include "render/pipeline/pipeline_settings.h"
 #include "render/postprocess/post_process_chain.h"
@@ -30,6 +31,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -101,6 +103,7 @@ class ForwardRenderer {
         uint32_t shadowDrawnItems = 0;
         uint32_t shadowCulledItems = 0;
         bool shadowDirectionalCacheActive = false;
+        bool shadowDirectionalMixedCached = false;
         uint32_t shadowCachedDirectionalRequests = 0;
         bool shadowCacheActive = false;
         uint32_t shadowCachedRequests = 0;
@@ -145,6 +148,12 @@ class ForwardRenderer {
         uint32_t vfxParticles = 0;
         uint32_t vfxDraws = 0;
         uint32_t vfxDispatches = 0;
+        uint32_t vfxSortPasses = 0;
+        uint32_t vfxEvents = 0;
+        float vfxUpdateMs = 0.0f;
+        float vfxSimulationMs = 0.0f;
+        float vfxOutputMs = 0.0f;
+        float vfxMs = 0.0f;
     };
 
     struct ClusterStats {
@@ -171,7 +180,7 @@ class ForwardRenderer {
     void resize(uint16_t width, uint16_t height);
     void shutdown(gfx::ResourceManager& resources);
 
-    void render(const RenderScene& scene, uint16_t width, uint16_t height, float time);
+    void render(RenderScene& scene, uint16_t width, uint16_t height, float time);
     bool valid() const { return m_valid; }
     void setDebugLightData(bool enabled) {
         m_debugDisplayMode = enabled ? DebugDisplayMode::LightData : DebugDisplayMode::None;
@@ -218,6 +227,25 @@ class ForwardRenderer {
     const ViewState& viewState() const { return m_viewState; }
     FrameDiagnostics frameDiagnostics() const;
 
+    bool reloadVfxAsset(const std::filesystem::path& binaryPath, std::string& error);
+    bool previewVfxAsset(const std::filesystem::path& sourceAssetPath,
+                         const std::filesystem::path& binaryPath, std::string& error);
+    bool setVfxPlayRate(const std::filesystem::path& assetPath, float rate, std::string& error);
+    bool toggleVfxPaused(const std::filesystem::path& assetPath, std::string& error);
+    bool stepVfx(const std::filesystem::path& assetPath, std::string& error);
+    bool restartVfx(const std::filesystem::path& assetPath, std::string& error);
+
+    struct VfxPlaybackStatus {
+        bool available = false;
+        bool paused = false;
+        float playRate = 1.0f;
+        std::uint32_t randomSeed = 0;
+        std::uint32_t instances = 0;
+        bool preview = false;
+        Bounds bounds{};
+    };
+    VfxPlaybackStatus vfxPlaybackStatus(const std::filesystem::path& assetPath) const;
+
     shader::ShaderLibrary& shaderLibrary() { return m_shaderLibrary; }
     const shader::ShaderLibrary& shaderLibrary() const { return m_shaderLibrary; }
 
@@ -225,7 +253,17 @@ class ForwardRenderer {
     struct VfxInstanceRuntime {
         const VfxInstance* instance = nullptr;
         ::vfx::Effect* effect = nullptr;
+        std::filesystem::path assetPath;
+        float playRate = 1.0f;
+        std::uint32_t randomSeed = 0;
+        bool playing = false;
+        bool paused = false;
+        bool preview = false;
     };
+
+    bool ensureVfxRuntime();
+    bool replaceVfxRuntime(VfxInstanceRuntime& runtime, const std::filesystem::path& binaryPath,
+                           bool preview, std::string& error);
 
     struct FramePassResources {
         RenderGraphTextureHandle color;
@@ -329,6 +367,9 @@ class ForwardRenderer {
     gfx::ProgramHandle lightListProgram(shader::PassId pass, uint64_t materialKey = 0);
     void bindLightList(gfx::Encoder& encoder, bool cluster) const;
     void bindLightListTexture(gfx::Encoder& encoder, bool cluster) const;
+    ForwardLightingContext makeForwardLightingContext(const gfx::generated::ObjectUniforms& objectUniforms,
+                                                      gfx::TextureHandle contactShadow, bool cluster,
+                                                      bool contactShadows, bool useGpuLightList = true) const;
     void updateEnvironmentUniforms();
     void bindProbeTextures(gfx::Encoder& encoder, bool bindCookies = true) const;
     bool ensureCookieAtlasTexture();
@@ -353,11 +394,16 @@ class ForwardRenderer {
     bool ensureSsgiHistory(uint16_t width, uint16_t height);
     void releaseSsgiHistory();
     void addShadowPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
+                       RenderGraphTextureHandle cachedDirectionalShadow,
                        RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                        const RenderScene& scene);
+    void addShadowCopyPass(RenderGraph& graph, RenderGraphTextureHandle directionalShadow,
+                            RenderGraphTextureHandle cachedDirectionalShadow, uint16_t atlasSize);
     void addShadowMomentPasses(RenderGraph& graph, RenderGraphTextureHandle directionalShadow);
     void addAreaEvsmMomentPasses(RenderGraph& graph, RenderGraphTextureHandle areaShadow);
     void bindShadowMomentSat(gfx::Encoder& encoder, gfx::TextureHandle directionalShadow) const;
+    gfx::TextureHandle directionalShadowSamplingTexture(gfx::TextureHandle fallback) const;
+    uint32_t directionalShadowSamplingFlags() const;
     void addGpuLightListPasses(RenderGraph& graph, const FramePassResources& resources);
     RenderGraphTextureHandle addContactShadowPass(RenderGraph& graph, const FramePassResources& resources,
                                                   bool deferred);
@@ -418,6 +464,7 @@ class ForwardRenderer {
     void updateVfx(const RenderScene& scene, float deltaSeconds);
     void addVfxSimulationPass(RenderGraph& graph);
     void addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources);
+    bool prepareVfxClusterLighting();
     ::vfx::FrameContext makeVfxFrameContext(const RenderGraphContext& context,
                                           const FramePassResources& resources) const;
     void addDebugMaterialPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
@@ -436,7 +483,8 @@ class ForwardRenderer {
     bool renderGpuShadowPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                              const RenderScene& scene, const ShadowRequest& request, uint32_t requestIndex);
     void renderShadowPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                          const RenderScene& scene, uint32_t requestIndex);
+                          const RenderScene& scene, uint32_t requestIndex, const DrawList& drawList,
+                          bool clearDepth);
     void renderPrepass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                        const RenderScene& scene, bool depthOnly);
     void renderObjectsMotionVectors(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -509,7 +557,8 @@ class ForwardRenderer {
                                 gfx::TextureHandle lightData,
                                 gfx::TextureHandle lightList, gfx::TextureHandle directionalShadow,
                                 gfx::TextureHandle punctualShadow, gfx::BufferHandle shadowContext,
-                                gfx::TextureHandle environment, gfx::TextureHandle ssao, bool advanced);
+                                gfx::TextureHandle environment, gfx::TextureHandle ssao, bool advanced,
+                                bool advancedIms);
     void renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                            const RenderScene& scene, bool transparent, bool forwardOnly,
                            gfx::TextureHandle contactShadow);
@@ -613,6 +662,8 @@ class ForwardRenderer {
     gfx::UniformHandle m_shadowPunctualSampler;
     gfx::UniformHandle m_shadowPointSampler;
     gfx::UniformHandle m_shadowPointPunctualSampler;
+    gfx::UniformHandle m_shadowCopySampler;
+    gfx::UniformHandle m_shadowCopyParamsUniform;
     gfx::UniformHandle m_shadowMomentSlotUniform;
     gfx::UniformHandle m_shadowMomentParamsUniform;
     gfx::UniformHandle m_shadowMomentDepthSampler;
@@ -654,6 +705,8 @@ class ForwardRenderer {
     DrawList m_bakedGIDrawList;
     DrawList m_transparentDrawList;
     DrawList m_shadowDrawList;
+    DrawList m_shadowStaticDrawList;
+    DrawList m_shadowDynamicDrawList;
     DrawList m_prepassDrawList;
     DrawList m_gbufferDrawList;
     DrawList m_motionVectorDrawList;
@@ -735,6 +788,7 @@ class ForwardRenderer {
     gfx::TextureHandle m_litTileFeatureFlagsTexture;
     gfx::BufferHandle m_litIndirectArgsBuffer;
     bool m_litVariantsWarningLogged = false;
+    bool m_litVariantImsWarningLogged = false;
     uint32_t m_litLightFlags = 0;
     uint32_t m_usedLitVariantMask = 0;
     bool m_volumetricFogActive = false;
@@ -811,7 +865,14 @@ class ForwardRenderer {
     bool m_valid = false;
     bool m_vfxActive = false;
     bool m_vfxInitialized = false;
+    bool m_vfxSceneInitialized = false;
+    bool m_vfxHasLitOutputs = false;
+    bool m_vfxClusterReady = false;
     float m_vfxDeltaSeconds = 0.0f;
+    Vec4 m_vfxLightListParams{};
+    Vec4 m_vfxLightListParams2{};
+    Vec4 m_vfxLightScreenSize{};
+    gfx::generated::ClusterUniforms m_vfxClusterUniforms{};
     std::unique_ptr<hbg::vfxbridge::HbgVfxBackend> m_vfxBackend;
     std::unique_ptr<::vfx::Runtime> m_vfxRuntime;
     std::vector<VfxInstanceRuntime> m_vfxInstanceRuntimes;

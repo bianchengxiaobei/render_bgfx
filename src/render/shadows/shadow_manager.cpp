@@ -389,6 +389,48 @@ bool ShadowManager::createTextures() {
         }
     }
 
+    m_directionalMomentBlurActive = false;
+    if (m_settings.directionalFilter == ShadowFilter::Vsm) {
+        const uint32_t momentSize = std::max<uint32_t>(m_directionalAtlasSize / 2u, 1u);
+        gfx::TextureDesc momentDesc;
+        momentDesc.width = static_cast<uint16_t>(momentSize);
+        momentDesc.height = static_cast<uint16_t>(momentSize);
+        momentDesc.format = gfx::TextureFormat::RGBA32F;
+        momentDesc.computeWrite = true;
+        momentDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+        momentDesc.name = "shadow.directionalVsmMoments";
+        m_directionalMomentBlurTexture = m_resources->createTexture(momentDesc);
+        m_directionalMomentBlurActive = m_directionalMomentBlurTexture.valid();
+        if (m_directionalMomentBlurActive) {
+            HBG_LOGI("shadow directional VSM moments: {}x{} RGBA32F half-res", momentSize,
+                     momentSize);
+        } else {
+            m_settings.directionalFilter = ShadowFilter::Pcf7x7;
+            HBG_LOGW("shadow manager: directional VSM moment atlas unavailable; falling back to PCF7x7");
+        }
+    }
+
+    m_directionalMsmBlurActive = false;
+    if (m_settings.directionalFilter == ShadowFilter::Msm) {
+        const uint32_t momentSize = std::max<uint32_t>(m_directionalAtlasSize / 2u, 1u);
+        gfx::TextureDesc momentDesc;
+        momentDesc.width = static_cast<uint16_t>(momentSize);
+        momentDesc.height = static_cast<uint16_t>(momentSize);
+        momentDesc.format = gfx::TextureFormat::RGBA32F;
+        momentDesc.computeWrite = true;
+        momentDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+        momentDesc.name = "shadow.directionalMsmMoments";
+        m_directionalMsmMomentTexture = m_resources->createTexture(momentDesc);
+        m_directionalMsmBlurActive = m_directionalMsmMomentTexture.valid();
+        if (m_directionalMsmBlurActive) {
+            HBG_LOGI("shadow directional MSM moments: {}x{} RGBA32F half-res", momentSize,
+                     momentSize);
+        } else {
+            m_settings.directionalFilter = ShadowFilter::Pcf7x7;
+            HBG_LOGW("shadow manager: directional MSM moment atlas unavailable; falling back to PCF7x7");
+        }
+    }
+
     gfx::TextureDesc punctualDesc = directionalDesc;
     punctualDesc.name = "shadow.punctualAtlas";
     m_punctualTexture = m_resources->createTexture(punctualDesc);
@@ -521,7 +563,17 @@ void ShadowManager::destroyTextures() {
         m_resources->destroyTexture(m_directionalMomentSatTexture);
         m_directionalMomentSatTexture = {};
     }
+    if (m_directionalMomentBlurTexture.valid()) {
+        m_resources->destroyTexture(m_directionalMomentBlurTexture);
+        m_directionalMomentBlurTexture = {};
+    }
+    if (m_directionalMsmMomentTexture.valid()) {
+        m_resources->destroyTexture(m_directionalMsmMomentTexture);
+        m_directionalMsmMomentTexture = {};
+    }
     m_imsActive = false;
+    m_directionalMomentBlurActive = false;
+    m_directionalMsmBlurActive = false;
     if (m_punctualTexture.valid()) {
         m_resources->destroyTexture(m_punctualTexture);
         m_punctualTexture = {};
@@ -577,6 +629,7 @@ void ShadowManager::invalidate() {
     m_directionalCacheValid = false;
     m_directionalCacheDirty = false;
     m_directionalCacheMixed = false;
+    m_directionalMixedCached = false;
     m_cacheEligible = false;
     m_cacheValid = false;
     m_areaCacheEligible = false;
@@ -678,36 +731,60 @@ bool ShadowManager::update(const RenderScene& scene, const ViewConstants& view, 
     m_areaCacheMixed = areaCacheMixed;
     m_areaUsesDynamicAtlas = hasDynamicArea;
 
-    const bool directionalCacheEligible =
-        m_settings.cachedDirectionalShadows && !m_cacheSuppressed && m_directionalRequestCount > 0;
+    const bool mixedCacheRequested = m_settings.cachedDirectionalMixedShadows;
+    bool anyStaticCaster = false;
+    bool anyDynamicCaster = false;
+    for (const ShadowRequest& request : m_requests) {
+        if (request.atlas != ShadowAtlasType::Directional) {
+            continue;
+        }
+        for (const RenderObject& object : scene.objects) {
+            if (!intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
+                continue;
+            }
+            if (mixedCacheRequested && !object.staticShadowCaster) {
+                anyDynamicCaster = true;
+            } else {
+                anyStaticCaster = true;
+            }
+        }
+    }
+    const bool directionalCacheEligible = m_settings.cachedDirectionalShadows && !m_cacheSuppressed &&
+                                          m_directionalRequestCount > 0 &&
+                                          (!mixedCacheRequested || anyStaticCaster);
     m_directionalCacheEligible = directionalCacheEligible;
     m_directionalCacheDirty = false;
     m_directionalCacheMixed = false;
+    m_directionalMixedCached = directionalCacheEligible && mixedCacheRequested && anyDynamicCaster;
     if (directionalCacheEligible) {
+        bool anyCacheMiss = false;
         bool anyCached = false;
-        bool anyDynamic = false;
         for (ShadowRequest& request : m_requests) {
             if (request.atlas != ShadowAtlasType::Directional) {
                 continue;
             }
-            const uint64_t hash = buildDirectionalRequestHash(scene, request);
+            bool hasStaticCaster = false;
+            bool hasDynamicCaster = false;
+            const uint64_t hash = buildDirectionalRequestHash(scene, request, mixedCacheRequested,
+                                                               hasStaticCaster, hasDynamicCaster);
+            request.hasDynamicCaster = hasDynamicCaster;
             const std::size_t cacheIndex = request.requestIndex;
             if (cacheIndex < m_directionalRequestCacheValid.size() &&
                 m_directionalRequestCacheValid[cacheIndex] && m_directionalRequestHashes[cacheIndex] == hash) {
                 request.isCached = true;
-                ++m_cachedDirectionalRequestCount;
                 anyCached = true;
+                ++m_cachedDirectionalRequestCount;
             } else {
                 if (cacheIndex < m_directionalRequestCacheValid.size()) {
                     m_directionalRequestHashes[cacheIndex] = hash;
                     m_directionalRequestCacheValid[cacheIndex] = true;
                 }
-                anyDynamic = true;
+                anyCacheMiss = true;
             }
         }
         m_directionalCacheValid = true;
-        m_directionalCacheDirty = anyDynamic;
-        m_directionalCacheMixed = anyCached && anyDynamic;
+        m_directionalCacheDirty = anyCacheMiss;
+        m_directionalCacheMixed = anyCached && anyCacheMiss;
     } else {
         m_directionalRequestCacheValid.fill(false);
         m_directionalRequestHashes.fill(0);
@@ -1278,7 +1355,9 @@ bool ShadowManager::packPunctualSorted() {
 }
 
 uint64_t ShadowManager::buildDirectionalRequestHash(const RenderScene& scene,
-                                                      const ShadowRequest& request) const {
+                                                      const ShadowRequest& request,
+                                                      bool mixedCacheEnabled, bool& hasStaticCaster,
+                                                      bool& hasDynamicCaster) const {
     uint64_t hash = 1469598103934665603ull;
     hashUint(hash, request.requestIndex);
     hashUint(hash, request.lightIndex);
@@ -1312,20 +1391,32 @@ uint64_t ShadowManager::buildDirectionalRequestHash(const RenderScene& scene,
     hashFloat(hash, request.minFilterSize);
     hashUint(hash, static_cast<uint32_t>(request.filter));
 
+    hasStaticCaster = false;
+    hasDynamicCaster = false;
     uint32_t intersectingObjects = 0;
     for (const RenderObject& object : scene.objects) {
-        if (intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
-            ++intersectingObjects;
+        if (!intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
+            continue;
         }
+        if (mixedCacheEnabled && !object.staticShadowCaster) {
+            hasDynamicCaster = true;
+            continue;
+        }
+        hasStaticCaster = true;
+        ++intersectingObjects;
     }
     hashUint(hash, intersectingObjects);
     for (const RenderObject& object : scene.objects) {
         if (!intersectsFrustum(request.frustumPlanes, object.worldBounds)) {
             continue;
         }
+        if (mixedCacheEnabled && !object.staticShadowCaster) {
+            continue;
+        }
         hashMat4(hash, object.world);
         hashUint(hash, object.meshIndex);
         hashUint(hash, object.lightLayerMask);
+        hashUint(hash, object.staticShadowCaster ? 1u : 0u);
     }
 
     hashUint(hash, static_cast<uint32_t>(scene.meshes.size()));
@@ -1565,7 +1656,7 @@ void ShadowManager::beginCachedPass(gfx::Encoder& encoder, bgfx::ViewId view,
 }
 
 void ShadowManager::beginPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                              const ShadowRequest& request) const {
+                              const ShadowRequest& request, bool clearDepth) const {
     if (!request.enabled || !frameBuffer.valid()) {
         return;
     }
@@ -1573,7 +1664,7 @@ void ShadowManager::beginPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::Fra
     encoder.setViewFrameBuffer(view, frameBuffer);
     encoder.setViewTransform(view, request.view.data(), request.projection.data());
     encoder.setViewDepthBias(view, 1, request.slopeBias, 0.0f);
-    encoder.setViewClear(view, BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
+    encoder.setViewClear(view, clearDepth ? BGFX_CLEAR_DEPTH : BGFX_CLEAR_NONE, 0x000000ff, 1.0f, 0);
     encoder.touch(view);
 }
 

@@ -565,3 +565,57 @@ TEST_CASE("directional cache keeps unaffected cascades") {
           kDirectionalCascadeCount - partialCount);
     CHECK(manager.directionalCacheMixed());
 }
+
+TEST_CASE("directional cache separates static and dynamic casters") {
+    RenderScene scene = makeScene();
+    scene.lights.push_back(makeDirectional());
+
+    RenderObject staticObject;
+    staticObject.name = "static";
+    staticObject.worldBounds.expand(Vec3(-1.0f, 0.0f, -1.0f));
+    staticObject.worldBounds.expand(Vec3(1.0f, 2.0f, 1.0f));
+    scene.objects.push_back(staticObject);
+
+    RenderObject dynamicObject;
+    dynamicObject.name = "dynamic";
+    dynamicObject.staticShadowCaster = false;
+    dynamicObject.worldBounds.expand(Vec3(-0.5f, 0.0f, -0.5f));
+    dynamicObject.worldBounds.expand(Vec3(0.5f, 2.0f, 0.5f));
+    scene.objects.push_back(dynamicObject);
+
+    const Camera camera = makeCamera();
+    ViewState viewState;
+    viewState.update(camera, 1280, 720, 1.0f, false, false);
+    LightBuilder builder;
+    builder.build(scene, Vec3(0.0f, 4.0f, 8.0f), Vec3(0.0f, -0.4f, -0.9f), camera.farClip);
+
+    ShadowSettings settings;
+    settings.cascadeCount = 1;
+    settings.cachedDirectionalShadows = true;
+    settings.cachedDirectionalMixedShadows = true;
+
+    ShadowManager manager;
+    REQUIRE(manager.setSettings(settings));
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.directionalCacheActive());
+    CHECK(manager.directionalMixedCached());
+    CHECK(manager.directionalCacheDirty());
+    CHECK_FALSE(manager.requests()[0].isCached);
+    CHECK(manager.requests()[0].hasDynamicCaster);
+
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.directionalMixedCached());
+    CHECK_FALSE(manager.directionalCacheDirty());
+    CHECK(manager.requests()[0].isCached);
+    CHECK(manager.requests()[0].hasDynamicCaster);
+
+    scene.objects[1].world.values[12] = 0.25f;
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK_FALSE(manager.directionalCacheDirty());
+    CHECK(manager.requests()[0].isCached);
+
+    scene.objects[0].world.values[12] = 0.5f;
+    REQUIRE(manager.update(scene, viewState.constants(), camera, builder));
+    CHECK(manager.directionalCacheDirty());
+    CHECK_FALSE(manager.requests()[0].isCached);
+}

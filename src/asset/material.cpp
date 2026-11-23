@@ -69,6 +69,11 @@ MaterialKey makeMaterialKey(const Material& material) {
     key.occlusionUv = material.occlusionTexture.uvSet;
     key.emissiveImage = material.emissiveTexture.imageIndex;
     key.emissiveUv = material.emissiveTexture.uvSet;
+    key.baseColorSampler = samplerStateKey(material.baseColorTexture.sampler);
+    key.metallicRoughnessSampler = samplerStateKey(material.metallicRoughnessTexture.sampler);
+    key.normalSampler = samplerStateKey(material.normalTexture.sampler);
+    key.occlusionSampler = samplerStateKey(material.occlusionTexture.sampler);
+    key.emissiveSampler = samplerStateKey(material.emissiveTexture.sampler);
     return key;
 }
 
@@ -109,6 +114,11 @@ std::size_t MaterialKeyHash::operator()(const MaterialKey& key) const {
     hashCombine(seed, key.occlusionUv);
     hashCombine(seed, key.emissiveImage);
     hashCombine(seed, key.emissiveUv);
+    hashCombine(seed, key.baseColorSampler);
+    hashCombine(seed, key.metallicRoughnessSampler);
+    hashCombine(seed, key.normalSampler);
+    hashCombine(seed, key.occlusionSampler);
+    hashCombine(seed, key.emissiveSampler);
     return seed;
 }
 

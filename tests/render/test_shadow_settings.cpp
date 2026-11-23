@@ -230,6 +230,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     source.shadowFadeDistance = 75.0f;
     source.shadowTint = Vec3(0.11f, 0.22f, 0.33f);
     source.cachedDirectionalShadows = true;
+    source.cachedDirectionalMixedShadows = false;
     source.cachedPunctualShadows = true;
     source.cachedAreaShadows = true;
 
@@ -263,6 +264,7 @@ TEST_CASE("shadow settings round trip through JSON") {
     CHECK(parsed.shadowFadeDistance == doctest::Approx(source.shadowFadeDistance));
     CHECK(parsed.shadowTint == source.shadowTint);
     CHECK(parsed.cachedDirectionalShadows);
+    CHECK_FALSE(parsed.cachedDirectionalMixedShadows);
     CHECK(parsed.cachedPunctualShadows);
     CHECK(parsed.cachedAreaShadows);
 }

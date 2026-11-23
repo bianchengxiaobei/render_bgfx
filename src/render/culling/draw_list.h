@@ -26,6 +26,7 @@ struct DrawItem {
     Mat4 prevWorld = Mat4::identity();
     Bounds worldBounds;
     float distance = 0.0f;
+    bool staticShadowCaster = true;
     RenderQueueType queueType = RenderQueueType::Unknown;
     ShaderPassMask passMask = 0;
     bool transparent = false;
@@ -43,10 +44,17 @@ struct DrawBatch {
     uint32_t lightmapAtlas = UINT32_MAX;
 };
 
+enum class ShadowCasterFilter : uint8_t {
+    All,
+    StaticOnly,
+    DynamicOnly,
+};
+
 struct DrawListDesc {
     ShaderPassMask passTags = kShaderPassMaskAll;
     RenderQueueRange queueRange = kRenderQueueRangeAll;
     SortingCriteria sortingCriteria = kOpaqueSortingCriteria;
+    ShadowCasterFilter shadowCasterFilter = ShadowCasterFilter::All;
     bool frustumCull = true;
     bool requireLightmap = false;
 };

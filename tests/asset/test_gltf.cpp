@@ -1,15 +1,31 @@
+#include "asset/animation.h"
 #include "asset/gltf_loader.h"
 #include "asset/material.h"
 #include "asset/mesh.h"
 #include "asset/scene_loader.h"
+#include "asset/texture_loader.h"
 
+#include <bimg/bimg.h>
+#include <bimg/encode.h>
+#include <bx/allocator.h>
+#include <bx/readerwriter.h>
 #include <doctest/doctest.h>
 
+#if defined(HBG_HAS_DRACO) && HBG_HAS_DRACO
+#include <draco/attributes/point_attribute.h>
+#include <draco/compression/encode.h>
+#include <draco/core/encoder_buffer.h>
+#include <draco/mesh/mesh.h>
+#endif
+
+#include <algorithm>
 #include <array>
+#include <cfloat>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,10 +51,91 @@ void writeFile(const std::filesystem::path& path, const void* data, std::size_t 
     file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
 }
 
+std::vector<Mat4> computeSkinMatrices(const render::RenderScene& scene, const render::RenderObject& object) {
+    std::vector<Mat4> matrices;
+    if (object.skinIndex < 0 || static_cast<std::size_t>(object.skinIndex) >= scene.skins.size()) {
+        return matrices;
+    }
+    const Skin& skin = scene.skins[static_cast<std::size_t>(object.skinIndex)];
+    const std::vector<Mat4> worlds = evaluateNodeWorlds(scene);
+    const Mat4 meshWorld = object.nodeIndex >= 0 && static_cast<std::size_t>(object.nodeIndex) < worlds.size()
+                               ? worlds[static_cast<std::size_t>(object.nodeIndex)]
+                               : object.world;
+    const Mat4 inverseMeshWorld = inverse(meshWorld);
+    matrices.assign(skin.joints.size(), Mat4::identity());
+    for (std::size_t index = 0; index < skin.joints.size(); ++index) {
+        const uint32_t joint = skin.joints[index];
+        if (joint >= worlds.size() || index >= skin.inverseBindMatrices.size()) {
+            continue;
+        }
+        matrices[index] = inverseMeshWorld * worlds[joint] * skin.inverseBindMatrices[index];
+    }
+    return matrices;
+}
+
 std::filesystem::path makeFixtureDirectory() {
     const std::filesystem::path directory = std::filesystem::temp_directory_path() / "hbg_gltf_test";
     std::filesystem::create_directories(directory);
     return directory;
+}
+
+ImageAsset makeMaskImage(uint32_t width, uint32_t height, const std::vector<std::array<uint8_t, 4>>& pixels) {
+    ImageAsset image;
+    image.width = width;
+    image.height = height;
+    image.format = gfx::TextureFormat::RGBA8;
+    image.pixels.reserve(pixels.size() * 4u);
+    for (const auto& pixel : pixels) {
+        image.pixels.insert(image.pixels.end(), pixel.begin(), pixel.end());
+    }
+    return image;
+}
+
+std::vector<uint8_t> makeKtx2Bc1() {
+    bx::DefaultAllocator allocator;
+    bx::Error error;
+    bimg::ImageContainer* image =
+        bimg::imageAlloc(&allocator, bimg::TextureFormat::BC1, 8, 8, 0, 1, false, true);
+    if (image == nullptr) {
+        return {};
+    }
+
+    std::array<uint8_t, 8 * 8 * 4> rgba{};
+    for (uint32_t y = 0; y < 8; ++y) {
+        for (uint32_t x = 0; x < 8; ++x) {
+            const std::size_t offset = (static_cast<std::size_t>(y) * 8 + x) * 4;
+            rgba[offset + 0] = static_cast<uint8_t>(x * 32);
+            rgba[offset + 1] = static_cast<uint8_t>(y * 32);
+            rgba[offset + 2] = 128;
+            rgba[offset + 3] = 255;
+        }
+    }
+    bimg::imageEncodeFromRgba8(&allocator, image->m_data, rgba.data(), 8, 8, 1, bimg::TextureFormat::BC1,
+                               bimg::Quality::Fastest, &error);
+
+    bimg::ImageMip mip;
+    std::array<uint8_t, 4 * 4 * 4> mipRgba{};
+    for (std::size_t index = 0; index < mipRgba.size(); index += 4) {
+        mipRgba[index + 0] = 96;
+        mipRgba[index + 1] = 160;
+        mipRgba[index + 2] = 128;
+        mipRgba[index + 3] = 255;
+    }
+    if (bimg::imageGetRawData(*image, 0, 1, image->m_data, image->m_size, mip)) {
+        bimg::imageEncodeFromRgba8(&allocator, const_cast<uint8_t*>(mip.m_data), mipRgba.data(), 4, 4, 1,
+                                   bimg::TextureFormat::BC1, bimg::Quality::Fastest, &error);
+    }
+
+    bx::MemoryBlock block(&allocator);
+    bx::MemoryWriter writer(&block);
+    bimg::imageWriteKtx2(&writer, *image, image->m_data, image->m_size, &error);
+    const auto* data = static_cast<const uint8_t*>(block.more());
+    std::vector<uint8_t> result;
+    if (data != nullptr && block.getSize() > 0) {
+        result.assign(data, data + block.getSize());
+    }
+    bimg::imageFree(image);
+    return result;
 }
 
 std::vector<uint8_t> makeTriangleBuffer() {
@@ -56,7 +153,562 @@ std::vector<uint8_t> makeTriangleBuffer() {
     return bytes;
 }
 
-std::string makeGltf(const std::string& imageUri, bool withUv, bool withNormals = true) {
+std::vector<uint8_t> makeAnimatedBuffer() {
+    std::vector<uint8_t> bytes = makeTriangleBuffer();
+    bytes.resize(104, 0);
+    const auto appendFloats = [&](std::initializer_list<float> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(float));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(float));
+    };
+    appendFloats({0.0f, 1.0f});
+    appendFloats({0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f});
+    appendFloats({0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.70710678f, 0.70710678f});
+    return bytes;
+}
+
+std::string makeAnimatedGltf() {
+    return R"({
+        "asset":{"version":"2.0"},
+        "buffers":[{"uri":"animated.bin","byteLength":168}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36},
+            {"buffer":0,"byteOffset":72,"byteLength":24},
+            {"buffer":0,"byteOffset":96,"byteLength":6},
+            {"buffer":0,"byteOffset":104,"byteLength":8},
+            {"buffer":0,"byteOffset":112,"byteLength":24},
+            {"buffer":0,"byteOffset":136,"byteLength":32}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+            {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"},
+            {"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":5,"componentType":5126,"count":2,"type":"VEC3"},
+            {"bufferView":6,"componentType":5126,"count":2,"type":"VEC4"}
+        ],
+        "meshes":[{"name":"Animated","primitives":[
+            {"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3}
+        ]}],
+        "nodes":[
+            {"name":"MeshNode","mesh":0},
+            {"name":"Root","children":[0]}
+        ],
+        "animations":[{
+            "name":"Move",
+            "samplers":[
+                {"input":4,"output":5,"interpolation":"LINEAR"},
+                {"input":4,"output":6,"interpolation":"LINEAR"}
+            ],
+            "channels":[
+                {"sampler":0,"target":{"node":1,"path":"translation"}},
+                {"sampler":1,"target":{"node":1,"path":"rotation"}}
+            ]
+        }],
+        "scenes":[{"nodes":[1]}],
+        "scene":0
+    })";
+}
+
+std::vector<uint8_t> makeCubicBuffer() {
+    std::vector<uint8_t> bytes = makeTriangleBuffer();
+    bytes.resize(104, 0);
+    const auto appendFloats = [&](std::initializer_list<float> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(float));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(float));
+    };
+    appendFloats({0.0f, 1.0f});
+    appendFloats({
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+    });
+    return bytes;
+}
+
+std::string makeCubicGltf() {
+    return R"({
+        "asset":{"version":"2.0"},
+        "buffers":[{"uri":"cubic.bin","byteLength":184}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36},
+            {"buffer":0,"byteOffset":72,"byteLength":24},
+            {"buffer":0,"byteOffset":96,"byteLength":6},
+            {"buffer":0,"byteOffset":104,"byteLength":8},
+            {"buffer":0,"byteOffset":112,"byteLength":72}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+            {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"},
+            {"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":5,"componentType":5126,"count":6,"type":"VEC3"}
+        ],
+        "meshes":[{"name":"Cubic","primitives":[
+            {"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3}
+        ]}],
+        "nodes":[
+            {"name":"MeshNode","mesh":0},
+            {"name":"Root","children":[0]}
+        ],
+        "animations":[{
+            "name":"CubicMove",
+            "samplers":[
+                {"input":4,"output":5,"interpolation":"CUBICSPLINE"}
+            ],
+            "channels":[
+                {"sampler":0,"target":{"node":1,"path":"translation"}}
+            ]
+        }],
+        "scenes":[{"nodes":[1]}],
+        "scene":0
+    })";
+}
+
+std::vector<uint8_t> makeMorphBuffer() {
+    std::vector<uint8_t> bytes = makeTriangleBuffer();
+    bytes.resize(104, 0);
+    const auto appendFloats = [&](std::initializer_list<float> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(float));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(float));
+    };
+    appendFloats({0.0f, 1.0f});
+    appendFloats({0.0f, 1.0f});
+    appendFloats({2.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f});
+    appendFloats({1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f});
+    return bytes;
+}
+
+std::string makeMorphGltf() {
+    return R"({
+        "asset":{"version":"2.0"},
+        "buffers":[{"uri":"morph.bin","byteLength":192}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36},
+            {"buffer":0,"byteOffset":72,"byteLength":24},
+            {"buffer":0,"byteOffset":96,"byteLength":6},
+            {"buffer":0,"byteOffset":104,"byteLength":8},
+            {"buffer":0,"byteOffset":112,"byteLength":8},
+            {"buffer":0,"byteOffset":120,"byteLength":36},
+            {"buffer":0,"byteOffset":156,"byteLength":36}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+            {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"},
+            {"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":5,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":6,"componentType":5126,"count":3,"type":"VEC3","min":[2.0,0.0,0.0],"max":[2.0,0.0,0.0]},
+            {"bufferView":7,"componentType":5126,"count":3,"type":"VEC3"}
+        ],
+        "meshes":[{
+            "name":"Morph",
+            "weights":[0.0],
+            "extras":{"targetNames":["Wide"]},
+            "primitives":[
+                {"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,
+                 "targets":[{"POSITION":6,"NORMAL":7}]}
+            ]
+        }],
+        "nodes":[
+            {"name":"MeshNode","mesh":0,"weights":[0.25]},
+            {"name":"Root","children":[0]}
+        ],
+        "animations":[{
+            "name":"MorphWeights",
+            "samplers":[{"input":4,"output":5,"interpolation":"LINEAR"}],
+            "channels":[{"sampler":0,"target":{"node":0,"path":"weights"}}]
+        }],
+        "scenes":[{"nodes":[1]}],
+        "scene":0
+    })";
+}
+
+std::vector<uint8_t> makeMorphCubicBuffer() {
+    std::vector<uint8_t> bytes = makeTriangleBuffer();
+    bytes.resize(104, 0);
+    const auto appendFloats = [&](std::initializer_list<float> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(float));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(float));
+    };
+    appendFloats({0.0f, 1.0f});
+    appendFloats({0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f});
+    appendFloats({2.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f});
+    appendFloats({0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+    return bytes;
+}
+
+std::string makeMorphCubicGltf() {
+    return R"({
+        "asset":{"version":"2.0"},
+        "buffers":[{"uri":"morph_cubic.bin","byteLength":208}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36},
+            {"buffer":0,"byteOffset":72,"byteLength":24},
+            {"buffer":0,"byteOffset":96,"byteLength":6},
+            {"buffer":0,"byteOffset":104,"byteLength":8},
+            {"buffer":0,"byteOffset":112,"byteLength":24},
+            {"buffer":0,"byteOffset":136,"byteLength":36},
+            {"buffer":0,"byteOffset":172,"byteLength":36}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+            {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"},
+            {"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":5,"componentType":5126,"count":6,"type":"SCALAR"},
+            {"bufferView":6,"componentType":5126,"count":3,"type":"VEC3","min":[2.0,0.0,0.0],"max":[2.0,0.0,0.0]},
+            {"bufferView":7,"componentType":5126,"count":3,"type":"VEC3"}
+        ],
+        "meshes":[{
+            "name":"MorphCubic",
+            "weights":[0.0],
+            "primitives":[
+                {"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,
+                 "targets":[{"POSITION":6,"NORMAL":7}]}
+            ]
+        }],
+        "nodes":[
+            {"name":"MeshNode","mesh":0},
+            {"name":"Root","children":[0]}
+        ],
+        "animations":[{
+            "name":"MorphCubicWeights",
+            "samplers":[{"input":4,"output":5,"interpolation":"CUBICSPLINE"}],
+            "channels":[{"sampler":0,"target":{"node":0,"path":"weights"}}]
+        }],
+        "scenes":[{"nodes":[1]}],
+        "scene":0
+    })";
+}
+
+std::vector<uint8_t> makeSkinBuffer() {
+    std::vector<uint8_t> bytes;
+    const auto appendFloats = [&](std::initializer_list<float> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(float));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(float));
+    };
+    const auto appendU16 = [&](std::initializer_list<uint16_t> values) {
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + values.size() * sizeof(uint16_t));
+        std::memcpy(bytes.data() + offset, values.begin(), values.size() * sizeof(uint16_t));
+    };
+    appendFloats({0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 2.0f, 0.0f, 0.0f});
+    appendFloats({0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+    appendFloats({0.0f, 0.0f, 0.5f, 0.5f, 1.0f, 0.0f});
+    appendU16({0, 1, 2});
+    bytes.resize(104, 0);
+    appendU16({0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});
+    appendFloats({0.25f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f});
+    appendFloats({
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    });
+    appendFloats({
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        -1.0f, 0.0f, 0.0f, 1.0f,
+    });
+    appendFloats({0.0f, 1.0f});
+    appendFloats({0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.70710678f, 0.70710678f});
+    appendU16({1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+    appendFloats({0.25f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+    appendU16({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+    appendFloats({0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+    return bytes;
+}
+
+std::string makeSkinGltf() {
+    return R"({
+        "asset":{"version":"2.0"},
+        "buffers":[{"uri":"skin.bin","byteLength":488}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36},
+            {"buffer":0,"byteOffset":72,"byteLength":24},
+            {"buffer":0,"byteOffset":96,"byteLength":6},
+            {"buffer":0,"byteOffset":104,"byteLength":24},
+            {"buffer":0,"byteOffset":128,"byteLength":48},
+            {"buffer":0,"byteOffset":176,"byteLength":128},
+            {"buffer":0,"byteOffset":304,"byteLength":8},
+            {"buffer":0,"byteOffset":312,"byteLength":32},
+            {"buffer":0,"byteOffset":344,"byteLength":24},
+            {"buffer":0,"byteOffset":368,"byteLength":48},
+            {"buffer":0,"byteOffset":416,"byteLength":24},
+            {"buffer":0,"byteOffset":440,"byteLength":48}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[2.0,1.0,0.0]},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+            {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"},
+            {"bufferView":4,"componentType":5123,"count":3,"type":"VEC4"},
+            {"bufferView":5,"componentType":5126,"count":3,"type":"VEC4"},
+            {"bufferView":6,"componentType":5126,"count":2,"type":"MAT4"},
+            {"bufferView":7,"componentType":5126,"count":2,"type":"SCALAR","min":[0.0],"max":[1.0]},
+            {"bufferView":8,"componentType":5126,"count":2,"type":"VEC4"},
+            {"bufferView":9,"componentType":5123,"count":3,"type":"VEC4"},
+            {"bufferView":10,"componentType":5126,"count":3,"type":"VEC4"},
+            {"bufferView":11,"componentType":5123,"count":3,"type":"VEC4"},
+            {"bufferView":12,"componentType":5126,"count":3,"type":"VEC4"}
+        ],
+        "materials":[{"name":"SkinMat","pbrMetallicRoughness":{"baseColorFactor":[0.8,0.2,0.1,1.0]}}],
+        "meshes":[{
+            "name":"SkinTriangle",
+            "primitives":[{
+                "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"JOINTS_0":4,"WEIGHTS_0":5,"JOINTS_1":9,"WEIGHTS_1":10,"JOINTS_2":11,"WEIGHTS_2":12},
+                "indices":3,"material":0
+            }]
+        }],
+        "skins":[{"name":"Skin","inverseBindMatrices":6,"joints":[1,2],"skeleton":0}],
+        "nodes":[
+            {"name":"Root","children":[1,3]},
+            {"name":"Joint0","children":[2]},
+            {"name":"Joint1","translation":[1.0,0.0,0.0]},
+            {"name":"MeshNode","mesh":0,"skin":0,"translation":[10.0,0.0,0.0]}
+        ],
+        "animations":[{
+            "name":"Bend",
+            "samplers":[{"input":7,"output":8,"interpolation":"LINEAR"}],
+            "channels":[{"sampler":0,"target":{"node":2,"path":"rotation"}}]
+        }],
+        "scenes":[{"nodes":[0]}],
+        "scene":0
+    })";
+}
+
+#if defined(HBG_HAS_DRACO) && HBG_HAS_DRACO
+bool encodeDracoSkin(std::vector<uint8_t>& compressed) {
+    draco::Mesh mesh;
+    mesh.set_num_points(3);
+    mesh.SetNumFaces(1);
+    draco::Mesh::Face face = {
+        {draco::PointIndex(0), draco::PointIndex(1), draco::PointIndex(2)},
+    };
+    mesh.SetFace(draco::FaceIndex(0), face);
+
+    const float positions[] = {-1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    auto position = std::make_unique<draco::PointAttribute>();
+    position->Init(draco::GeometryAttribute::POSITION, 3, draco::DT_FLOAT32, false, 3);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        position->SetAttributeValue(draco::AttributeValueIndex(vertex), &positions[vertex * 3]);
+    }
+    mesh.AddAttribute(std::move(position));
+
+    const float normals[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    auto normal = std::make_unique<draco::PointAttribute>();
+    normal->Init(draco::GeometryAttribute::NORMAL, 3, draco::DT_FLOAT32, false, 3);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        normal->SetAttributeValue(draco::AttributeValueIndex(vertex), &normals[vertex * 3]);
+    }
+    mesh.AddAttribute(std::move(normal));
+
+    const uint16_t joints[] = {0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    auto jointsAttribute = std::make_unique<draco::PointAttribute>();
+    jointsAttribute->Init(draco::GeometryAttribute::GENERIC, 4, draco::DT_UINT16, false, 3);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        jointsAttribute->SetAttributeValue(draco::AttributeValueIndex(vertex), &joints[vertex * 4]);
+    }
+    mesh.AddAttribute(std::move(jointsAttribute));
+
+    const float weights[] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    auto weightsAttribute = std::make_unique<draco::PointAttribute>();
+    weightsAttribute->Init(draco::GeometryAttribute::GENERIC, 4, draco::DT_FLOAT32, false, 3);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        weightsAttribute->SetAttributeValue(draco::AttributeValueIndex(vertex), &weights[vertex * 4]);
+    }
+    mesh.AddAttribute(std::move(weightsAttribute));
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(5, 5);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, 14);
+    draco::EncoderBuffer buffer;
+    const draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
+    if (!status.ok()) {
+        return false;
+    }
+    compressed.assign(buffer.data(), buffer.data() + buffer.size());
+    return !compressed.empty();
+}
+
+bool encodeDracoTriangle(std::vector<uint8_t>& compressed) {
+    draco::Mesh mesh;
+    mesh.set_num_points(3);
+    mesh.SetNumFaces(1);
+    draco::Mesh::Face face = {
+        {draco::PointIndex(0), draco::PointIndex(1), draco::PointIndex(2)},
+    };
+    mesh.SetFace(draco::FaceIndex(0), face);
+
+    const float positions[] = {
+        -1.0f, -1.0f, 0.0f,
+        1.0f, -1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+    };
+    auto position = std::make_unique<draco::PointAttribute>();
+    position->Init(draco::GeometryAttribute::POSITION, 3, draco::DT_FLOAT32, false, 3);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        position->SetAttributeValue(draco::AttributeValueIndex(vertex), &positions[vertex * 3]);
+    }
+    mesh.AddAttribute(std::move(position));
+
+    auto normal = std::make_unique<draco::PointAttribute>();
+    normal->Init(draco::GeometryAttribute::NORMAL, 3, draco::DT_FLOAT32, false, 3);
+    const float normalValue[] = {0.0f, 0.0f, 1.0f};
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        normal->SetAttributeValue(draco::AttributeValueIndex(vertex), normalValue);
+    }
+    mesh.AddAttribute(std::move(normal));
+
+    auto texcoord = std::make_unique<draco::PointAttribute>();
+    texcoord->Init(draco::GeometryAttribute::TEX_COORD, 2, draco::DT_FLOAT32, false, 3);
+    const float texcoords[] = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        0.5f, 1.0f,
+    };
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        texcoord->SetAttributeValue(draco::AttributeValueIndex(vertex), &texcoords[vertex * 2]);
+    }
+    mesh.AddAttribute(std::move(texcoord));
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(5, 5);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, 14);
+    draco::EncoderBuffer buffer;
+    const draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
+    if (!status.ok()) {
+        return false;
+    }
+    compressed.assign(buffer.data(), buffer.data() + buffer.size());
+    return !compressed.empty();
+}
+
+std::vector<uint8_t> makeGlb(const std::string& json, const std::vector<uint8_t>& binary) {
+    std::string jsonPadded = json;
+    while (jsonPadded.size() % 4u != 0u) {
+        jsonPadded.push_back(' ');
+    }
+    std::vector<uint8_t> binaryPadded = binary;
+    while (binaryPadded.size() % 4u != 0u) {
+        binaryPadded.push_back(0);
+    }
+
+    std::vector<uint8_t> glb;
+    const auto appendUint32 = [&](uint32_t value) {
+        glb.push_back(static_cast<uint8_t>(value & 0xFFu));
+        glb.push_back(static_cast<uint8_t>((value >> 8u) & 0xFFu));
+        glb.push_back(static_cast<uint8_t>((value >> 16u) & 0xFFu));
+        glb.push_back(static_cast<uint8_t>((value >> 24u) & 0xFFu));
+    };
+    glb.insert(glb.end(), {'g', 'l', 'T', 'F'});
+    appendUint32(2u);
+    appendUint32(static_cast<uint32_t>(12u + 8u + jsonPadded.size() + 8u + binaryPadded.size()));
+    appendUint32(static_cast<uint32_t>(jsonPadded.size()));
+    appendUint32(0x4E4F534Au);
+    glb.insert(glb.end(), jsonPadded.begin(), jsonPadded.end());
+    appendUint32(static_cast<uint32_t>(binaryPadded.size()));
+    appendUint32(0x004E4942u);
+    glb.insert(glb.end(), binaryPadded.begin(), binaryPadded.end());
+    return glb;
+}
+
+std::string makeDracoSkinGltf(std::size_t compressedSize) {
+    return R"({
+        "asset":{"version":"2.0"},
+        "extensionsUsed":["KHR_draco_mesh_compression"],
+        "extensionsRequired":["KHR_draco_mesh_compression"],
+        "buffers":[{"uri":"draco_skin.bin","byteLength":)" +
+           std::to_string(compressedSize) + R"(}],
+        "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":)" +
+           std::to_string(compressedSize) + R"(}],
+        "accessors":[
+            {"componentType":5126,"count":3,"type":"VEC3","min":[-1.0,-1.0,0.0],"max":[1.0,1.0,0.0]},
+            {"componentType":5126,"count":3,"type":"VEC3"},
+            {"componentType":5123,"count":3,"type":"VEC4"},
+            {"componentType":5126,"count":3,"type":"VEC4"},
+            {"componentType":5123,"count":3,"type":"SCALAR"}
+        ],
+        "meshes":[{
+            "name":"DracoSkinTriangle",
+            "primitives":[{
+                "attributes":{"POSITION":0,"NORMAL":1,"JOINTS_0":2,"WEIGHTS_0":3},
+                "indices":4,
+                "material":0,
+                "extensions":{"KHR_draco_mesh_compression":{
+                    "bufferView":0,
+                    "attributes":{"POSITION":0,"NORMAL":1,"JOINTS_0":2,"WEIGHTS_0":3}
+                }}
+            }]
+        }],
+        "materials":[{"name":"DracoMat","pbrMetallicRoughness":{"baseColorFactor":[0.2,0.4,0.8,1.0]}}],
+        "skins":[{"name":"Skin","joints":[1,2]}],
+        "nodes":[
+            {"name":"Root","children":[1,2,3]},
+            {"name":"Joint0"},
+            {"name":"Joint1"},
+            {"name":"MeshNode","mesh":0,"skin":0}
+        ],
+        "scenes":[{"nodes":[0]}],
+        "scene":0
+    })";
+}
+
+std::string makeDracoGltf(std::size_t compressedSize) {
+    return R"({
+        "asset":{"version":"2.0"},
+        "extensionsUsed":["KHR_draco_mesh_compression"],
+        "extensionsRequired":["KHR_draco_mesh_compression"],
+        "buffers":[{"uri":"draco.bin","byteLength":)" +
+           std::to_string(compressedSize) + R"(}],
+        "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":)" +
+           std::to_string(compressedSize) + R"(}],
+        "accessors":[
+            {"componentType":5126,"count":3,"type":"VEC3"},
+            {"componentType":5126,"count":3,"type":"VEC2"},
+            {"componentType":5126,"count":3,"type":"VEC3","min":[-1.0,-1.0,0.0],"max":[1.0,1.0,0.0]},
+            {"componentType":5123,"count":3,"type":"SCALAR"}
+        ],
+        "meshes":[{
+            "name":"DracoTriangle",
+            "primitives":[{
+                "attributes":{"POSITION":2,"NORMAL":0,"TEXCOORD_0":1},
+                "indices":3,
+                "material":0,
+                "extensions":{"KHR_draco_mesh_compression":{
+                    "bufferView":0,
+                    "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}
+                }}
+            }]
+        }],
+        "materials":[{"name":"DracoMat","pbrMetallicRoughness":{"baseColorFactor":[0.2,0.4,0.8,1.0]}}],
+        "nodes":[{"name":"DracoNode","mesh":0}],
+        "scenes":[{"nodes":[0]}],
+        "scene":0
+    })";
+}
+#endif
+
+std::string makeGltf(const std::string& imageUri, bool withUv, bool withNormals = true,
+                     const std::string& samplerJson = {}, const std::string& basisuUri = {}) {
     std::string attributes = R"("POSITION":0)";
     if (withNormals) {
         attributes += R"(,"NORMAL":1)";
@@ -64,8 +716,27 @@ std::string makeGltf(const std::string& imageUri, bool withUv, bool withNormals 
     if (withUv) {
         attributes += R"(,"TEXCOORD_0":2)";
     }
+    const bool hasBasisu = withUv && !basisuUri.empty();
     const std::string texture = withUv ? R"(,"baseColorTexture":{"index":0})" : "";
-    const std::string images = withUv ? R"(,"images":[{"uri":")" + imageUri + R"("}],"textures":[{"source":0}])" : "";
+    std::string textureSource = R"({"source":0)";
+    if (!samplerJson.empty()) {
+        textureSource += R"(,"sampler":0)";
+    }
+    if (hasBasisu) {
+        textureSource += R"(,"extensions":{"KHR_texture_basisu":{"source":1}})";
+    }
+    textureSource += "}";
+    const std::string samplers = samplerJson.empty() ? "" : R"(,"samplers":[)" + samplerJson + R"(])";
+    std::string images =
+        withUv ? R"(,"images":[{"uri":")" + imageUri + R"("}],"textures":[)" + textureSource + R"(])" : "";
+    if (hasBasisu) {
+        images = R"(,"images":[{"uri":")" + imageUri + R"("},{"uri":")" + basisuUri +
+                 R"("}],"textures":[)" + textureSource + R"(])";
+    }
+    std::string extensionsUsed = R"("KHR_lights_punctual")";
+    if (hasBasisu) {
+        extensionsUsed += R"(,"KHR_texture_basisu")";
+    }
     const std::string material = R"({
         "name":"MatA",
         "alphaMode":"MASK",
@@ -86,7 +757,8 @@ std::string makeGltf(const std::string& imageUri, bool withUv, bool withNormals 
     ])";
     return R"({
         "asset":{"version":"2.0"},
-        "extensionsUsed":["KHR_lights_punctual"],
+        "extensionsUsed":[)" +
+           extensionsUsed + R"(],
         "buffers":[{"uri":"triangle.bin","byteLength":102}],
         "bufferViews":[
             {"buffer":0,"byteOffset":0,"byteLength":36},
@@ -115,7 +787,7 @@ std::string makeGltf(const std::string& imageUri, bool withUv, bool withNormals 
         "scenes":[{"nodes":[3,1,2]}],
         "scene":0
         )" +
-           images + R"(
+           images + samplers + R"(
     })";
 }
 
@@ -133,7 +805,7 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     writeFile(gltfPath, json.data(), json.size());
 
     const std::string sidecar = R"({
-        "hdrp":{"renderQueue":2451,"features":{"clearCoat":true,"subsurfaceScattering":true},"clearCoat":0.4,"clearCoatRoughness":0.12,"transmission":0.3,"thickness":0.5,"ior":1.4,"iridescence":0.2,"anisotropy":0.6,"anisotropyRotation":0.25,"subsurfaceMask":0.7},
+        "hdrp":{"renderQueue":2451,"maskMap":"separate","features":{"clearCoat":true,"subsurfaceScattering":true},"clearCoat":0.4,"clearCoatRoughness":0.12,"transmission":0.3,"thickness":0.5,"ior":1.4,"iridescence":0.2,"anisotropy":0.6,"anisotropyRotation":0.25,"subsurfaceMask":0.7},
         "lights":[{
             "name":"LightNode",
             "shadow":{
@@ -176,6 +848,7 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
 
     bool nonZeroTangent = false;
     for (const MeshVertex& vertex : mesh.vertices) {
+        CHECK(vertex.previousPosition == vertex.position);
         if (vertex.tangent.x != 0.0f || vertex.tangent.y != 0.0f || vertex.tangent.z != 0.0f) {
             nonZeroTangent = true;
         }
@@ -185,6 +858,7 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     REQUIRE(scene.materials.size() == 1);
     const Material& material = scene.materials[0];
     CHECK(material.name == "MatA");
+    CHECK_FALSE(material.maskMapPacked);
     CHECK(material.alphaMode == AlphaMode::Mask);
     CHECK(material.renderQueue == 2451);
     CHECK((material.features & MaterialFeatureClearCoat) != 0);
@@ -202,6 +876,10 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(material.metallic == doctest::Approx(0.1f));
     CHECK(material.roughness == doctest::Approx(0.7f));
     CHECK(material.doubleSided);
+    CHECK(material.baseColorTexture.sampler.wrapS == TextureWrap::Repeat);
+    CHECK(material.baseColorTexture.sampler.wrapT == TextureWrap::Repeat);
+    CHECK(material.baseColorTexture.sampler.minFilter == TextureFilter::Linear);
+    CHECK(material.baseColorTexture.sampler.magFilter == TextureFilter::Linear);
 
     REQUIRE(scene.images.size() == 1);
     CHECK(scene.images[0].width == 1);
@@ -240,6 +918,572 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(scene.lights[0].shadow.evsmLightLeakBias == doctest::Approx(0.2f));
     CHECK(scene.lights[0].shadow.evsmVarianceBias == doctest::Approx(0.0005f));
     CHECK(scene.lights[0].shadow.evsmBlurPasses == 3u);
+}
+
+TEST_CASE("glTF loader reads node hierarchy and applies animation") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "animated.bin";
+    const std::filesystem::path gltfPath = directory / "animated.gltf";
+
+    const std::vector<uint8_t> buffer = makeAnimatedBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeAnimatedGltf();
+    writeFile(gltfPath, json.data(), json.size());
+
+    SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    render::RenderScene& scene = *result.scene;
+
+    REQUIRE(scene.nodes.size() == 2);
+    CHECK(scene.nodes[0].parent == 1);
+    CHECK(scene.nodes[1].parent == -1);
+    REQUIRE(scene.animations.size() == 1);
+    CHECK(scene.animations[0].name == "Move");
+    REQUIRE(scene.animations[0].channels.size() == 2);
+    CHECK(scene.animations[0].duration == doctest::Approx(1.0f));
+    REQUIRE(scene.objects.size() == 1);
+    CHECK(scene.objects[0].nodeIndex == 0);
+    CHECK_FALSE(scene.objects[0].staticShadowCaster);
+
+    REQUIRE(applyAnimation(scene, 0.5f));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).y == doctest::Approx(0.5f));
+    const Vec3 halfway = transformDirection(scene.objects[0].world, Vec3(1.0f, 0.0f, 0.0f));
+    CHECK(halfway.x == doctest::Approx(0.70710678f));
+    CHECK(halfway.y == doctest::Approx(0.70710678f));
+
+    REQUIRE(applyAnimation(scene, 1.0f, false));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).y == doctest::Approx(1.0f));
+    const Vec3 rotated = transformDirection(scene.objects[0].world, Vec3(1.0f, 0.0f, 0.0f));
+    CHECK(rotated.x == doctest::Approx(0.0f).epsilon(0.0001));
+    CHECK(rotated.y == doctest::Approx(1.0f).epsilon(0.0001));
+
+    REQUIRE(applyAnimation(scene, 1.25f));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).y == doctest::Approx(0.25f));
+    REQUIRE(applyAnimation(scene, 1.25f, false));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).y == doctest::Approx(1.0f));
+}
+
+TEST_CASE("glTF loader applies cubic spline animation") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "cubic.bin";
+    const std::filesystem::path gltfPath = directory / "cubic.gltf";
+
+    const std::vector<uint8_t> buffer = makeCubicBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeCubicGltf();
+    writeFile(gltfPath, json.data(), json.size());
+
+    SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    render::RenderScene& scene = *result.scene;
+
+    REQUIRE(scene.animations.size() == 1u);
+    REQUIRE(scene.animations[0].channels.size() == 1u);
+    const AnimationChannel& channel = scene.animations[0].channels[0];
+    CHECK(channel.interpolation == AnimationInterpolation::CubicSpline);
+    REQUIRE(channel.inTangents.size() == 2u);
+    REQUIRE(channel.outTangents.size() == 2u);
+    CHECK(channel.outTangents[0].x == doctest::Approx(2.0f));
+    REQUIRE(scene.objects.size() == 1u);
+
+    REQUIRE(applyAnimation(scene, 0.5f));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).x == doctest::Approx(0.25f));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).y == doctest::Approx(0.0f));
+
+    REQUIRE(applyAnimation(scene, 1.0f, false));
+    CHECK(transformPoint(scene.objects[0].world, Vec3(0.0f, 0.0f, 0.0f)).x == doctest::Approx(0.0f));
+}
+
+TEST_CASE("glTF loader applies morph targets and weight animation") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "morph.bin";
+    const std::filesystem::path gltfPath = directory / "morph.gltf";
+
+    const std::vector<uint8_t> buffer = makeMorphBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeMorphGltf();
+    writeFile(gltfPath, json.data(), json.size());
+
+    SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    render::RenderScene& scene = *result.scene;
+
+    REQUIRE(scene.meshes.size() == 2u);
+    REQUIRE(scene.objects.size() == 1u);
+    const uint32_t meshIndex = scene.objects[0].meshIndex;
+    REQUIRE(meshIndex == 1u);
+    const Mesh& mesh = scene.meshes[meshIndex];
+    REQUIRE(mesh.morphTargets.size() == 1u);
+    CHECK(mesh.morphTargets[0].name == "Wide");
+    CHECK(mesh.morphWeights.size() == 1u);
+    CHECK(mesh.morphWeights[0] == doctest::Approx(0.0f));
+    CHECK(mesh.morphTargets[0].hasNormals);
+
+    REQUIRE(scene.nodes.size() == 2u);
+    CHECK(scene.nodes[0].baseWeights.size() == 1u);
+    CHECK(scene.nodes[0].baseWeights[0] == doctest::Approx(0.25f));
+    CHECK(scene.objects[0].morphWeights.size() == 1u);
+    CHECK(scene.objects[0].morphWeights[0] == doctest::Approx(0.25f));
+
+    std::vector<MeshVertex> deformed;
+    mesh.applyMorphWeights({0.5f}, deformed);
+    REQUIRE(deformed.size() == mesh.vertices.size());
+    CHECK(deformed[0].position.x == doctest::Approx(1.0f));
+    CHECK(deformed[0].normal.x == doctest::Approx(0.4472136f));
+    CHECK(deformed[0].normal.z == doctest::Approx(0.8944272f));
+    CHECK(Mesh::computeBounds(deformed).max.x > Mesh::computeBounds(mesh.vertices).max.x);
+
+    REQUIRE(scene.animations.size() == 1u);
+    REQUIRE(scene.animations[0].channels.size() == 1u);
+    CHECK(scene.animations[0].channels[0].path == AnimationPath::Weights);
+    CHECK(scene.animations[0].channels[0].targetIndex == 0u);
+
+    REQUIRE(applyAnimation(scene, 0.5f, false));
+    CHECK(scene.objects[0].morphWeights[0] == doctest::Approx(0.5f));
+}
+
+TEST_CASE("glTF loader applies cubic morph weight animation") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "morph_cubic.bin";
+    const std::filesystem::path gltfPath = directory / "morph_cubic.gltf";
+
+    const std::vector<uint8_t> buffer = makeMorphCubicBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeMorphCubicGltf();
+    writeFile(gltfPath, json.data(), json.size());
+
+    SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.meshes.size() == 2u);
+    REQUIRE(scene.objects.size() == 1u);
+    REQUIRE(scene.animations.size() == 1u);
+    REQUIRE(scene.animations[0].channels.size() == 1u);
+    const AnimationChannel& channel = scene.animations[0].channels[0];
+    CHECK(channel.path == AnimationPath::Weights);
+    CHECK(channel.targetIndex == 0u);
+    REQUIRE(channel.outTangents.size() == 2u);
+    CHECK(channel.outTangents[0].x == doctest::Approx(2.0f));
+
+    REQUIRE(applyAnimation(scene, 0.5f, false));
+    CHECK(scene.objects[0].morphWeights[0] == doctest::Approx(0.25f));
+}
+
+#if defined(HBG_HAS_DRACO) && HBG_HAS_DRACO
+TEST_CASE("glTF loader decodes KHR_draco_mesh_compression") {
+    std::vector<uint8_t> compressed;
+    REQUIRE(encodeDracoTriangle(compressed));
+
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "draco.bin";
+    const std::filesystem::path gltfPath = directory / "draco.gltf";
+    writeFile(bufferPath, compressed.data(), compressed.size());
+    const std::string json = makeDracoGltf(compressed.size());
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.objects.size() == 1u);
+    const render::RenderObject& object = scene.objects[0];
+    const Mesh& mesh = scene.meshes[object.meshIndex];
+    REQUIRE(mesh.vertices.size() == 3u);
+    REQUIRE(mesh.indices.size() == 3u);
+
+    Vec3 minimum(FLT_MAX, FLT_MAX, FLT_MAX);
+    Vec3 maximum(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    for (const MeshVertex& vertex : mesh.vertices) {
+        minimum.x = std::min(minimum.x, vertex.position.x);
+        minimum.y = std::min(minimum.y, vertex.position.y);
+        minimum.z = std::min(minimum.z, vertex.position.z);
+        maximum.x = std::max(maximum.x, vertex.position.x);
+        maximum.y = std::max(maximum.y, vertex.position.y);
+        maximum.z = std::max(maximum.z, vertex.position.z);
+        CHECK(vertex.normal.z == doctest::Approx(1.0f).epsilon(0.001));
+    }
+    CHECK(minimum.x == doctest::Approx(-1.0f).epsilon(0.001));
+    CHECK(minimum.y == doctest::Approx(-1.0f).epsilon(0.001));
+    CHECK(maximum.x == doctest::Approx(1.0f).epsilon(0.001));
+    CHECK(maximum.y == doctest::Approx(1.0f).epsilon(0.001));
+
+    bool seen[3] = {false, false, false};
+    for (const uint32_t index : mesh.indices) {
+        REQUIRE(index < 3u);
+        CHECK_FALSE(seen[index]);
+        seen[index] = true;
+    }
+    CHECK(seen[0]);
+    CHECK(seen[1]);
+    CHECK(seen[2]);
+
+    bool sawUv0 = false;
+    bool sawUv1 = false;
+    bool sawUv2 = false;
+    for (const MeshVertex& vertex : mesh.vertices) {
+        if (vertex.texcoord0.x == doctest::Approx(0.0f).epsilon(0.01) &&
+            vertex.texcoord0.y == doctest::Approx(0.0f).epsilon(0.01)) {
+            sawUv0 = true;
+        } else if (vertex.texcoord0.x == doctest::Approx(1.0f).epsilon(0.01) &&
+                   vertex.texcoord0.y == doctest::Approx(0.0f).epsilon(0.01)) {
+            sawUv1 = true;
+        } else if (vertex.texcoord0.x == doctest::Approx(0.5f).epsilon(0.01) &&
+                   vertex.texcoord0.y == doctest::Approx(1.0f).epsilon(0.01)) {
+            sawUv2 = true;
+        }
+    }
+    CHECK(sawUv0);
+    CHECK(sawUv1);
+    CHECK(sawUv2);
+}
+
+TEST_CASE("glTF loader reads Draco attribute ids from GLB JSON") {
+    std::vector<uint8_t> compressed;
+    REQUIRE(encodeDracoTriangle(compressed));
+
+    std::string json = makeDracoGltf(compressed.size());
+    const std::string uri = "\"uri\":\"draco.bin\",";
+    const std::size_t uriPosition = json.find(uri);
+    REQUIRE(uriPosition != std::string::npos);
+    json.erase(uriPosition, uri.size());
+
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path glbPath = directory / "draco.glb";
+    const std::vector<uint8_t> glb = makeGlb(json, compressed);
+    writeFile(glbPath, glb.data(), glb.size());
+
+    const SceneLoadResult result = SceneLoader::load(glbPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.objects.size() == 1u);
+    const Mesh& mesh = scene.meshes[scene.objects[0].meshIndex];
+    REQUIRE(mesh.vertices.size() == 3u);
+    REQUIRE(mesh.indices.size() == 3u);
+    CHECK(mesh.vertices[0].normal.z == doctest::Approx(1.0f).epsilon(0.001));
+}
+
+TEST_CASE("glTF loader fails when required Draco data is corrupt") {
+    std::vector<uint8_t> compressed;
+    REQUIRE(encodeDracoTriangle(compressed));
+    compressed.front() ^= 0xFFu;
+
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "draco_corrupt.bin";
+    const std::filesystem::path gltfPath = directory / "draco_corrupt.gltf";
+    writeFile(bufferPath, compressed.data(), compressed.size());
+    std::string json = makeDracoGltf(compressed.size());
+    const std::string uri = "\"uri\":\"draco.bin\",";
+    const std::size_t uriPosition = json.find(uri);
+    REQUIRE(uriPosition != std::string::npos);
+    json.replace(uriPosition, uri.size(), "\"uri\":\"draco_corrupt.bin\",");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    CHECK_FALSE(result.ok());
+}
+
+TEST_CASE("glTF loader decodes Draco skin attributes") {
+    std::vector<uint8_t> compressed;
+    REQUIRE(encodeDracoSkin(compressed));
+
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "draco_skin.bin";
+    const std::filesystem::path gltfPath = directory / "draco_skin.gltf";
+    writeFile(bufferPath, compressed.data(), compressed.size());
+    const std::string json = makeDracoSkinGltf(compressed.size());
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.skins.size() == 1u);
+    REQUIRE(scene.objects.size() == 1u);
+    const render::RenderObject& object = scene.objects[0];
+    CHECK(object.skinIndex == 0);
+    const Mesh& mesh = scene.meshes[object.meshIndex];
+    REQUIRE(mesh.skinVertices.size() == 3u);
+    REQUIRE(mesh.skinInfluences.size() == 12u);
+
+    for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+        const SkinVertex& skin = mesh.skinVertices[vertex];
+        REQUIRE(skin.influenceCount == 4u);
+        const std::size_t offset = skin.influenceOffset;
+        CHECK(mesh.skinInfluences[offset + 0].weight == doctest::Approx(1.0f));
+        CHECK(mesh.skinInfluences[offset + 0].joint == (vertex == 0 ? 0 : 1));
+        CHECK(mesh.skinInfluences[offset + 1].weight == doctest::Approx(0.0f));
+    }
+}
+#endif
+
+TEST_CASE("glTF loader applies skin joints and inverse bind matrices") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "skin.bin";
+    const std::filesystem::path gltfPath = directory / "skin.gltf";
+
+    const std::vector<uint8_t> buffer = makeSkinBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeSkinGltf();
+    writeFile(gltfPath, json.data(), json.size());
+
+    SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    render::RenderScene& scene = *result.scene;
+
+    REQUIRE(scene.skins.size() == 1u);
+    REQUIRE(scene.skins[0].joints.size() == 2u);
+    CHECK(scene.skins[0].joints[0] == 1u);
+    CHECK(scene.skins[0].joints[1] == 2u);
+    REQUIRE(scene.skins[0].inverseBindMatrices.size() == 2u);
+    CHECK(scene.skins[0].inverseBindMatrices[1][12] == doctest::Approx(-1.0f));
+
+    REQUIRE(scene.objects.size() == 1u);
+    const render::RenderObject& object = scene.objects[0];
+    CHECK(object.skinIndex == 0);
+    CHECK(object.world[12] == doctest::Approx(10.0f));
+    CHECK(object.worldBounds.max.x == doctest::Approx(2.0f));
+    CHECK_FALSE(object.staticShadowCaster);
+    REQUIRE(scene.meshes.size() == 2u);
+    const Mesh& mesh = scene.meshes[object.meshIndex];
+    REQUIRE(mesh.skinVertices.size() == 3u);
+    REQUIRE(mesh.skinInfluences.size() == 36u);
+    CHECK(mesh.skinVertices[0].influenceCount == 12u);
+    const std::size_t firstOffset = mesh.skinVertices[0].influenceOffset;
+    CHECK(mesh.skinInfluences[firstOffset + 4].joint == 1);
+    CHECK(mesh.skinInfluences[firstOffset + 0].weight == doctest::Approx(0.5f));
+    CHECK(mesh.skinInfluences[firstOffset + 4].weight == doctest::Approx(0.5f));
+    const std::size_t lastOffset = mesh.skinVertices[2].influenceOffset;
+    CHECK(mesh.skinInfluences[lastOffset + 0].joint == 1);
+    CHECK(mesh.skinInfluences[lastOffset + 0].weight == doctest::Approx(1.0f));
+
+    std::vector<MeshVertex> deformed;
+    REQUIRE(applyAnimation(scene, 0.0f, false));
+    deformed.clear();
+    mesh.applySkinning(computeSkinMatrices(scene, object), deformed);
+    REQUIRE(deformed.size() == 3u);
+    const Vec3 bindVertex = transformPoint(object.world, deformed[2].position);
+    CHECK(bindVertex.x == doctest::Approx(2.0f));
+    CHECK(bindVertex.y == doctest::Approx(0.0f));
+
+    REQUIRE(applyAnimation(scene, 1.0f, false));
+    deformed.clear();
+    mesh.applySkinning(computeSkinMatrices(scene, object), deformed);
+    const Vec3 jointVertex = transformPoint(object.world, deformed[1].position);
+    CHECK(jointVertex.x == doctest::Approx(0.0f));
+    CHECK(jointVertex.y == doctest::Approx(0.0f));
+    const Vec3 tipVertex = transformPoint(object.world, deformed[2].position);
+    CHECK(tipVertex.x == doctest::Approx(1.0f));
+    CHECK(tipVertex.y == doctest::Approx(1.0f));
+    CHECK(deformed[2].normal.x == doctest::Approx(0.0f).epsilon(0.0001));
+    CHECK(deformed[2].normal.y == doctest::Approx(1.0f).epsilon(0.0001));
+}
+
+TEST_CASE("mesh applies linear blend skinning") {
+    Mesh mesh;
+    MeshVertex vertex;
+    vertex.position = Vec3(0.0f, 0.0f, 0.0f);
+    vertex.normal = Vec3(0.0f, 0.0f, 1.0f);
+    mesh.vertices.push_back(vertex);
+    mesh.skinVertices.resize(1);
+    mesh.skinVertices[0].influenceCount = 2;
+    mesh.skinInfluences = {{0, 0.5f}, {1, 0.5f}};
+
+    Mat4 translated = Mat4::identity();
+    translated[12] = 2.0f;
+    const std::vector<Mat4> matrices = {Mat4::identity(), translated};
+    std::vector<MeshVertex> deformed;
+    mesh.applySkinning(matrices, deformed);
+    REQUIRE(deformed.size() == 1u);
+    CHECK(deformed[0].position.x == doctest::Approx(1.0f));
+    CHECK(deformed[0].position.y == doctest::Approx(0.0f));
+    CHECK(deformed[0].normal.z == doctest::Approx(1.0f));
+}
+
+TEST_CASE("mesh normalizes non-unit skin weights") {
+    Mesh mesh;
+    MeshVertex vertex;
+    vertex.position = Vec3(0.0f, 0.0f, 0.0f);
+    vertex.normal = Vec3(0.0f, 0.0f, 1.0f);
+    mesh.vertices.push_back(vertex);
+    mesh.skinVertices.resize(1);
+    mesh.skinVertices[0].influenceCount = 2;
+    mesh.skinInfluences = {{0, 0.25f}, {1, 0.25f}};
+
+    Mat4 translated = Mat4::identity();
+    translated[12] = 2.0f;
+    const std::vector<Mat4> matrices = {Mat4::identity(), translated};
+    std::vector<MeshVertex> deformed;
+    mesh.applySkinning(matrices, deformed);
+    REQUIRE(deformed.size() == 1u);
+    CHECK(deformed[0].position.x == doctest::Approx(1.0f));
+    CHECK(deformed[0].normal.z == doctest::Approx(1.0f));
+}
+
+TEST_CASE("mesh applies linear blend skinning across three influence sets") {
+    Mesh mesh;
+    MeshVertex vertex;
+    vertex.position = Vec3(0.0f, 0.0f, 0.0f);
+    vertex.normal = Vec3(0.0f, 0.0f, 1.0f);
+    mesh.vertices.push_back(vertex);
+    mesh.skinVertices.resize(1);
+    mesh.skinVertices[0].influenceCount = 3;
+    mesh.skinInfluences = {{0, 0.5f}, {1, 0.25f}, {2, 0.25f}};
+
+    Mat4 translatedX = Mat4::identity();
+    translatedX[12] = 2.0f;
+    Mat4 translatedY = Mat4::identity();
+    translatedY[13] = 4.0f;
+    const std::vector<Mat4> matrices = {Mat4::identity(), translatedX, translatedY};
+    std::vector<MeshVertex> deformed;
+    mesh.applySkinning(matrices, deformed);
+    REQUIRE(deformed.size() == 1u);
+    CHECK(deformed[0].position.x == doctest::Approx(0.5f));
+    CHECK(deformed[0].position.y == doctest::Approx(1.0f));
+    CHECK(deformed[0].normal.z == doctest::Approx(1.0f));
+}
+
+TEST_CASE("mesh computes deformed bounds") {
+    Mesh mesh;
+    MeshVertex first;
+    first.position = Vec3(0.0f, 0.0f, 0.0f);
+    MeshVertex last;
+    last.position = Vec3(2.0f, 0.0f, 0.0f);
+    mesh.vertices = {first, last};
+    mesh.skinVertices.resize(2);
+    mesh.skinVertices[0] = {0, 1};
+    mesh.skinVertices[1] = {1, 1};
+    mesh.skinInfluences = {{0, 1.0f}, {0, 1.0f}};
+
+    const Bounds baseBounds = Mesh::computeBounds(mesh.vertices);
+    REQUIRE(baseBounds.valid());
+    CHECK(baseBounds.min.x == doctest::Approx(0.0f));
+    CHECK(baseBounds.max.x == doctest::Approx(2.0f));
+
+    Mat4 translated = Mat4::identity();
+    translated[12] = 3.0f;
+    std::vector<MeshVertex> deformed;
+    mesh.applySkinning({translated}, deformed);
+    const Bounds deformedBounds = Mesh::computeBounds(deformed);
+    REQUIRE(deformedBounds.valid());
+    CHECK(deformedBounds.min.x == doctest::Approx(3.0f));
+    CHECK(deformedBounds.max.x == doctest::Approx(5.0f));
+}
+
+TEST_CASE("glTF loader applies texture sampler wrap and filter") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_sampler.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_sampler.gltf";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::string json = makeGltf(
+        kPngDataUri, true, true,
+        R"({"wrapS":33071,"wrapT":33648,"magFilter":9728,"minFilter":9984})");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    REQUIRE(result.scene->materials.size() == 1);
+    const Material& material = result.scene->materials[0];
+    CHECK(material.maskMapPacked);
+    CHECK(material.baseColorTexture.sampler.wrapS == TextureWrap::Clamp);
+    CHECK(material.baseColorTexture.sampler.wrapT == TextureWrap::Mirror);
+    CHECK(material.baseColorTexture.sampler.minFilter == TextureFilter::Nearest);
+    CHECK(material.baseColorTexture.sampler.magFilter == TextureFilter::Nearest);
+
+    const uint64_t flags = TextureLoader::samplerFlags(material.baseColorTexture.sampler);
+    CHECK((flags & BGFX_SAMPLER_U_CLAMP) != 0);
+    CHECK((flags & BGFX_SAMPLER_V_MIRROR) != 0);
+    CHECK((flags & BGFX_SAMPLER_MIN_POINT) != 0);
+    CHECK((flags & BGFX_SAMPLER_MAG_POINT) != 0);
+}
+
+TEST_CASE("material key distinguishes sampler state") {
+    Material material;
+    material.baseColorTexture.sampler.wrapS = TextureWrap::Repeat;
+    const MaterialKey repeatKey = makeMaterialKey(material);
+    material.baseColorTexture.sampler.wrapS = TextureWrap::Clamp;
+    const MaterialKey clampKey = makeMaterialKey(material);
+    CHECK_FALSE(repeatKey == clampKey);
+    const MaterialKeyHash hash;
+    CHECK(hash(repeatKey) != hash(clampKey));
+}
+
+TEST_CASE("texture loader packs glTF occlusion roughness metallic mask") {
+    const ImageAsset metallicRoughness = makeMaskImage(2, 2, {
+        {255, 10, 20, 255},
+        {255, 30, 40, 255},
+        {255, 50, 60, 255},
+        {255, 70, 80, 255},
+    });
+    const ImageAsset occlusion = makeMaskImage(2, 2, {
+        {1, 255, 255, 255},
+        {2, 255, 255, 255},
+        {3, 255, 255, 255},
+        {4, 255, 255, 255},
+    });
+
+    ImageAsset packed;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::packOrmMask(&occlusion, &metallicRoughness, packed, &error), error);
+    CHECK(packed.width == 2u);
+    CHECK(packed.height == 2u);
+    CHECK(packed.mipCount == 1u);
+    CHECK(packed.format == gfx::TextureFormat::RGBA8);
+    REQUIRE(packed.pixels.size() == 16u);
+    CHECK(packed.pixels[0] == 1u);
+    CHECK(packed.pixels[1] == 10u);
+    CHECK(packed.pixels[2] == 20u);
+    CHECK(packed.pixels[3] == 255u);
+    CHECK(packed.pixels[4] == 2u);
+    CHECK(packed.pixels[5] == 30u);
+    CHECK(packed.pixels[6] == 40u);
+    CHECK(packed.pixels[12] == 4u);
+    CHECK(packed.pixels[13] == 70u);
+    CHECK(packed.pixels[14] == 80u);
+}
+
+TEST_CASE("texture loader fills missing mask channels with neutral values") {
+    const ImageAsset metallicRoughness = makeMaskImage(1, 1, {{255, 64, 128, 255}});
+    const ImageAsset occlusion = makeMaskImage(1, 1, {{32, 255, 255, 255}});
+
+    ImageAsset packed;
+    REQUIRE(TextureLoader::packOrmMask(&occlusion, nullptr, packed));
+    CHECK(packed.pixels[0] == 32u);
+    CHECK(packed.pixels[1] == 255u);
+    CHECK(packed.pixels[2] == 255u);
+    CHECK(packed.pixels[3] == 255u);
+
+    REQUIRE(TextureLoader::packOrmMask(nullptr, &metallicRoughness, packed));
+    CHECK(packed.pixels[0] == 255u);
+    CHECK(packed.pixels[1] == 64u);
+    CHECK(packed.pixels[2] == 128u);
+    CHECK(packed.pixels[3] == 255u);
+}
+
+TEST_CASE("texture loader resamples and rejects unsupported mask sources") {
+    const ImageAsset metallicRoughness = makeMaskImage(2, 1, {
+        {255, 0, 0, 255},
+        {255, 255, 255, 255},
+    });
+    const ImageAsset occlusion = makeMaskImage(1, 1, {{64, 255, 255, 255}});
+
+    ImageAsset packed;
+    REQUIRE(TextureLoader::packOrmMask(&occlusion, &metallicRoughness, packed));
+    REQUIRE(packed.width == 2u);
+    REQUIRE(packed.height == 1u);
+    CHECK(packed.pixels[0] == 64u);
+    CHECK(packed.pixels[1] == 0u);
+    CHECK(packed.pixels[2] == 0u);
+    CHECK(packed.pixels[4] == 64u);
+    CHECK(packed.pixels[5] == 255u);
+    CHECK(packed.pixels[6] == 255u);
+
+    ImageAsset compressed = metallicRoughness;
+    compressed.format = gfx::TextureFormat::BC1;
+    compressed.pixels.assign(8u, 0u);
+    std::string error;
+    CHECK_FALSE(TextureLoader::packOrmMask(nullptr, &compressed, packed, &error));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(TextureLoader::packOrmMask(nullptr, nullptr, packed, &error));
 }
 
 TEST_CASE("scene sidecar converts a punctual light to an area light") {
@@ -732,4 +1976,126 @@ TEST_CASE("scene sidecar loads VFX instances and properties") {
     CHECK(instance.properties[1].kind == render::VfxPropertyKind::Float);
     CHECK(instance.properties[1].values[0] == doctest::Approx(0.3f));
     CHECK(instance.properties[2].kind == render::VfxPropertyKind::Vector3);
+}
+
+TEST_CASE("texture loader preserves KTX2 block-compressed mips") {
+    const std::vector<uint8_t> bytes = makeKtx2Bc1();
+    REQUIRE_FALSE(bytes.empty());
+
+    ImageAsset image;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::loadFromMemory(bytes.data(), bytes.size(), image, &error), error);
+    CHECK(image.width == 8u);
+    CHECK(image.height == 8u);
+    CHECK(image.mipCount == 4u);
+    CHECK(image.format == gfx::TextureFormat::BC1);
+    CHECK(image.isCompressed());
+    CHECK(image.pixels.size() == 56u);
+}
+
+TEST_CASE("glTF loader reads KHR_texture_basisu KTX2 textures") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_ktx2.bin";
+    const std::filesystem::path imagePath = directory / "checker.ktx2";
+    const std::filesystem::path gltfPath = directory / "triangle_ktx2.gltf";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::vector<uint8_t> ktx2 = makeKtx2Bc1();
+    REQUIRE_FALSE(ktx2.empty());
+    writeFile(imagePath, ktx2.data(), ktx2.size());
+
+    std::string json = makeGltf(kPngDataUri, true, true, {}, "checker.ktx2");
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(), "\"uri\":\"triangle_ktx2.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.images.size() == 1u);
+    CHECK(scene.images[0].format == gfx::TextureFormat::BC1);
+    CHECK(scene.images[0].mipCount == 4u);
+    REQUIRE(scene.materials.size() == 1u);
+    CHECK(scene.materials[0].baseColorTexture.imageIndex == 0);
+}
+
+TEST_CASE("glTF loader falls back when KTX2 decode fails") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_ktx2_fallback.bin";
+    const std::filesystem::path imagePath = directory / "invalid.ktx2";
+    const std::filesystem::path gltfPath = directory / "triangle_ktx2_fallback.gltf";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::array<uint8_t, 4> invalid = {0x00, 0x01, 0x02, 0x03};
+    writeFile(imagePath, invalid.data(), invalid.size());
+
+    std::string json = makeGltf(kPngDataUri, true, true, {}, "invalid.ktx2");
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(),
+                 "\"uri\":\"triangle_ktx2_fallback.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.images.size() == 1u);
+    CHECK(scene.images[0].format == gfx::TextureFormat::RGBA8);
+    REQUIRE(scene.materials.size() == 1u);
+    CHECK(scene.materials[0].baseColorTexture.imageIndex == 0);
+}
+
+TEST_CASE("glTF sampler preserves mip filtering") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_mip_sampler.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_mip_sampler.gltf";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    std::string json = makeGltf(kPngDataUri, true, true, R"({"minFilter":9985,"magFilter":9729})");
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(),
+                 "\"uri\":\"triangle_mip_sampler.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    REQUIRE(result.scene->materials.size() == 1u);
+    const TextureSampler& sampler = result.scene->materials[0].baseColorTexture.sampler;
+    CHECK(sampler.minFilter == TextureFilter::Linear);
+    CHECK(sampler.magFilter == TextureFilter::Linear);
+    CHECK(sampler.mipFilter == TextureMipFilter::Nearest);
+    CHECK((TextureLoader::samplerFlags(sampler) & BGFX_SAMPLER_MIP_POINT) != 0u);
+}
+
+TEST_CASE("scene sidecar marks dynamic shadow casters") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_dynamic_shadow.bin";
+    const std::filesystem::path gltfPath = directory / "triangle_dynamic_shadow.gltf";
+    const std::filesystem::path sidecarPath = directory / "triangle_dynamic_shadow.hdrp.json";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    std::string json = makeGltf(kPngDataUri, true);
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(),
+                 "\"uri\":\"triangle_dynamic_shadow.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const std::string sidecar = R"({
+        "objects": [
+            {"name": "MeshNode", "staticShadowCaster": false}
+        ]
+    })";
+    writeFile(sidecarPath, sidecar.data(), sidecar.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    REQUIRE(result.scene->objects.size() == 1u);
+    CHECK_FALSE(result.scene->objects[0].staticShadowCaster);
 }

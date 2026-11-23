@@ -81,7 +81,8 @@ class RenderGraphBuilder {
     RenderGraphBuilder& readTexture(RenderGraphTextureHandle handle);
     RenderGraphBuilder& writeTexture(RenderGraphTextureHandle handle);
     RenderGraphBuilder& setColorAttachment(RenderGraphTextureHandle handle, uint8_t index = 0, uint16_t mip = 0);
-    RenderGraphBuilder& setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip = 0);
+    RenderGraphBuilder& setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip = 0,
+                                           bool readOnly = false);
     RenderGraphBuilder& setViewSize(uint16_t width, uint16_t height);
 
     RenderGraphBuilder& readBuffer(RenderGraphBufferHandle handle);
@@ -166,6 +167,7 @@ class RenderGraph {
         std::vector<uint16_t> colorAttachmentMips;
         RenderGraphTextureHandle depthAttachment;
         uint16_t depthAttachmentMip = 0;
+        bool depthAttachmentReadOnly = false;
         uint16_t viewWidth = 0;
         uint16_t viewHeight = 0;
         bool hasDepthAttachment = false;
@@ -210,7 +212,8 @@ class RenderGraph {
     void addBufferRead(uint32_t passIndex, RenderGraphBufferHandle handle);
     void addBufferWrite(uint32_t passIndex, RenderGraphBufferHandle handle);
     void setColorAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint8_t index, uint16_t mip);
-    void setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint16_t mip);
+    void setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint16_t mip,
+                            bool readOnly);
     void setViewSize(uint32_t passIndex, uint16_t width, uint16_t height);
     void setBackbuffer(uint32_t passIndex);
     void setAllowCulling(uint32_t passIndex, bool enabled);
@@ -224,7 +227,9 @@ class RenderGraph {
                            std::vector<gfx::BufferHandle>& buffers);
     gfx::FrameBufferHandle acquireFramebuffer(gfx::ResourceManager& resources,
                                               const std::vector<gfx::TextureHandle>& attachments,
-                                              const std::vector<uint16_t>& mips, const std::string& name);
+                                              const std::vector<uint16_t>& mips,
+                                              const std::vector<uint8_t>& attachmentFlags,
+                                              const std::string& name);
     gfx::TextureHandle acquirePooledTexture(gfx::ResourceManager& resources, const TextureResource& resource);
     gfx::BufferHandle acquirePooledBuffer(gfx::ResourceManager& resources, const BufferResource& resource);
     void releasePool(gfx::ResourceManager& resources);

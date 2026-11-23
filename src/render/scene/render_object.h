@@ -5,11 +5,14 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace hbg::render {
 
 struct RenderObject {
     std::string name;
+    int nodeIndex = -1;
+    int skinIndex = -1;
     uint32_t meshIndex = UINT32_MAX;
     Mat4 world = Mat4::identity();
     Mat4 prevWorld = Mat4::identity();
@@ -22,6 +25,9 @@ struct RenderObject {
     uint32_t lightmapAtlas = UINT32_MAX;
     Vec4 lightmapST{0.0f, 0.0f, 0.0f, 0.0f};
     Vec2 lightmapSize{0.0f, 0.0f};
+    std::vector<float> morphWeights;
+
+    bool staticShadowCaster = true;
 
     bool hasLightmap() const { return lightmapAtlas != UINT32_MAX; }
 };

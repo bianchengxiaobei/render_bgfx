@@ -69,6 +69,7 @@ struct ShadowOverrides {
     std::optional<float> shadowFadeDistance;
     std::optional<Vec3> shadowTint;
     std::optional<bool> cachedDirectionalShadows;
+    std::optional<bool> cachedDirectionalMixedShadows;
     std::optional<bool> cachedPunctualShadows;
     std::optional<bool> cachedAreaShadows;
 };
@@ -133,6 +134,7 @@ struct AppOptions {
     bool disableShadows = false;
     bool debugUi = true;
     bool cameraOrbit = false;
+    bool resizeTest = false;
     bool framesSpecified = false;
     std::optional<render::LitShaderMode> litShaderMode;
     std::optional<bool> litVariants;
@@ -159,9 +161,18 @@ struct AppOptions {
     std::optional<bool> vfx;
     bool vfxTest = false;
     bool vfxReference = false;
+    bool vfxEventReference = false;
+    bool vfxCpuEventReference = false;
+    std::string vfxEditorPath;
+    bool vfxEditorCompile = false;
+    bool vfxEditorPreview = false;
+    std::string vfxShadercPath;
+    std::string vfxBgfxSourcePath;
+    std::string vfxShaderPackPath;
     std::string vfxReferencePath;
     std::string vfxReferenceGraphPath;
     float renderScale = 1.0f;
+    std::optional<float> animationTime;
     std::string assetTestPath;
     std::string scenePath;
     std::string renderTestPath;

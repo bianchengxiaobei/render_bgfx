@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset/animation.h"
 #include "asset/material.h"
 #include "asset/mesh.h"
 #include "asset/texture_loader.h"
@@ -30,6 +31,7 @@ struct Camera {
     enum class Projection : uint8_t { Perspective, Orthographic };
 
     std::string name;
+    int nodeIndex = -1;
     Projection projection = Projection::Perspective;
     Mat4 world = Mat4::identity();
     float yfov = 1.0471975512f;
@@ -75,6 +77,9 @@ struct RenderScene {
     std::vector<asset::Material> materials;
     std::vector<asset::ImageAsset> images;
     std::vector<RenderObject> objects;
+    std::vector<asset::SceneNode> nodes;
+    std::vector<asset::Skin> skins;
+    std::vector<asset::AnimationClip> animations;
     std::vector<Light> lights;
     std::vector<LocalFogVolume> localFogVolumes;
     std::vector<Decal> decals;

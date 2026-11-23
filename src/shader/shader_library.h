@@ -82,6 +82,7 @@ class ShaderLibrary {
         PassFiles shadowSatVertical;
         PassFiles shadowEvsmBlur;
         PassFiles shadowEvsmBlurMoments;
+        PassFiles shadowCopyDepth;
         PassFiles prepass;
         PassFiles motionVectors;
         PassFiles cameraMotionVectors;
@@ -110,8 +111,11 @@ class ShaderLibrary {
         PassFiles decalClear;
         PassFiles deferredLighting;
         PassFiles deferredLightingAdvanced;
+        PassFiles deferredLightingAdvancedIms;
         PassFiles deferredLightingVariant;
+        PassFiles deferredLightingVariantIms;
         PassFiles deferredLightingVariantCompute;
+        PassFiles deferredLightingVariantComputeIms;
         PassFiles ssao;
         PassFiles ssaoBlur;
         PassFiles ssaoTemporal;

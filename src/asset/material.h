@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset/texture_sampler.h"
 #include "core/math.h"
 
 #include <cstddef>
@@ -30,6 +31,7 @@ enum MaterialFeature : uint32_t {
 struct TextureRef {
     int imageIndex = -1;
     int uvSet = 0;
+    TextureSampler sampler;
 
     bool valid() const { return imageIndex >= 0; }
 };
@@ -110,6 +112,11 @@ struct MaterialKey {
     int occlusionUv = 0;
     int emissiveImage = -1;
     int emissiveUv = 0;
+    uint32_t baseColorSampler = 0;
+    uint32_t metallicRoughnessSampler = 0;
+    uint32_t normalSampler = 0;
+    uint32_t occlusionSampler = 0;
+    uint32_t emissiveSampler = 0;
 
     bool operator==(const MaterialKey&) const = default;
 };

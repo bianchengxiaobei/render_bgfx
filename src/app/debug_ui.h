@@ -28,6 +28,7 @@ class DebugUI {
     bool renderDocLoaded() const { return m_renderDocLoaded; }
     render::DebugDisplaySettings& settings() { return m_settings; }
     const render::DebugDisplaySettings& settings() const { return m_settings; }
+    void setPanelVisible(bool visible) { m_visible = visible; }
     const ProfilerStats& profilerStats() const { return m_profiler.stats(); }
     void setGpuLightListStatus(bool requested, bool active, bool bufferPath, bool indirect, uint32_t passes,
                                float cpuMs, bool shadowGpu, bool shadowIndirect, bool asyncRequested,

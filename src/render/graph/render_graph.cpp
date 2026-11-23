@@ -74,8 +74,9 @@ RenderGraphBuilder& RenderGraphBuilder::setColorAttachment(RenderGraphTextureHan
     return *this;
 }
 
-RenderGraphBuilder& RenderGraphBuilder::setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip) {
-    m_graph.setDepthAttachment(m_passIndex, handle, mip);
+RenderGraphBuilder& RenderGraphBuilder::setDepthAttachment(RenderGraphTextureHandle handle, uint16_t mip,
+                                                           bool readOnly) {
+    m_graph.setDepthAttachment(m_passIndex, handle, mip, readOnly);
     return *this;
 }
 
@@ -298,7 +299,8 @@ void RenderGraph::setColorAttachment(uint32_t passIndex, RenderGraphTextureHandl
     addTextureWrite(passIndex, handle);
 }
 
-void RenderGraph::setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint16_t mip) {
+void RenderGraph::setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandle handle, uint16_t mip,
+                                     bool readOnly) {
     if (passIndex >= m_passes.size()) {
         return;
     }
@@ -309,6 +311,7 @@ void RenderGraph::setDepthAttachment(uint32_t passIndex, RenderGraphTextureHandl
     }
     pass.depthAttachment = handle;
     pass.depthAttachmentMip = mip;
+    pass.depthAttachmentReadOnly = readOnly;
     pass.hasDepthAttachment = true;
     addTextureWrite(passIndex, handle);
 }
@@ -692,11 +695,13 @@ gfx::BufferHandle RenderGraph::acquirePooledBuffer(gfx::ResourceManager& resourc
 
 gfx::FrameBufferHandle RenderGraph::acquireFramebuffer(gfx::ResourceManager& resources,
                                                        const std::vector<gfx::TextureHandle>& attachments,
-                                                       const std::vector<uint16_t>& mips, const std::string& name) {
+                                                       const std::vector<uint16_t>& mips,
+                                                       const std::vector<uint8_t>& attachmentFlags,
+                                                       const std::string& name) {
     if (attachments.empty()) {
         return {};
     }
-    gfx::FrameBufferKey key{attachments, mips};
+    gfx::FrameBufferKey key{attachments, mips, attachmentFlags};
     for (PooledFramebuffer& entry : m_pooledFramebuffers) {
         if (entry.key == key) {
             entry.lastUsedFrame = m_frameIndex;
@@ -845,17 +850,23 @@ bool RenderGraph::execute(gfx::Encoder& encoder, gfx::ResourceManager& resources
         }
         std::vector<gfx::TextureHandle> attachments;
         std::vector<uint16_t> attachmentMips;
+        std::vector<uint8_t> attachmentFlags;
         for (std::size_t index = 0; index < pass.colorAttachments.size(); ++index) {
             attachments.push_back(textures[pass.colorAttachments[index].index]);
             attachmentMips.push_back(index < pass.colorAttachmentMips.size() ? pass.colorAttachmentMips[index] : 0);
+            attachmentFlags.push_back(0);
         }
         if (pass.hasDepthAttachment) {
             attachments.push_back(textures[pass.depthAttachment.index]);
             attachmentMips.push_back(pass.depthAttachmentMip);
+            attachmentFlags.push_back(pass.depthAttachmentReadOnly
+                                          ? gfx::kFrameBufferAttachmentReadOnlyDepth
+                                          : static_cast<uint8_t>(0));
         }
         gfx::FrameBufferHandle frameBuffer =
             pass.backbuffer ? gfx::FrameBufferHandle{}
-                            : acquireFramebuffer(resources, attachments, attachmentMips, pass.name);
+                            : acquireFramebuffer(resources, attachments, attachmentMips, attachmentFlags,
+                                                 pass.name);
         if (!pass.backbuffer && !attachments.empty() && !frameBuffer.valid()) {
             HBG_LOGE("render graph '{}': pass '{}' has no valid framebuffer", m_name, pass.name);
             return false;

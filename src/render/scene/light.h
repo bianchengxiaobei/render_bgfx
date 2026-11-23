@@ -40,6 +40,7 @@ struct LightShadowSettings {
 
 struct Light {
     std::string name;
+    int nodeIndex = -1;
     LightType type = LightType::Point;
     Vec3 color{1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;

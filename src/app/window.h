@@ -1,10 +1,18 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
+#include <vector>
 
 struct GLFWwindow;
 
 namespace hbg {
+
+struct WindowKeyEvent {
+    int key = 0;
+    bool down = false;
+    bool repeat = false;
+};
 
 struct WindowDesc {
     int width = 1280;
@@ -25,6 +33,8 @@ struct WindowInput {
     bool keyShift = false;
     bool keyCtrl = false;
     bool keyAlt = false;
+    std::vector<WindowKeyEvent> keyEvents;
+    std::vector<std::uint32_t> chars;
 };
 
 class Window {
@@ -51,6 +61,8 @@ class Window {
   private:
     static void framebufferSizeCallback(GLFWwindow* window, int width, int height);
     static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
+    static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    static void charCallback(GLFWwindow* window, unsigned int codepoint);
 
     GLFWwindow* m_window = nullptr;
     int m_width = 0;
@@ -59,6 +71,8 @@ class Window {
     bool m_glfwInitialized = false;
     double m_pendingScrollX = 0.0;
     double m_pendingScrollY = 0.0;
+    std::vector<WindowKeyEvent> m_pendingKeyEvents;
+    std::vector<std::uint32_t> m_pendingChars;
 };
 
 } // namespace hbg

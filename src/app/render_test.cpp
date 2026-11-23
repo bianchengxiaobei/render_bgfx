@@ -1,5 +1,6 @@
 #include "app/render_test.h"
 
+#include "asset/animation.h"
 #include "asset/scene_loader.h"
 #include "core/log.h"
 #include "core/math.h"
@@ -47,7 +48,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                    const render::SsgiSettings& ssgiSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
-                   const std::string& skyPath, float skyIntensity, float skyRotation) {
+                   const std::string& skyPath, float skyIntensity, float skyRotation, bool resizeTest) {
     HBG_LOGI("running render test: '{}'", path);
     asset::SceneLoadResult loaded = asset::SceneLoader::load(path);
     if (!loaded.ok()) {
@@ -94,10 +95,15 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
     const uint32_t count = clusterStatsReadback ? std::max(requestedFrames, 8u) : requestedFrames;
     const auto renderStart = std::chrono::steady_clock::now();
     for (uint32_t frame = 0; frame < count; ++frame) {
+        const bool halfSize = resizeTest && (frame % 2u) != 0u;
+        const uint16_t renderWidth = halfSize ? std::max<uint16_t>(1u, width / 2u) : width;
+        const uint16_t renderHeight = halfSize ? std::max<uint16_t>(1u, height / 2u) : height;
+        const float sceneTime = static_cast<float>(frame) / 60.0f;
+        asset::applyAnimation(*loaded.scene, sceneTime);
         if (cameraOrbit) {
-            updateOrbitCamera(*loaded.scene, frame, width, height);
+            updateOrbitCamera(*loaded.scene, frame, renderWidth, renderHeight);
         }
-        renderer.render(*loaded.scene, width, height, static_cast<float>(frame) / 60.0f);
+        renderer.render(*loaded.scene, renderWidth, renderHeight, sceneTime);
         if (frame + 1 == count && !screenshotPath.empty()) {
             bgfx::requestScreenShot(BGFX_INVALID_HANDLE, screenshotPath.c_str());
         }
@@ -122,11 +128,13 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
         HBG_LOGI("render performance: frames={} avg_frame_ms={:.3f} fps={:.1f} cpu_submit_ms={:.3f} "
                  "gpu_frame_ms={:.3f} draw={} compute={} textures={} triangles={} passes={} deferred={} "
                  "vfx={} vfx_effects={} vfx_systems={} vfx_particles={} vfx_draws={} vfx_dispatches={} "
+                 "vfx_sort_passes={} vfx_events={} vfx_ms={:.3f} vfx_update_ms={:.3f} "
+                 "vfx_sim_ms={:.3f} vfx_output_ms={:.3f} "
                  "gbuffer_mrt={} stencil={} postprocess={} post_passes={} postprocess_ms={:.3f} post_compute={} "
                  "post_history={} post_exposure={} post_uber={} post_bloom={} post_taa={} post_dof={} "
                  "post_motion_blur={} post_fxaa={} fog={} fog_steps={} fog_scale={:.3f} fog_lowres={}x{} "
                  "fog_temporal={} fog_history={} fog_lights={} fog_local={} fog_local_masks={} "
-                 "shadow_drawn={} shadow_culled={} shadow_dir_cache={} shadow_cached_dir={} shadow_cache={} shadow_cached={} shadow_area_cache={} "
+                 "shadow_drawn={} shadow_culled={} shadow_dir_cache={} shadow_dir_mixed={} shadow_cached_dir={} shadow_cache={} shadow_cached={} shadow_area_cache={} "
                  "shadow_cached_area={} contact={} contact_res={}x{} "
                  "gpu_light_list={} gpu_light_list_requested={} gpu_light_list_fallback={} light_list_passes={} "
                  "light_list_cpu_ms={:.3f} shadow_cull_path={} shadow_indirect={} shadow_cull_dispatches={} "
@@ -145,6 +153,8 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.deferred ? "true" : "false",
                  diagnostics.vfxActive ? "true" : "false", diagnostics.vfxEffects, diagnostics.vfxSystems,
                  diagnostics.vfxParticles, diagnostics.vfxDraws, diagnostics.vfxDispatches,
+                 diagnostics.vfxSortPasses, diagnostics.vfxEvents, diagnostics.vfxMs,
+                 diagnostics.vfxUpdateMs, diagnostics.vfxSimulationMs, diagnostics.vfxOutputMs,
                  diagnostics.gbufferTargets,
                  diagnostics.stencil ? "true" : "false", diagnostics.postProcessActive ? "true" : "false",
                  diagnostics.postProcessPasses, diagnostics.postProcessWallMs,
@@ -164,6 +174,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  diagnostics.volumetricFogLocalVolumes, diagnostics.volumetricFogLocalMasks,
                  diagnostics.shadowDrawnItems, diagnostics.shadowCulledItems,
                  diagnostics.shadowDirectionalCacheActive ? "true" : "false",
+                 diagnostics.shadowDirectionalMixedCached ? "true" : "false",
                  diagnostics.shadowCachedDirectionalRequests,
                  diagnostics.shadowCacheActive ? "true" : "false", diagnostics.shadowCachedRequests,
                  diagnostics.shadowAreaCacheActive ? "true" : "false", diagnostics.shadowCachedAreaRequests,

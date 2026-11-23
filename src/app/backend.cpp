@@ -620,6 +620,9 @@ void applyShadowOverrides(const ShadowOverrides& overrides, render::ShadowSettin
     if (overrides.cachedDirectionalShadows) {
         settings.cachedDirectionalShadows = *overrides.cachedDirectionalShadows;
     }
+    if (overrides.cachedDirectionalMixedShadows) {
+        settings.cachedDirectionalMixedShadows = *overrides.cachedDirectionalMixedShadows;
+    }
     if (overrides.cachedPunctualShadows) {
         settings.cachedPunctualShadows = *overrides.cachedPunctualShadows;
     }
@@ -663,6 +666,24 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.vfxSpike = true;
             continue;
         }
+        if (arg == "--vfx-cpu-event-reference") {
+            result.options.vfxCpuEventReference = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-cpu-event-reference")) {
+            result.options.vfxCpuEventReference = true;
+            result.options.vfxReferencePath.assign(*value);
+            continue;
+        }
+        if (arg == "--vfx-event-reference") {
+            result.options.vfxEventReference = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-event-reference")) {
+            result.options.vfxEventReference = true;
+            result.options.vfxReferencePath.assign(*value);
+            continue;
+        }
         if (arg == "--vfx-reference") {
             result.options.vfxReference = true;
             continue;
@@ -674,6 +695,35 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (const auto value = optionValue(arg, "--vfx-reference-graph")) {
             result.options.vfxReferenceGraphPath.assign(*value);
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-editor")) {
+            if (value->empty()) {
+                HBG_LOGE("--vfx-editor requires a .vfx.json path");
+                result.ok = false;
+            } else {
+                result.options.vfxEditorPath.assign(*value);
+            }
+            continue;
+        }
+        if (arg == "--vfx-editor-compile") {
+            result.options.vfxEditorCompile = true;
+            continue;
+        }
+        if (arg == "--vfx-editor-preview") {
+            result.options.vfxEditorPreview = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-shaderc")) {
+            result.options.vfxShadercPath.assign(*value);
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-bgfx-src")) {
+            result.options.vfxBgfxSourcePath.assign(*value);
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-shader-pack")) {
+            result.options.vfxShaderPackPath.assign(*value);
             continue;
         }
         if (arg == "--vfx" || arg == "--vfx-test") {
@@ -1356,6 +1406,14 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.shadowOverrides.cachedDirectionalShadows = false;
             continue;
         }
+        if (arg == "--directional-shadow-cache-mixed") {
+            result.options.shadowOverrides.cachedDirectionalMixedShadows = true;
+            continue;
+        }
+        if (arg == "--no-directional-shadow-cache-mixed") {
+            result.options.shadowOverrides.cachedDirectionalMixedShadows = false;
+            continue;
+        }
         if (arg == "--shadow-cache") {
             result.options.shadowOverrides.cachedPunctualShadows = true;
             continue;
@@ -1861,12 +1919,28 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             continue;
         }
 
+        if (arg == "--resize-test") {
+            result.options.resizeTest = true;
+            continue;
+        }
+
         if (const auto value = optionValue(arg, "--frames")) {
             if (!parseDimension(*value, result.options.frames)) {
                 HBG_LOGE("invalid --frames value '{}'", *value);
                 result.ok = false;
             } else {
                 result.options.framesSpecified = true;
+            }
+            continue;
+        }
+
+        if (const auto value = optionValue(arg, "--animation-time")) {
+            float animationTime = 0.0f;
+            if (!parseFloat(*value, animationTime) || animationTime < 0.0f) {
+                HBG_LOGE("invalid --animation-time value '{}'", *value);
+                result.ok = false;
+            } else {
+                result.options.animationTime = animationTime;
             }
             continue;
         }
@@ -2077,7 +2151,7 @@ const char* usage() {
            "  --verbose                                         Enable debug logging (including bgfx trace)\n"
            "  --bgfx-debug                                      Enable bgfx debug/validation layers\n"
            "  --gfx-test                                        Run the M0.2 resource/draw smoke test and exit\n"
-           "  --vfx-spike                                       Run the VFX V0 GPU spike and exit\n  --vfx-reference[=<asset.vfxb>]                     Run the 1024-particle VFX GPU/CPU reference check and exit\n  --vfx-reference-graph=<effect.vfx.json>           Graph used by --vfx-reference for the CPU reference\n"
+           "  --vfx-spike                                       Run the VFX V0 GPU spike and exit\n  --vfx-reference[=<asset.vfxb>]                     Run the 1024-particle VFX GPU/CPU reference check and exit\n  --vfx-event-reference[=<asset.vfxb>]               Run the GPU event/prefix-sum reference check and exit\n  --vfx-cpu-event-reference[=<asset.vfxb>]           Run the CPU event attribute/prefix reference check and exit\n  --vfx-reference-graph=<effect.vfx.json>           Graph used by --vfx-reference for the CPU reference\n  --vfx-editor=<effect.vfx.json>                    Open the V2 graph editor with a loaded scene\n  --vfx-editor-compile                              Compile the editor graph and exit (CI smoke)\n  --vfx-editor-preview                              Compile unsaved graph to a preview .vfxb and exit\n  --vfx-shaderc=<path>                              shaderc used by editor compile (env: HBG_SHADERC)\n  --vfx-bgfx-src=<path>                             bgfx source root for editor compile (env: HBG_BGFX_SOURCE_DIR)\n  --vfx-shader-pack=<path>                          optional shader include root for editor compile\n"
            "  --vfx / --vfx-test / --no-vfx                     Enable/disable VFX runtime for the scene\n"
            "  --debug-ui / --no-debug-ui                        Enable/disable the interactive debug panel\n"
            "  --debug-light-data                                Start with the GPU light-data debug view\n"
@@ -2095,6 +2169,8 @@ const char* usage() {
            "vectors\n"
            "  --no-shadows                                      Start with shadow sampling disabled\n"
            "  --directional-shadow-cache / --no-directional-shadow-cache  Enable/disable cached static directional shadows\n"
+           "  --directional-shadow-cache-mixed / --no-directional-shadow-cache-mixed\n"
+           "                                                    Enable/disable static/dynamic mixed directional cache\n"
            "  --shadow-cache / --no-shadow-cache                Enable/disable cached static punctual shadows\n"
            "  --area-shadow-cache / --no-area-shadow-cache      Enable/disable cached static rectangle area shadows\n"
            "  --shadow-dimmer=<0..1>                            Global default shadow dimmer (per-light wins)\n"
@@ -2148,8 +2224,10 @@ const char* usage() {
            "  --asset-test=<path>                               Load a glTF scene, log its contents and exit\n"
            "  --scene=<path>                                    Load a glTF scene and render it interactively\n"
            "  --render-test=<path>                              Render a glTF scene for --frames frames and exit\n"
+           "  --resize-test                                      Alternate half/full render size in render-test\n"
            "  --frames=<count>                                  Render-test frames; with --scene, stop after count "
            "frames\n"
+           "  --animation-time=<seconds>                        Evaluate glTF animation at a fixed time\n"
            "  --render-scale=<0.1..1.0>                         Dynamic-resolution render scale (default: 1.0)\n"
            "  --lit-shader-mode=<forward|deferred>              Override the lit shader mode\n"
            "  --lit-variants / --no-lit-variants                Enable/disable 29 deferred Lit feature variants\n"

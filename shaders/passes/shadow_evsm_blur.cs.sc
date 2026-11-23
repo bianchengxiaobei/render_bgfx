@@ -13,6 +13,8 @@ uniform vec4 u_shadowMomentParams;
 
 SHARED float s_moment1[HBG_EVSM_CELLS];
 SHARED float s_moment2[HBG_EVSM_CELLS];
+SHARED float s_moment3[HBG_EVSM_CELLS];
+SHARED float s_moment4[HBG_EVSM_CELLS];
 
 float hbgEvsmWeight(int offset)
 {
@@ -47,6 +49,8 @@ void main()
     const ivec2 groupOrigin = ivec2(gl_WorkGroupID.xy * uint(HBG_EVSM_TILE));
     const ivec2 local = ivec2(gl_LocalInvocationID.xy);
     const float exponent = u_shadowMomentParams.x;
+    const bool msm = u_shadowMomentParams.w > 1.5;
+    const bool rawVsm = !msm && u_shadowMomentParams.w > 0.5;
     const ivec2 maxSource = sourceOrigin + sourceSize - ivec2(1, 1);
 
     for (uint cellIndex = gl_LocalInvocationIndex; cellIndex < uint(HBG_EVSM_CELLS);
@@ -66,14 +70,38 @@ void main()
         const float depth2 = clamp(texelFetch(s_shadowDepth, ivec2(source0.x, source1.y), 0).x, 0.0, 1.0);
         const float depth3 = clamp(texelFetch(s_shadowDepth, source1, 0).x, 0.0, 1.0);
 
-        const float warped0 = exp2(exponent * (2.0 * depth0 - 1.0));
-        const float warped1 = exp2(exponent * (2.0 * depth1 - 1.0));
-        const float warped2 = exp2(exponent * (2.0 * depth2 - 1.0));
-        const float warped3 = exp2(exponent * (2.0 * depth3 - 1.0));
+        if (msm)
+        {
+            const float d0 = depth0;
+            const float d1 = depth1;
+            const float d2 = depth2;
+            const float d3 = depth3;
+            s_moment1[cellIndex] = (d0 + d1 + d2 + d3) * 0.25;
+            s_moment2[cellIndex] = (d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3) * 0.25;
+            s_moment3[cellIndex] =
+                (d0 * d0 * d0 + d1 * d1 * d1 + d2 * d2 * d2 + d3 * d3 * d3) * 0.25;
+            s_moment4[cellIndex] = (d0 * d0 * d0 * d0 + d1 * d1 * d1 * d1 +
+                                    d2 * d2 * d2 * d2 + d3 * d3 * d3 * d3) *
+                                   0.25;
+        }
+        else if (rawVsm)
+        {
+            s_moment1[cellIndex] = (depth0 + depth1 + depth2 + depth3) * 0.25;
+            s_moment2[cellIndex] =
+                (depth0 * depth0 + depth1 * depth1 + depth2 * depth2 + depth3 * depth3) * 0.25;
+        }
+        else
+        {
+            const float warped0 = exp2(exponent * (2.0 * depth0 - 1.0));
+            const float warped1 = exp2(exponent * (2.0 * depth1 - 1.0));
+            const float warped2 = exp2(exponent * (2.0 * depth2 - 1.0));
+            const float warped3 = exp2(exponent * (2.0 * depth3 - 1.0));
 
-        s_moment1[cellIndex] = (warped0 + warped1 + warped2 + warped3) * 0.25;
-        s_moment2[cellIndex] =
-            (warped0 * warped0 + warped1 * warped1 + warped2 * warped2 + warped3 * warped3) * 0.25;
+            s_moment1[cellIndex] = (warped0 + warped1 + warped2 + warped3) * 0.25;
+            s_moment2[cellIndex] =
+                (warped0 * warped0 + warped1 * warped1 + warped2 * warped2 + warped3 * warped3) *
+                0.25;
+        }
     }
     barrier();
 
@@ -81,8 +109,12 @@ void main()
     const int ty = local.y;
     float horizontal1a = 0.0;
     float horizontal2a = 0.0;
+    float horizontal3a = 0.0;
+    float horizontal4a = 0.0;
     float horizontal1b = 0.0;
     float horizontal2b = 0.0;
+    float horizontal3b = 0.0;
+    float horizontal4b = 0.0;
     for (int horizontalOffset = -HBG_EVSM_HALO; horizontalOffset <= HBG_EVSM_HALO; ++horizontalOffset)
     {
         const int column = tx + HBG_EVSM_HALO + horizontalOffset;
@@ -91,6 +123,13 @@ void main()
         horizontal2a += s_moment2[ty * HBG_EVSM_STRIDE + column] * weight;
         horizontal1b += s_moment1[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + column] * weight;
         horizontal2b += s_moment2[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + column] * weight;
+        if (msm)
+        {
+            horizontal3a += s_moment3[ty * HBG_EVSM_STRIDE + column] * weight;
+            horizontal4a += s_moment4[ty * HBG_EVSM_STRIDE + column] * weight;
+            horizontal3b += s_moment3[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + column] * weight;
+            horizontal4b += s_moment4[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + column] * weight;
+        }
     }
     barrier();
 
@@ -99,22 +138,37 @@ void main()
     s_moment2[ty * HBG_EVSM_STRIDE + centerColumn] = horizontal2a;
     s_moment1[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + centerColumn] = horizontal1b;
     s_moment2[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + centerColumn] = horizontal2b;
+    if (msm)
+    {
+        s_moment3[ty * HBG_EVSM_STRIDE + centerColumn] = horizontal3a;
+        s_moment4[ty * HBG_EVSM_STRIDE + centerColumn] = horizontal4a;
+        s_moment3[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + centerColumn] = horizontal3b;
+        s_moment4[(ty + HBG_EVSM_TILE) * HBG_EVSM_STRIDE + centerColumn] = horizontal4b;
+    }
     barrier();
 
     const int centerRow = ty + HBG_EVSM_HALO;
     float vertical1 = 0.0;
     float vertical2 = 0.0;
+    float vertical3 = 0.0;
+    float vertical4 = 0.0;
     for (int verticalOffset = -HBG_EVSM_HALO; verticalOffset <= HBG_EVSM_HALO; ++verticalOffset)
     {
         const int row = centerRow + verticalOffset;
         const float weight = hbgEvsmWeight(verticalOffset);
         vertical1 += s_moment1[row * HBG_EVSM_STRIDE + centerColumn] * weight;
         vertical2 += s_moment2[row * HBG_EVSM_STRIDE + centerColumn] * weight;
+        if (msm)
+        {
+            vertical3 += s_moment3[row * HBG_EVSM_STRIDE + centerColumn] * weight;
+            vertical4 += s_moment4[row * HBG_EVSM_STRIDE + centerColumn] * weight;
+        }
     }
 
     const ivec2 halfLocal = groupOrigin + local;
     if (all(lessThan(halfLocal, halfSize)))
     {
-        imageStore(s_evsmMoments, halfOrigin + halfLocal, vec4(vertical1, vertical2, 0.0, 0.0));
+        imageStore(s_evsmMoments, halfOrigin + halfLocal,
+                   vec4(vertical1, vertical2, msm ? vertical3 : 0.0, msm ? vertical4 : 0.0));
     }
 }

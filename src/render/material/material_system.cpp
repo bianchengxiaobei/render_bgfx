@@ -36,12 +36,22 @@ gfx::VertexLayout meshLayout() {
     layout.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float);
     layout.add(bgfx::Attrib::TexCoord1, 2, bgfx::AttribType::Float);
     layout.add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Float);
+    layout.add(bgfx::Attrib::TexCoord2, 3, bgfx::AttribType::Float);
     layout.end();
     return layout;
 }
 
-uint64_t textureKey(int imageIndex, bool srgb) {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(imageIndex)) << 1) | (srgb ? 1u : 0u);
+uint64_t textureKey(int imageIndex, bool srgb, bool normalMap, const asset::TextureSampler& sampler) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(imageIndex)) << 32) |
+           (static_cast<uint64_t>(asset::samplerStateKey(sampler)) << 2) |
+           (normalMap ? 2u : 0u) | (srgb ? 1u : 0u);
+}
+
+uint64_t packedMaskKey(int metallicRoughnessImage, int occlusionImage, uint32_t samplerKey) {
+    const uint64_t metallicRoughness =
+        static_cast<uint64_t>(static_cast<uint32_t>(metallicRoughnessImage + 1)) & 0xffffffu;
+    const uint64_t occlusion = static_cast<uint64_t>(static_cast<uint32_t>(occlusionImage + 1)) & 0xffffffu;
+    return (metallicRoughness << 40) | (occlusion << 16) | (samplerKey & 0x7fu);
 }
 
 } // namespace
@@ -99,11 +109,16 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
     for (const asset::Mesh& mesh : scene.meshes) {
         GpuMesh gpuMesh;
         if (!mesh.vertices.empty()) {
+            gpuMesh.dynamicVertex = !mesh.morphTargets.empty() || !mesh.skinVertices.empty();
+            std::vector<asset::MeshVertex> initialVertices = mesh.vertices;
+            for (asset::MeshVertex& vertex : initialVertices) {
+                vertex.previousPosition = vertex.position;
+            }
             gfx::BufferDesc vertexDesc;
-            vertexDesc.type = gfx::BufferType::Vertex;
-            vertexDesc.data = mesh.vertices.data();
-            vertexDesc.size = static_cast<uint32_t>(mesh.vertices.size() * sizeof(asset::MeshVertex));
-            vertexDesc.count = static_cast<uint32_t>(mesh.vertices.size());
+            vertexDesc.type = gpuMesh.dynamicVertex ? gfx::BufferType::DynamicVertex : gfx::BufferType::Vertex;
+            vertexDesc.data = initialVertices.data();
+            vertexDesc.size = static_cast<uint32_t>(initialVertices.size() * sizeof(asset::MeshVertex));
+            vertexDesc.count = static_cast<uint32_t>(initialVertices.size());
             vertexDesc.layout = &layout;
             vertexDesc.name = mesh.name + ".vb";
             gpuMesh.vertexBuffer = resources.createBuffer(vertexDesc);
@@ -129,10 +144,25 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
     for (const asset::Material& material : scene.materials) {
         GpuMaterial gpuMaterial;
         gpuMaterial.baseColorTexture = textureForImage(resources, scene, material.baseColorTexture, true, false);
-        gpuMaterial.metallicRoughnessTexture =
-            textureForImage(resources, scene, material.metallicRoughnessTexture, false, false);
+        const bool hasMetallicRoughness = material.metallicRoughnessTexture.valid();
+        const bool hasOcclusion = material.occlusionTexture.valid();
+        const bool compatibleMaskSources =
+            !hasMetallicRoughness || !hasOcclusion ||
+            (material.metallicRoughnessTexture.uvSet == material.occlusionTexture.uvSet &&
+             material.metallicRoughnessTexture.sampler == material.occlusionTexture.sampler);
+        gfx::TextureHandle packedMask;
+        if (material.maskMapPacked && (hasMetallicRoughness || hasOcclusion) && compatibleMaskSources) {
+            packedMask = packedMaskTexture(resources, scene, material);
+        }
+        if (packedMask.valid()) {
+            gpuMaterial.metallicRoughnessTexture = packedMask;
+            gpuMaterial.occlusionTexture = packedMask;
+        } else {
+            gpuMaterial.metallicRoughnessTexture =
+                textureForImage(resources, scene, material.metallicRoughnessTexture, false, false);
+            gpuMaterial.occlusionTexture = textureForImage(resources, scene, material.occlusionTexture, false, false);
+        }
         gpuMaterial.normalTexture = textureForImage(resources, scene, material.normalTexture, false, true);
-        gpuMaterial.occlusionTexture = textureForImage(resources, scene, material.occlusionTexture, false, false);
         gpuMaterial.emissiveTexture = textureForImage(resources, scene, material.emissiveTexture, true, false);
 
         gpuMaterial.uniforms.baseColorFactor = material.baseColorFactor;
@@ -190,8 +220,93 @@ bool MaterialSystem::init(gfx::ResourceManager& resources, const RenderScene& sc
         m_decals.push_back(textures);
     }
 
-    HBG_LOGI("material system: {} meshes, {} materials, {} decals, {} textures", m_meshes.size(),
-             m_materials.size(), m_decals.size(), m_textureCache.size());
+    HBG_LOGI("material system: {} meshes, {} materials, {} decals, {} textures, {} packed masks", m_meshes.size(),
+             m_materials.size(), m_decals.size(), m_textureCache.size(), m_packedMaskCache.size());
+    return true;
+}
+
+bool MaterialSystem::updateDeformedMeshes(RenderScene& scene) {
+    if (m_resources == nullptr || m_meshes.size() != scene.meshes.size()) {
+        return false;
+    }
+
+    const std::vector<Mat4> nodeWorlds =
+        scene.skins.empty() ? std::vector<Mat4>{} : asset::evaluateNodeWorlds(scene);
+    std::vector<uint8_t> updated(m_meshes.size(), 0);
+    std::vector<asset::MeshVertex> deformed;
+    std::vector<Mat4> jointMatrices;
+    for (render::RenderObject& object : scene.objects) {
+        if (object.meshIndex >= scene.meshes.size()) {
+            continue;
+        }
+        const asset::Mesh& mesh = scene.meshes[object.meshIndex];
+        const bool hasMorph = !mesh.morphTargets.empty();
+        const bool hasSkin =
+            object.skinIndex >= 0 && static_cast<std::size_t>(object.skinIndex) < scene.skins.size() &&
+            !mesh.skinVertices.empty();
+        if (!hasMorph && !hasSkin) {
+            continue;
+        }
+        GpuMesh& gpuMesh = m_meshes[object.meshIndex];
+        if (!gpuMesh.dynamicVertex || !gpuMesh.vertexBuffer.valid()) {
+            continue;
+        }
+        if (updated[object.meshIndex] != 0) {
+            HBG_LOGW("material system: deformed mesh '{}' is shared by multiple render objects", mesh.name);
+            continue;
+        }
+
+        if (hasMorph) {
+            mesh.applyMorphWeights(object.morphWeights, deformed);
+        } else {
+            deformed = mesh.vertices;
+        }
+
+        if (hasSkin) {
+            const asset::Skin& skin = scene.skins[static_cast<std::size_t>(object.skinIndex)];
+            jointMatrices.assign(skin.joints.size(), Mat4::identity());
+            const Mat4 meshWorld = object.nodeIndex >= 0 &&
+                                           static_cast<std::size_t>(object.nodeIndex) < nodeWorlds.size()
+                                       ? nodeWorlds[static_cast<std::size_t>(object.nodeIndex)]
+                                       : object.world;
+            const Mat4 inverseMeshWorld = hbg::inverse(meshWorld);
+            for (std::size_t jointIndex = 0; jointIndex < skin.joints.size(); ++jointIndex) {
+                const uint32_t jointNode = skin.joints[jointIndex];
+                if (jointNode >= nodeWorlds.size() || jointIndex >= skin.inverseBindMatrices.size()) {
+                    continue;
+                }
+                jointMatrices[jointIndex] =
+                    inverseMeshWorld * nodeWorlds[jointNode] * skin.inverseBindMatrices[jointIndex];
+            }
+            mesh.applySkinning(jointMatrices, deformed);
+        }
+
+        if (deformed.size() != mesh.vertices.size()) {
+            continue;
+        }
+        const Bounds localBounds = asset::Mesh::computeBounds(deformed);
+        if (gpuMesh.previousPositions.size() != deformed.size()) {
+            gpuMesh.previousPositions.resize(deformed.size());
+            for (std::size_t vertex = 0; vertex < deformed.size(); ++vertex) {
+                gpuMesh.previousPositions[vertex] = deformed[vertex].position;
+            }
+        }
+        for (std::size_t vertex = 0; vertex < deformed.size(); ++vertex) {
+            deformed[vertex].previousPosition = gpuMesh.previousPositions[vertex];
+        }
+        if (!m_resources->updateBuffer(gpuMesh.vertexBuffer, deformed.data(),
+                                       static_cast<uint32_t>(deformed.size() * sizeof(asset::MeshVertex)))) {
+            HBG_LOGE("material system: failed to update deformed mesh '{}'", mesh.name);
+            return false;
+        }
+        if (localBounds.valid()) {
+            object.worldBounds = transformBounds(object.world, localBounds);
+        }
+        for (std::size_t vertex = 0; vertex < deformed.size(); ++vertex) {
+            gpuMesh.previousPositions[vertex] = deformed[vertex].position;
+        }
+        updated[object.meshIndex] = 1;
+    }
     return true;
 }
 
@@ -241,13 +356,55 @@ bool MaterialSystem::ensureWireframeBuffers(gfx::ResourceManager& resources, con
     return true;
 }
 
+gfx::TextureHandle MaterialSystem::packedMaskTexture(gfx::ResourceManager& resources, const RenderScene& scene,
+                                                     const asset::Material& material) {
+    const auto imageFor = [&scene](const asset::TextureRef& ref) -> const asset::ImageAsset* {
+        if (!ref.valid() || static_cast<std::size_t>(ref.imageIndex) >= scene.images.size()) {
+            return nullptr;
+        }
+        return &scene.images[static_cast<std::size_t>(ref.imageIndex)];
+    };
+    const asset::ImageAsset* metallicRoughness = imageFor(material.metallicRoughnessTexture);
+    const asset::ImageAsset* occlusion = imageFor(material.occlusionTexture);
+    if (metallicRoughness == nullptr && occlusion == nullptr) {
+        return {};
+    }
+
+    const asset::TextureSampler& sampler = material.metallicRoughnessTexture.valid()
+                                               ? material.metallicRoughnessTexture.sampler
+                                               : material.occlusionTexture.sampler;
+    const uint64_t key = packedMaskKey(material.metallicRoughnessTexture.imageIndex,
+                                       material.occlusionTexture.imageIndex,
+                                       asset::samplerStateKey(sampler));
+    const auto cached = m_packedMaskCache.find(key);
+    if (cached != m_packedMaskCache.end()) {
+        return cached->second;
+    }
+
+    asset::ImageAsset packed;
+    std::string error;
+    if (!asset::TextureLoader::packOrmMask(occlusion, metallicRoughness, packed, &error)) {
+        HBG_LOGD("material system: packing mask for '{}' skipped: {}", material.name, error);
+        return {};
+    }
+    packed.name = material.name.empty() ? "OrmMask" : material.name + ".OrmMask";
+    const gfx::TextureHandle texture =
+        asset::TextureLoader::createTexture(resources, packed, false, sampler, packed.name);
+    if (!texture.valid()) {
+        HBG_LOGW("material system: failed to upload packed mask '{}'", packed.name);
+        return {};
+    }
+    m_packedMaskCache.emplace(key, texture);
+    return texture;
+}
+
 gfx::TextureHandle MaterialSystem::textureForImage(gfx::ResourceManager& resources, const RenderScene& scene,
                                                    const asset::TextureRef& ref, bool srgb, bool normalMap) {
     if (!ref.valid() || static_cast<std::size_t>(ref.imageIndex) >= scene.images.size()) {
         return normalMap ? m_normalFlat : (srgb ? m_whiteSrgb : m_whiteLinear);
     }
 
-    const uint64_t key = textureKey(ref.imageIndex, srgb) ^ (normalMap ? 0x8000000000000000ULL : 0);
+    const uint64_t key = textureKey(ref.imageIndex, srgb, normalMap, ref.sampler);
     const auto cached = m_textureCache.find(key);
     if (cached != m_textureCache.end()) {
         return cached->second;
@@ -255,7 +412,7 @@ gfx::TextureHandle MaterialSystem::textureForImage(gfx::ResourceManager& resourc
 
     const asset::ImageAsset& image = scene.images[static_cast<std::size_t>(ref.imageIndex)];
     const gfx::TextureHandle texture =
-        asset::TextureLoader::createTexture(resources, image, srgb, image.name);
+        asset::TextureLoader::createTexture(resources, image, srgb, ref.sampler, image.name);
     if (!texture.valid()) {
         HBG_LOGW("material system: failed to upload image '{}', using fallback", image.name);
         return normalMap ? m_normalFlat : (srgb ? m_whiteSrgb : m_whiteLinear);
@@ -272,6 +429,14 @@ void MaterialSystem::shutdown(gfx::ResourceManager& resources) {
         }
     }
     m_textureCache.clear();
+
+    for (const auto& [key, texture] : m_packedMaskCache) {
+        (void)key;
+        if (texture.valid()) {
+            resources.destroyTexture(texture);
+        }
+    }
+    m_packedMaskCache.clear();
 
     if (m_normalFlat.valid()) {
         resources.destroyTexture(m_normalFlat);

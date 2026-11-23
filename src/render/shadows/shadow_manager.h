@@ -78,6 +78,7 @@ struct ShadowRequest {
     ShadowFilter filter = ShadowFilter::Pcf5x5;
     bool isCached = false;
     bool isStaticArea = false;
+    bool hasDynamicCaster = false;
     uint32_t cascadeIndex = 0;
     std::array<Vec4, 6> frustumPlanes{};
 };
@@ -113,6 +114,7 @@ class ShadowManager {
     bool directionalCacheActive() const { return m_directionalCacheEligible; }
     bool directionalCacheDirty() const { return m_directionalCacheDirty; }
     bool directionalCacheMixed() const { return m_directionalCacheMixed; }
+    bool directionalMixedCached() const { return m_directionalMixedCached; }
     bool areaCacheActive() const { return m_areaCacheEligible; }
     bool areaCacheMixed() const { return m_areaCacheMixed; }
     bool areaCacheDirty() const { return m_areaCacheDirty; }
@@ -121,13 +123,21 @@ class ShadowManager {
     uint32_t cachedAreaRequestCount() const { return m_cachedAreaRequestCount; }
 
     bool imsActive() const { return m_imsActive; }
+    bool directionalMomentBlurActive() const { return m_directionalMomentBlurActive; }
+    bool directionalMsmBlurActive() const { return m_directionalMsmBlurActive; }
     bool areaEvsmBlurActive() const { return m_areaEvsmActive; }
     gfx::TextureHandle areaEvsmMomentTexture() const { return m_areaEvsmMomentTexture; }
     gfx::TextureHandle areaEvsmMomentCopyTexture() const { return m_areaEvsmMomentCopyTexture; }
     gfx::TextureHandle directionalMomentTexture() const { return m_directionalMomentTexture; }
     gfx::TextureHandle directionalMomentSatTexture() const { return m_directionalMomentSatTexture; }
+    gfx::TextureHandle directionalMomentBlurTexture() const { return m_directionalMomentBlurTexture; }
+    gfx::TextureHandle directionalMsmMomentTexture() const { return m_directionalMsmMomentTexture; }
     gfx::TextureHandle directionalTexture() const { return m_directionalTexture; }
+    gfx::TextureHandle cachedDirectionalTexture() const { return m_cachedDirectionalTexture; }
     gfx::TextureHandle activeDirectionalTexture() const {
+        if (m_directionalMixedCached) {
+            return m_directionalTexture;
+        }
         return m_directionalCacheEligible && m_cachedDirectionalTexture.valid()
                    ? m_cachedDirectionalTexture
                    : m_directionalTexture;
@@ -168,6 +178,7 @@ class ShadowManager {
             m_cacheHash = 0;
             m_directionalCacheValid = false;
             m_directionalCacheMixed = false;
+            m_directionalMixedCached = false;
             m_directionalRequestCacheValid.fill(false);
             m_directionalRequestHashes.fill(0);
             m_areaCacheValid = false;
@@ -176,7 +187,7 @@ class ShadowManager {
     }
 
     void beginPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                   const ShadowRequest& request) const;
+                   const ShadowRequest& request, bool clearDepth = true) const;
     void beginCachedPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                          uint16_t atlasSize) const;
 
@@ -202,13 +213,17 @@ class ShadowManager {
     void resetFrameRequests();
     uint64_t buildCacheHash(const RenderScene& scene, const LightBuilder& lightBuilder,
                             ShadowAtlasType atlas, bool staticAreaOnly = false) const;
-    uint64_t buildDirectionalRequestHash(const RenderScene& scene, const ShadowRequest& request) const;
+    uint64_t buildDirectionalRequestHash(const RenderScene& scene, const ShadowRequest& request,
+                                         bool mixedCacheEnabled, bool& hasStaticCaster,
+                                         bool& hasDynamicCaster) const;
 
     gfx::ResourceManager* m_resources = nullptr;
     gfx::TextureHandle m_directionalTexture;
     gfx::TextureHandle m_cachedDirectionalTexture;
     gfx::TextureHandle m_directionalMomentTexture;
     gfx::TextureHandle m_directionalMomentSatTexture;
+    gfx::TextureHandle m_directionalMomentBlurTexture;
+    gfx::TextureHandle m_directionalMsmMomentTexture;
     gfx::TextureHandle m_punctualTexture;
     gfx::TextureHandle m_cachedPunctualTexture;
     gfx::TextureHandle m_areaTexture;
@@ -232,6 +247,7 @@ class ShadowManager {
     bool m_directionalCacheValid = false;
     bool m_directionalCacheDirty = false;
     bool m_directionalCacheMixed = false;
+    bool m_directionalMixedCached = false;
     bool m_cacheEligible = false;
     bool m_cacheValid = false;
     bool m_areaCacheEligible = false;
@@ -244,6 +260,8 @@ class ShadowManager {
     bool m_sortedPackingWarningLogged = false;
     bool m_imsActive = false;
     bool m_imsWarningLogged = false;
+    bool m_directionalMomentBlurActive = false;
+    bool m_directionalMsmBlurActive = false;
     bool m_areaEvsmActive = false;
     uint16_t m_directionalAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);
     uint16_t m_punctualAtlasSize = static_cast<uint16_t>(kDefaultShadowAtlasSize);

@@ -1,4 +1,4 @@
-﻿#include "gfx/framebuffer_cache.h"
+#include "gfx/framebuffer_cache.h"
 
 #include "core/log.h"
 
@@ -63,6 +63,10 @@ bool FrameBuffer::create(const FrameBufferKey& frameBufferKey,
     const auto mipAt = [&frameBufferKey](std::size_t index) {
         return index < frameBufferKey.mips.size() ? frameBufferKey.mips[index] : static_cast<uint16_t>(0);
     };
+    const auto flagsAt = [&frameBufferKey](std::size_t index) {
+        return index < frameBufferKey.attachmentFlags.size() ? frameBufferKey.attachmentFlags[index]
+                                                              : static_cast<uint8_t>(0);
+    };
 
     const uint8_t count = static_cast<uint8_t>(nativeAttachments.size());
     // Always use explicit attachments. The TextureHandle overload lets bgfx
@@ -72,9 +76,13 @@ bool FrameBuffer::create(const FrameBufferKey& frameBufferKey,
     std::vector<bgfx::Attachment> attachments;
     attachments.reserve(nativeAttachments.size());
     for (std::size_t index = 0; index < nativeAttachments.size(); ++index) {
+        const uint8_t flags =
+            (flagsAt(index) & kFrameBufferAttachmentReadOnlyDepth) != 0
+                ? static_cast<uint8_t>(BGFX_ATTACHMENT_READ_ONLY_DEPTH |
+                                       BGFX_ATTACHMENT_READ_ONLY_STENCIL)
+                : static_cast<uint8_t>(BGFX_ATTACHMENT_NONE);
         bgfx::Attachment attachment;
-        attachment.init(nativeAttachments[index], bgfx::Access::Write, 0, 1, mipAt(index),
-                        BGFX_ATTACHMENT_NONE);
+        attachment.init(nativeAttachments[index], bgfx::Access::Write, 0, 1, mipAt(index), flags);
         attachments.push_back(attachment);
     }
     m_native = bgfx::createFrameBuffer(count, attachments.data(), false);

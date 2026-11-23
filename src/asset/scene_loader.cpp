@@ -836,6 +836,10 @@ bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, 
         return false;
     }
     target->decalLayerMask = static_cast<uint8_t>(std::min<uint32_t>(decalMask, 0x7fu));
+
+    if (!readBool(object, "staticShadowCaster", target->staticShadowCaster, error)) {
+        return false;
+    }
     return true;
 }
 

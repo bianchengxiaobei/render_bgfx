@@ -7,9 +7,9 @@
 
 ## 当前状态
 
-- 阶段：**D4 完成（OnlyLocal + 本地 Coordinator mock 打通官方 Agent 作业流，产出真实 `.lmgz`）；D5.1–D5.7 完成；D6.1–D6.7 完成（D6.6/D6.7 T4/T5 已在 D7.2 方向贴图数据上复验）；D7.1 完成（T2 UV V 轴）；D7.2 完成（Dawn 方向贴图解码 + T1 单平行光标定）；D7.3 完成（点光 1/d² 衰减校准）；D7.4 完成（T1 线性色差校准）；D7.5 完成（T3 接缝校准）；D7.6 完成（T6 100 物件性能/显存）；D7.7 完成（校准值固化到 config/dawn.json）；D7.8 参考路径对比完成（Unity 实机截图受 D0.12 阻塞）；D8.1/D8.2/D8.3/D8.4/D8.5 完成；D3 清单完成（D3.1–D3.9）；D2.1–D2.10 完成**；D1 已完成（gzip deflate 已补）；D0.8 本地已解除：官方未打补丁 `Dawn.exe` 直启/Agent 均完成烘焙；OptiX 与 CPU OIDN（`denoiserMode=2`）两条路径均成功，CPU 结果 196,921B，仅保留 `string pointer is null` 日志警告；dawnbake **31/31**、Dawn/非 VFX **33/33**；全量测试集当前 **101** 项，受并行会话重建 `hbg.exe` 影响，尚未取得单次全绿
+- 阶段：**D4 完成（OnlyLocal + 本地 Coordinator mock 打通官方 Agent 作业流，产出真实 `.lmgz`）；D5.1–D5.7 完成；D6.1–D6.7 完成（D6.6/D6.7 T4/T5 已在 D7.2 方向贴图数据上复验）；D7.1 完成（T2 UV V 轴）；D7.2 完成（Dawn 方向贴图解码 + T1 单平行光标定）；D7.3 完成（点光 1/d² 衰减校准）；D7.4 完成（T1 线性色差校准）；D7.5 完成（T3 接缝校准）；D7.6 完成（T6 100 物件性能/显存）；D7.7 完成（校准值固化到 config/dawn.json）；D7.8 参考路径对比完成（Unity 实机截图受 D0.12 阻塞）；D8.1/D8.2/D8.3/D8.4/D8.5 完成；D3 清单完成（D3.1–D3.9）；D2.1–D2.17 完成（D2.11–D2.15 细节见代码/测试与 `tools/dawnbake/README.md`）**；D1 已完成（gzip deflate 已补）；D0.8 本地已解除：官方未打补丁 `Dawn.exe` 直启/Agent 均完成烘焙；OptiX 与 CPU OIDN（`denoiserMode=2`）两条路径均成功，CPU 结果 196,921B，仅保留 `string pointer is null` 日志警告；dawnbake **36/36**；`hbg_tests` 上一轮 **315/315**（当前工作区外部 `config/pipeline.json` 改动导致 1 个 settings 用例失败，与本轮无关）；全量 CTest 上次 **137/137**（当前 148 项，未重跑）
 - 协议版本：`1002`（Dawn 插件 2.4.5，Dawn.exe 1.3.5.20241220）
-- 最近更新：2026-11-22
+- 最近更新：2026-11-26
 
 ---
 
@@ -78,7 +78,7 @@
   - `gzipCompress()` 链接 zlib 时写标准 deflate，10B header 对齐 .NET `GZipStream`（`1F 8B 08 00 00 00 00 00 04 00`），末尾写 CRC32/ISIZE；未链接 zlib 时回退 stored block。`gzipDecompress()` 优先 zlib，兼容原版 `.NET GZipStream` 产物。
   - 原版 `FDawnHiveInterface.cs:1332-1339` 的 `Compress()` 使用 `GZipStream(..., CompressionMode.Compress, false)` 写 `.scenegz/.jobgz`；本实现与其容器格式一致。
   - `--package-test` 验证 `.scenegz/.jobgz/meshgz/matgz` 解压后与原始文件一致，且 scene/jobs 压缩后小于 stored。`--export-min` 实测 scene 7636→338B、jobs 800→119B；手工用 .NET `GZipStream` 解压本工具产物、以及用本工具读取 .NET 产物均通过。
-  - 官方 Agent 实跑（2026-11-21，gz-only）：本地 Coordinator 5010 + DawnDeamon 5009 + DawnAgent 5011，job 目录只保留 deflated `.scenegz` 338B / `.jobgz` 119B（删除 raw `.scene/.jobs`），`--bake ... --agent` 仍输出 `DAWN_PROGRESS phase=done`、`Dawn results: validated`，结果 `.lmgz` 42,798B；证明原版 DawnAgent/Dawn 直接读取 gzip deflate，且 `buildAgentJobSpec()`/`expectedLightmapResults()` 已支持 `.jobgz` 回退。
+  - 官方 Agent 实跑（2026-11-21，gz-only）：本地 Coordinator 5010 + DawnDeamon 5009 + DawnAgent 5011，job 目录只保留 deflated `.scenegz` 338B / `.jobgz` 119B（删除 raw `.scene/.jobs`），`--bake ... --agent` 仍输出 `DAWN_PROGRESS phase=done`、`Dawn results: validated`，结果 `.lmgz` 42,798B；证明原版 DawnAgent/Dawn 直接读取 gzip deflate，且 `buildAgentJobSpec()`/`expectedDawnResults()` 已支持 `.jobgz` 回退。
 
 ### D1.2 场景结构
 
@@ -133,8 +133,11 @@
 - [x] D2.8 写出完整 job 目录（scenegz/jobgz/meshgz/matgz）
 - [x] D2.9 用 golden 场景逐文件比对结构（字段级，不要求字节级）
 - [x] D2.10 Dawn 能读取并开始烘焙（先不关心结果）
+- [x] D2.11–D2.15 场景/灯光/天空/Parcel 导出扩展
+- [x] D2.16 ShadowMask relevant lights、SDF jobs/groups、`.sdfgz` Agent 结果
+- [x] D2.17 lightmap group packing 与超尺寸 lightmap split/merge（`LIGHTMAP2D_GROUP`/`LIGHTMAP2D_SPLIT`）
 
-**D2 出口条件**：手搭 1 个三角面 + 1 盏平行光场景，Dawn 不报错并产出 `.lmgz`。当前 D2.1–D2.10 完成；Dawn 已读取并完成烘焙，但 local 模式未落盘 `.lmgz`，结果通道留到 D4/D5。
+**D2 出口条件**：手搭 1 个三角面 + 1 盏平行光场景，Dawn 不报错并产出 `.lmgz`。当前 D2.1–D2.17 完成；Dawn 已读取并完成烘焙，但 local 模式未落盘 `.lmgz`，结果通道走 D4/D5 Agent。
 
 ### D2 进度（2026-11-19）
 
@@ -198,7 +201,16 @@
   - 当前官方 exe 的 CPU OIDN 与 OptiX 路径均可用；仅剩 OIDN 空指针日志，D0.10 降级为日志清理。
   - local 模式未在 job 目录生成 `.lmgz`；结果通道/落盘路径留到 D4/D5（Agent 或 direct launcher）确认。
 
-- 待办：`UV2MapSize/UV2Offset` 仍由 `MeshExportOptions` 注入，D3 atlas 计算后填入；尚未接 `--export <gltf>`；D4/D5 结果通道待做。
+- **D2.11–D2.15 场景导出扩展**：`--export-scene`/Parcel bridge、sidecar GI 过滤、sky GUID、灯光 bakeMode/mixedMode/lightingChannel/色温/shadowType/falloff/IES/Rect/Disc 等已落地，细节与验收命令见 `tools/dawnbake/README.md`。
+- **D2.16 ShadowMask SDF 全链路**（2026-11-25）：
+  - 原版参考：`DawnExporter.cs:327-377`、`DawnLightmap2DExporter.cs:160-194`、`DawnShadowMaskExporter.cs:99-159`、`DawnPackLightmapTask.cs:200-295`、`DawnShadowMaskGroupExporter.cs`、`DawnShadowMaskGroupTask.cs`、`DawnShadowMaskImporter.cs`。
+  - mixed+shadowmask 时收集 `meshInstances[].relevantLights`（Directional 总有，局部灯按 bbox 相交，realtime 跳过）；lightmap job 的 `DIRECT` 只在相关灯含 Baked 时保留。
+  - 每个 mesh 写 `SdfShadowInput`（JobID=meshGuid B=1 C=index、MeshID、BILINEAR/PADDING、size、upsample=4、UV=1、相关 mixed cast-shadow 灯 GUID）；按 `config.lightmap.taskPackSize`（默认 512）打包 `SdfShadowGroupInput`（JobID=(102,1,index,0xFFFFFFFF)、GroupSize=packSize 或单任务 max、upsample=4、job index/offset，task padding flag（0/1）计入 packing），并补 `SdfShadowParameter`/`ShadowSettingParameter`（`bAllowSignedDistanceFieldShadows=1`）。
+  - 结果按 `FSDFShadowOutput` 读取（48B header + custom maps，12B `FSDFShadowInfo`），支持 `--sdfgz-test`/`--inspect-sdfgz`/`--verify-sdfgz`；Agent 任务参数 `SHADOWMASK_GROUP`，结果文件为组内每个 job 的 `v2.<jobguid>.sdfgz`。校验 `ShadowMaps[i].LightID == ShadowmaskLights[i]`，并拒绝顺序/灯 GUID 不匹配。
+  - 真实 Agent（Coordinator 5010 + DawnDeamon 5009 + Agent 5011）4/4 tasks、`Dawn results: validated`，下载 2 个 `.lmgz` + 2 个 `.sdfgz`（424B/333B）；`--inspect-sdfgz` 50×50 2500 samples、31×31 961 samples；`--verify-sdfgz` 3461 samples/2986 mapped。
+  - 双灯真实 Agent（job6，两个 mixed shadowmask 平行光）：4/4 tasks，2 个 `.sdfgz` 各 2 maps，50×50 5000 samples、31×31 1922 samples；`--verify-sdfgz` 6922 samples/5972 mapped，LightID 顺序 `E04E3F61`、`B1EA6248` 与输入一致。
+  - SDF group 打包（job7，taskPackSize=256）：2 个 job 合为 1 个 256 group，offsets `(0,0,0)`/`(52,0,1)`，`tasks=3/3`，Dawn 仍输出逐 job 50×50/31×31；非打包分支（job8，512/311 lightmap）各生成单 job group，GroupSize 512/311、offset `(0,0,index)`。
+- 待办：`UV2MapSize/UV2Offset` 仍由 `MeshExportOptions` 注入，D3 atlas 计算后填入；`--export <gltf>` 已由 `--export-scene` 覆盖；D4/D5 结果通道已完成 Agent 下载。
 
 ---
 
@@ -218,11 +230,11 @@
   - `calculateLightmapSize()` 照 `DawnLightmapSizeCalculate.cs:11-17`：`Resolution=max(0, texelPerUnit*scale*LODScale)`，`TexelSize=Resolution*max(uvW,uvH)*sqrt(area/(uvW*uvH))`，再 floor/clamp。
   - `uvW/uvH` 用 xatlas raw texel bounds（不是 per-axis 归一化 UV）；`LODScale=0.5^lod`；`padding` 时上限先减 2（与原代码一致）。
   - 实测：2m×1m quad / 6 texels/m → 12；scale×2 → 24；LOD1 → 6；最小 clamp 4；padding 时最大 1022，unpadded 1024。
-- [x] D3.4 shelf packer：降序、2048、padding 2
-  - `packLightmapSquares()` 按 `S_i` 降序（同尺寸按输入索引稳定排序）做 shelf pack；默认 atlas 2048。
+- [x] D3.4 AtlasNode packer：降序、2048、padding 2
+  - `packLightmapSquares()` 按 `S_i` 降序（同尺寸按输入索引稳定排序）用原版 `AtlasNode` 二叉分割打包；默认 atlas 2048。2026-11-26 从 shelf 替换为 `Editor/Utility/RectPackingUtility.cs:284-378` 的 AtlasNode。
   - `padding=2` 为**每块四周**留白，块间净距 4 texel；rect 为实际光图块 `(x,y,S,S)`，不含 padding。
   - 溢出时返回 `false`（D3.5 负责二分缩放/第二 atlas）。
-  - `--atlas-test` 覆盖尺寸公式、降序打包、无重叠/越界、确定性、空输入与溢出；CTest **10/10**。
+  - `--atlas-test` 覆盖尺寸公式、降序打包、无重叠/越界、确定性、空输入与溢出，并校验 task mapping 升序 + AtlasNode 的 offset；CTest **36/36**。
 - [x] D3.5 溢出处理：二分缩放（下限 0.5）→ 第二 atlas → 报错
   - `packLightmapAtlases()` 策略：先用 1 张 atlas 满分辨率；失败则在 `[0.5,1]` 二分缩放；仍失败再尝试 2 张；2 张也失败则报错。
   - 缩放使用 `ceil(scale*S_i)` 且单块最小 4；所有块同一次打包共用 scale，保证 sidecar 的 `st` 简单。
@@ -285,6 +297,12 @@
   - C++ `--bake ... --agent http://127.0.0.1:5009` 实测输出 `DAWN_PROGRESS ... done completed=1 total=1 percent=100.0`、`Dawn agent: NONE (0) ack=0 tasks=1/1`、`Dawn results: validated`；真实结果 `v2.00000000000000000000000000000005.lmgz`（约 43KB），`--inspect-lmgz` 解析 `samples=4096`、`size=64x64`。
   - 2026-11-21 复跑 deflated + gz-only 包：Agent `Jobs` 目录仅有 `.scenegz` 338B / `.jobgz` 119B（raw 7636/800B，已删除 raw `.scene/.jobs`），官方 Dawn 正常读取并产出 `.lmgz` 42,798B；`--bake --agent` 输出 `phase=done`、`Dawn results: validated`。
   - 同轮修复 Agent 标识大小写：`JobManagement.cs:38` 使用 `%08X` 大写 GUID，但 `buildAgentJobSpec()` 之前把 `jobID` 小写化，导致带 A-F 的 GUID 被 DawnAgent 以 `requested task job ... doesn't match current job ...` 拒绝。现在 `spec.jobId` 按原版格式大写，`taskID` 保持 `guidHex` 大写；`missionID` 仍沿用调用方小写。
+  - 2026-11-26 补 lightmap group packing：按原版 `DawnPackLightmapTask` 生成 `MappingGroupJobs`（`(0,0,index,0xFFFFFFFF)`、GroupedSize=taskPackSize、offsets=(x,y,lightmap job index)）；入组 job 不再发单个 `LIGHTMAP2D`，改发 `LIGHTMAP2D_GROUP`，结果仍为每个 job 的 `.lmgz`。job9（taskPackSize=256、双灯）2 个 group task、`Dawn results: validated`，2 个 `.lmgz` + 2 个 `.sdfgz`；`--verify-lmgz` 3145/2729、`--verify-sdfgz` 6922/5972。
+  - 2026-11-26 补 lightmap split：按原版 `DawnLightmap2DSplitTask`/`DawnLightmap2DSplitExporter` 为超尺寸未入组 job 生成 `MappingSplitJobs`，`JobID=(splitGroupIndex,103,globalSplitIndex,lightmapJobIndex)`、`SplitSize=taskPackSize`、`OverlapSize=3`、`MappingOffsets=(ix,iy,job)`，Agent 发 `LIGHTMAP2D_SPLIT`；`--verify-lmgz` 按 `DawnLightmap2DSplitImporter.GroupSplitLightmapOutput` 合并。job10（dense 512/311、pack256、samples=4）512 拆 9 tile、311 拆 4 tile，加 2 个 SDF group 共 `tasks=15/15`、`Dawn results: validated`；合并后 512×512/262144、311×311/96721，`--verify-sdfgz` 528392/195938 mapped。`--split-test` 覆盖 split ID/offset/padding/merge。
+  - 2026-11-26 补 split→atlas：新增 `readLightmapSidecar()` 和 `--write-job-atlas <job-dir> <guid> <lightmap.json> <out-dir> [edge-padding]`，把 job 结果（含 split merge）按 scene `uv2Offset/uv2MapSize` 与 sidecar rect 匹配后写入所有 atlas DDS；padding job 的结果 header 为 raw+2，匹配必须用 raw `uv2MapSize`/sidecar size，不能再拿结果尺寸匹配；`--verify-job-atlas` 按 `placement-padding` 回读校验；`--bake ... --atlas-out <dir>` 在结果校验后自动查找 sidecar 并走同一路径（对应原版 `DawnEncodeTextures` 自动后处理）；带 `PADDING` 的 block 额外 ring 按 atlas 边距 clamp（默认 2 时通常取 1），非 padding block 仍严格报越界。`--job-atlas-test` 覆盖 sidecar 顺序保持、split merge、padded split、DDS 回读、2 atlas、跨 atlas 相同 rect 的 index-first 匹配和 post-bake 输出（2 atlases/3 blocks/8 split tiles）。真实 job10 生成 1 atlas/2 blocks/358,865 texels 并校验通过；dawnbake CTest **36/36**。
+  - Agent task cost 按原版 `TaskManagement.cs:57`、`DawnLightmap2DGroupTask.cs:35-42`、`DawnLightmap2DSplitTask.cs:35-42`、`DawnShadowMaskGroupTask.cs:41-49` 计算：单 lightmap=`w*h*samples`，lightmap group=`groupedSize²*samples*(bounces+1)`，lightmap split=`splitSize²*samples*(bounces+1)`，SDF group=`groupSize²*lightCount*samples*ShadowRayFactor*MaxUpSamplingFactor`；`--agent-spec-test` 覆盖单个/group/split 的 cost 与混合 packed/oversized 路径。
+  - 2026-11-26 packer 对齐原版：`packLightmapSquares()`（final atlas，降序）和 `packMappingGroups()`（task mapping，升序）改用 `Editor/Utility/RectPackingUtility.cs:284-378` 的 `AtlasNode`；SDF packed group 通过 `packSdfShadowGroups(jobs, packSize, lightmapGroups)` 直接继承 lightmap `MappingGroupJobs` 的 `GroupedSize`/`MappingOffsets`，未入组 job 按原版升序生成单 job group。`--atlas-test` 增加 mapping offset 断言，`--scene-export-test` 校验 SDF offset 与 lightmap group 一致；dawnbake CTest **36/36**。真实 job7/job9/job10 的旧 offset 是 shelf 版本，新布局待 Agent 复跑。
+  - 2026-11-26 补 lightmap `PADDING`：原版 `DawnLightmap2DExporter.cs:161,191` 在 `Allocation.Padding>0` 时写 `LIGHTMAP_FLAGS_PADDING`；C++ 导出现在对 lightmap job 同样按 `config.lightmap.padding>0` 设置，SDF 与 lightmap 的 raw size/padding flag 一致；`--scene-export-test` 断言两者 flag 相同。task mapping/split 的 padded cell 因此统一为 raw size+2。
   - 本轮仍使用 D0 的 CUDA workaround `Dawn.exe`（OIDN CPU 初始化失败未修复），仅作 D4/D5 验证，不进入交付。
   - `GetJobResult` 收到 `D.O.N.E` 后调用 `TryCancel()` 再 `Finish()`，避免 server stream 已成功但客户端 `Finish` 偶发挂起。
 - [x] D4.6（备选）文件上传

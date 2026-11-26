@@ -5,6 +5,8 @@
     "texelsPerUnit": 6.0,
     "maxLightmapSize": 1024,
     "atlasSize": 2048,
+    "taskPackSize": 512,
+    "splitLightmaps": true,
     "maxAtlases": 2,
     "padding": 2,
     "dilationIterations": 4,

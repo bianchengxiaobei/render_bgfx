@@ -10,8 +10,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace hbg::dawn {
@@ -184,12 +186,12 @@ void validateLightmapSidecarJson(const OrderedJson& lightmap, const std::filesys
 } // namespace
 
 void writeLightmapSidecar(const std::filesystem::path& path, const LightmapSidecar& sidecar) {
-    nlohmann::json root;
+    OrderedJson root;
     auto& lightmap = root["lightmap"];
     lightmap["version"] = sidecar.version;
     lightmap["texelPerUnit"] = sidecar.texelPerUnit;
 
-    lightmap["atlases"] = nlohmann::json::array();
+    lightmap["atlases"] = OrderedJson::array();
     for (const LightmapSidecarAtlas& atlas : sidecar.atlases) {
         if (atlas.file.empty() || atlas.size == 0u) {
             throw std::runtime_error("lightmap sidecar atlas must have a file and nonzero size");
@@ -198,7 +200,7 @@ void writeLightmapSidecar(const std::filesystem::path& path, const LightmapSidec
             {{"file", atlas.file}, {"size", atlas.size}, {"layers", atlas.layers}, {"format", atlas.format}});
     }
 
-    lightmap["objects"] = nlohmann::json::object();
+    lightmap["objects"] = OrderedJson::object();
     std::set<std::string> names;
     for (const LightmapSidecarObject& object : sidecar.objects) {
         if (object.name.empty()) {
@@ -234,6 +236,76 @@ void writeLightmapSidecar(const std::filesystem::path& path, const LightmapSidec
 
     const std::string text = root.dump(2) + "\n";
     writeFile(path, std::vector<uint8_t>(text.begin(), text.end()));
+}
+
+LightmapSidecar readLightmapSidecar(const std::filesystem::path& path) {
+    const OrderedJson root = readSidecarJson(path, "lightmap sidecar");
+    const auto lightmapField = root.find("lightmap");
+    const OrderedJson& lightmap = lightmapField != root.end() ? *lightmapField : root;
+    validateLightmapSidecarJson(lightmap, path);
+
+    LightmapSidecar sidecar;
+    sidecar.version = static_cast<uint32_t>(requireUnsignedInteger(lightmap.at("version"), "lightmap.version"));
+    sidecar.texelPerUnit = static_cast<float>(requireNumber(lightmap.at("texelPerUnit"), "lightmap.texelPerUnit"));
+
+    for (std::size_t index = 0; index < lightmap.at("atlases").size(); ++index) {
+        const OrderedJson& atlas = lightmap.at("atlases").at(index);
+        const uint64_t size = requireUnsignedInteger(atlas.at("size"), "atlas.size");
+        if (size > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("lightmap sidecar " + path.string() + ": atlas " + std::to_string(index) +
+                                     " size exceeds uint32");
+        }
+        LightmapSidecarAtlas parsed;
+        parsed.file = atlas.at("file").get<std::string>();
+        parsed.size = static_cast<uint32_t>(size);
+        if (atlas.contains("layers")) {
+            const uint64_t layers = requireUnsignedInteger(atlas.at("layers"), "atlas.layers");
+            if (layers > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("lightmap sidecar " + path.string() + ": atlas " + std::to_string(index) +
+                                         " layers exceeds uint32");
+            }
+            parsed.layers = static_cast<uint32_t>(layers);
+        }
+        if (atlas.contains("format")) {
+            parsed.format = atlas.at("format").get<std::string>();
+        }
+        sidecar.atlases.push_back(std::move(parsed));
+    }
+
+    for (const auto& [name, object] : lightmap.at("objects").items()) {
+        const auto rect = object.at("rect");
+        const uint64_t values[4] = {
+            requireUnsignedInteger(rect.at(0), "object.rect"),
+            requireUnsignedInteger(rect.at(1), "object.rect"),
+            requireUnsignedInteger(rect.at(2), "object.rect"),
+            requireUnsignedInteger(rect.at(3), "object.rect"),
+        };
+        if (values[2] != values[3]) {
+            throw std::runtime_error("lightmap sidecar " + path.string() + ": object " + name +
+                                     " has a non-square rect");
+        }
+        for (std::size_t index = 0; index < 4u; ++index) {
+            if (values[index] > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("lightmap sidecar " + path.string() + ": object " + name +
+                                         " rect exceeds uint32");
+            }
+        }
+        LightmapSidecarObject parsed;
+        parsed.name = name;
+        parsed.atlas = static_cast<uint32_t>(requireUnsignedInteger(object.at("atlas"), "object.atlas"));
+        parsed.x = static_cast<uint32_t>(values[0]);
+        parsed.y = static_cast<uint32_t>(values[1]);
+        parsed.size = static_cast<uint32_t>(values[2]);
+        if (object.contains("scale")) {
+            parsed.scale = static_cast<float>(requireNumber(object.at("scale"), "object.scale"));
+        }
+        if (object.contains("contributeGI")) {
+            parsed.contributeGI = object.at("contributeGI").get<bool>();
+        }
+        sidecar.objects.push_back(std::move(parsed));
+    }
+
+    return sidecar;
 }
 
 void mergeLightmapSidecar(const std::filesystem::path& sceneSidecar, const std::filesystem::path& lightmapSidecar,
@@ -283,6 +355,10 @@ std::string formatShaHash(const ShaHash& hash) {
 
 std::string lightmapResultFileName(const Guid& guid) {
     return "v2." + formatGuid(guid) + ".lmgz";
+}
+
+std::string shadowmaskResultFileName(const Guid& guid) {
+    return "v2." + formatGuid(guid) + ".sdfgz";
 }
 
 std::string lightmapAtlasName(uint32_t atlasIndex) {

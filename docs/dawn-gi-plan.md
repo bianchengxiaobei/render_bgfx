@@ -20,7 +20,7 @@
 ### 不做（v1 明确排除）
 
 - PRT / APV / LightProbe / SDF ShadowMask / Landscape / HLOD / StitchSeam
-- Group / Split lightmap（`LIGHTMAP2D_GROUP` / `LIGHTMAP2D_SPLIT`）
+- Group / Split lightmap（`LIGHTMAP2D_GROUP` / `LIGHTMAP2D_SPLIT`；v1 原排除，D2.16/D2.17 已补做）
 - 实时预览（RealtimeViewer）、LightmapViewer
 - 多 atlas 流式加载（v1 允许 1–2 张 atlas，超出直接报错）
 - BC6H/RGBM 压缩（v1 用 RGBA16F）
@@ -288,10 +288,10 @@ S_i        = clamp(floor(TexelSize), 4, maxLightmapSize)   // 默认 1024，atla
 
 ### 6.3 打包
 
-- 全部块为正方形：按 `S_i` 降序 shelf pack，`atlasSize=2048`（可配 1024/4096）；同尺寸按输入索引稳定排序。
+- 全部块为正方形：按 `S_i` 降序 AtlasNode pack（原版 `RectPackingUtility.cs:284-378`），`atlasSize=2048`（可配 1024/4096）；同尺寸按输入索引稳定排序。
 - `padding=2` 为每块四周留白，实际块间净距 4 texel；rect 不含 padding。
 - 溢出：先尝试 1 张 atlas；失败时在 `[minScale,1]` 对全部块做统一缩放二分（`ceil(scale*S_i)`，单块最小 4，下限 `minScale=0.5`；原版 `DawnPackLightmapAtlas.cs:59-85` 为 0.1）；仍失败再尝试 2 张 atlas，并对 2 张重复满分辨率/二分；2 张仍放不下则报错退出。
-- 缩放后按 atlas 重新 shelf pack；结果：`rect(x, y, S, S)`、`UV2MapSize=(S,S)`、`UV2Offset=(x,y)`，sidecar 记录 `scale` 用于 `st`。
+- 缩放后按 atlas 重新 AtlasNode pack；结果：`rect(x, y, S, S)`、`UV2MapSize=(S,S)`、`UV2Offset=(x,y)`，sidecar 记录 `scale` 用于 `st`。
 
 ### 6.4 sidecar 输出
 
@@ -358,7 +358,7 @@ BeginMission(V2) → RunJob(JobFullDesc+TaskDescList) → GetJobResult(stream) �
 > D4.4–D4.7 进展（2026-11-20）：vcpkg 已装 grpc 1.81.1 / protobuf 6.33 / abseil / c-ares / re2。关键坑：vcpkg 自带 Ninja 1.13.2 在 c-ares try_compile 卡死，换 Ninja 1.11.1 后通过。`HBG_BUILD_DAWN_GRPC=ON` 已编译 `dawn_agent_client` 并生成 C++ proto；CTest 17/17。
 > `DawnDeamon` 5009 拉起 `DAWNAgent` 5011；本地 mock Coordinator 5010 返回 `BeginMissionV2/CheckJob`，Dawn 产出真实 `v2.00000000000000000000000000000005.lmgz`（约 43KB，64×64，4096 samples），client `GetJobResult` 收到 `D.O.N.E`，`DAWN_PROGRESS ... done`。
 
-2026-11-21 进一步验证 gz-only：删除 job 目录 raw `.scene/.jobs`，仅保留 deflated `.scenegz`/`.jobgz`，Agent/Dawn 仍完成并 `Dawn results: validated`。同时修复 `spec.jobId` 大小写：原版 `JobManagement.cs:38` 使用 `%08X` 大写，之前小写化会使含 A-F 的 GUID 被 DawnAgent 拒绝；`taskID` 继续使用 `guidHex` 大写。`buildAgentJobSpec()` 与 `expectedLightmapResults()` 现在都会回退读取 `.jobgz`。D4.6 的 `BatchUploadFileInServerCache` 已按原版 `Agent.proto:49-50,127-138` 实现：请求只含 `hash/filePath`、不含 `fileData`，ack 数量必须匹配，`Done/DoneInCache` 为成功；`--agent-cache-test` 用进程内 fake Agent 覆盖成功、cache miss、per-file fail。`UploadFile` 已按原版修复：首包必须带 `jobID/filePath/fileSize/hash`（SHA1 大写），先等 `NotInCache` 再发数据，空文件不发数据包，3 MiB 分块；新增 `dawnbake_agent_upload`，真实 Agent 上传 `hbg_upload_probe.txt` 成功，并在官方 active T6 job 上完成 6 MiB 上传/`DownloadFile` 回读 SHA-256 一致。`UploadMultiFiles`（`Agent.proto:143-152`）、`DownloadFile`（`:58,155-173`）和 `UploadJobFilesToAnotherAgent`（`:61,176-180`）也已实现并有 fake Agent 测试；`DownloadFile` 必须写 `DataDone.fileData`（原版短文件只在最后一条 `DataDone` 带 payload），真实 active Agent 下载 184,476B 与源文件 SHA-256 一致。`--bake --agent --agent-files --agent-download-results` 在 `EndMission` 前下载缺失结果，优先 `DownloadMultiFiles`、失败回退 `DownloadFile`，本地已有结果跳过，`--agent-force-download` 可强制重下；真实 Agent 强制重下 190,301B，Agent 日志 `Got DownloadMultiFiles 1 files`，SHA1 校验通过；原版 Agent 的 `DownloadFile` 只服务 current job，作业结束后调用会报 `doesn't match current job`。 另按 DAWNAgent 2.4.5 实际 DLL 补齐 `DownloadMultiFiles`（Editor 旧 proto 缺失）：`DownloadFileAck.filename=5`、`DownloadMultiFilesReq/Ack`，支持同一 ack 内多文件 Data/DataDone、逐文件 SHA1 大写 hex 校验和 `.part` 原子提交；新增 `dawnbake_agent_multi_download` 与 `dawnbake_agent_download_files`（批量成功 + 不支持回退）。
+2026-11-21 进一步验证 gz-only：删除 job 目录 raw `.scene/.jobs`，仅保留 deflated `.scenegz`/`.jobgz`，Agent/Dawn 仍完成并 `Dawn results: validated`。同时修复 `spec.jobId` 大小写：原版 `JobManagement.cs:38` 使用 `%08X` 大写，之前小写化会使含 A-F 的 GUID 被 DawnAgent 拒绝；`taskID` 继续使用 `guidHex` 大写。`buildAgentJobSpec()` 与 `expectedDawnResults()` 现在都会回退读取 `.jobgz`。D4.6 的 `BatchUploadFileInServerCache` 已按原版 `Agent.proto:49-50,127-138` 实现：请求只含 `hash/filePath`、不含 `fileData`，ack 数量必须匹配，`Done/DoneInCache` 为成功；`--agent-cache-test` 用进程内 fake Agent 覆盖成功、cache miss、per-file fail。`UploadFile` 已按原版修复：首包必须带 `jobID/filePath/fileSize/hash`（SHA1 大写），先等 `NotInCache` 再发数据，空文件不发数据包，3 MiB 分块；新增 `dawnbake_agent_upload`，真实 Agent 上传 `hbg_upload_probe.txt` 成功，并在官方 active T6 job 上完成 6 MiB 上传/`DownloadFile` 回读 SHA-256 一致。`UploadMultiFiles`（`Agent.proto:143-152`）、`DownloadFile`（`:58,155-173`）和 `UploadJobFilesToAnotherAgent`（`:61,176-180`）也已实现并有 fake Agent 测试；`DownloadFile` 必须写 `DataDone.fileData`（原版短文件只在最后一条 `DataDone` 带 payload），真实 active Agent 下载 184,476B 与源文件 SHA-256 一致。`--bake --agent --agent-files --agent-download-results` 在 `EndMission` 前下载缺失结果，优先 `DownloadMultiFiles`、失败回退 `DownloadFile`，本地已有结果跳过，`--agent-force-download` 可强制重下；真实 Agent 强制重下 190,301B，Agent 日志 `Got DownloadMultiFiles 1 files`，SHA1 校验通过；原版 Agent 的 `DownloadFile` 只服务 current job，作业结束后调用会报 `doesn't match current job`。 另按 DAWNAgent 2.4.5 实际 DLL 补齐 `DownloadMultiFiles`（Editor 旧 proto 缺失）：`DownloadFileAck.filename=5`、`DownloadMultiFilesReq/Ack`，支持同一 ack 内多文件 Data/DataDone、逐文件 SHA1 大写 hex 校验和 `.part` 原子提交；新增 `dawnbake_agent_multi_download` 与 `dawnbake_agent_download_files`（批量成功 + 不支持回退）。
 > 关键修正：任务 GUID 必须是 `(0,0,LightmapTask,5)`，`TaskDesc.Parameters="LIGHTMAP2D"`；否则 Dawn 立即 `Job Not Processed`，不会写结果。
 
 ### 7.3 CLI
@@ -635,4 +635,17 @@ docs/dawn-gi-checklist.md              # 配套清单
 - 本项目 `maxLightmapSize=1024` 是单块上限，`atlasSize=2048` 是打包图集尺寸；两者语义分开，避免把原版同名 `MaxLightmapSize` 混用。
 - `edgePadding` 仍由 `--write-tile-atlas <out> <atlas-size> <edge-padding> ...` 显式传入（D7.5 用 2），不作为全局默认，避免改变 D5.4 的 `LightmapAtlasOptions` 旧行为。
 - 校验：`hbg_dawnbake --dawn-config-test [path]` 读取并检查 schema/取值，同时断言 UV2 不翻转、灯光单位系数 1.0、方向缩放 1.0、RGBA16F/3 层、`LightmapUvOptions`/`LightmapSizeSettings`/`LightmapPackingSettings` 及 `LightmapAtlasOptions::dilationIterations` 默认值与配置一致；CTest `dawnbake_config`。
+
+### 15.2 2026-11-25 ShadowMask SDF 补充
+
+- `D2.16` 完成 `SDFShadowJobs`/`SDFShadowGroupJobs`：相关灯、单 job、group job、`SdfShadowParameter`/`ShadowSettingParameter`；Agent 使用 `SHADOWMASK_GROUP`，真实链路下载 2 个 `.sdfgz` 并通过 `--verify-sdfgz`（3461 samples/2986 mapped）。
+- 双灯真实验证：job6 的 2 个 `.sdfgz` 各含 2 maps，`ShadowMaps[i].LightID` 顺序与输入 `ShadowmaskLights[i]` 一致；`--verify-sdfgz` 6922 samples/5972 mapped。
+- `lightmap.taskPackSize` 默认 512，按原版 packed/single 两条分支生成 SDF group（task padding flag 0/1 计入 cell）；job7 双 job 合成 256 group（shelf 版 offset `(0,0,0)`/`(52,0,1)`，3/3 tasks），job8 512/311 任务各生成单 job group。2026-11-26 后 packed SDF group 继承 lightmap `MappingGroupJobs` 的 `GroupedSize`/`MappingOffsets`，单 job 按 max(w,h) 升序；旧 job7/job9 offset 仅作历史记录。
+- 2026-11-26 将 final atlas 与 task mapping 打包替换为原版 `AtlasNode`：final atlas 降序，task mapping 升序；`--atlas-test` 增加 mapping offset，`--scene-export-test` 校验 SDF 与 lightmap group 同 offset；CTest **36/36**。
+- 2026-11-26 补 lightmap `LIGHTMAP_FLAGS_PADDING`：原版 `DawnLightmap2DExporter.cs:161,191` 在 allocation padding>0 时设置；现在 lightmap 与 SDF job 都按 `config.lightmap.padding>0` 设置，task mapping/split 统一按 raw size+2 计算 cell。
+- lightmap job 也按原版生成 `MappingGroupJobs`，入组 job 只发 `LIGHTMAP2D_GROUP`；job9 双灯（taskPackSize=256）仅 2 个 group task，`Dawn results: validated`，输出 2 个 `.lmgz` + 2 个 `.sdfgz`。
+- 超尺寸未入组 lightmap 按原版 `DawnLightmap2DSplitTask` 生成 `MappingSplitJobs`/`LIGHTMAP2D_SPLIT`，`--verify-lmgz` 按原版 split importer 合并；job10（512/311、pack256、samples=4）13 个 split tile + 2 个 SDF group，`tasks=15/15`、`Dawn results: validated`，合并后 512×512/311×311。
+- 新增 `--write-job-atlas`：job 结果（含 split merge）经 sidecar 的 `uv2Offset/uv2MapSize` 匹配后写所有 atlas DDS；有 `PADDING` 时结果 header 为 raw+2，匹配必须用 raw size。`writeLightmapSidecar()` 用 `ordered_json` 保留 object 顺序，job atlas 先按同序 index 匹配（支持多个 atlas 的相同 rect）再唯一回退；`--verify-job-atlas` 按 `placement-padding` 回读校验，真实 job10 1 atlas/2 blocks/358,865 texels 通过；`--bake ... --atlas-out <dir>` 在结果校验后自动执行同一路径；`--job-atlas-test` 覆盖 split→atlas、padded split→atlas、2 atlas/重复 rect 和 post-bake 输出。带 padding 的 block 额外 edge ring 按 atlas 可用边距 clamp，避免原版 packing padding 2 与默认 edgePadding 2 冲突。
+- Agent task cost 已按原版 lightmap/group/split/SDF-group 公式补齐，并对 `INT_MAX-1` 截断；`--agent-spec-test` 覆盖 packed、oversized、split 混合任务。
+- 原版参考与验收细节见 `docs/dawn-gi-checklist.md` D2.16 与 `tools/dawnbake/README.md`。
 

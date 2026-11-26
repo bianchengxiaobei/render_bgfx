@@ -1,8 +1,11 @@
 #include "hbg/dawn/dawn_atlas.h"
 
+#include "hbg/dawn/atlas_node.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <utility>
 #include <vector>
@@ -161,11 +164,13 @@ bool packLightmapSquares(const std::vector<uint32_t>& sizes, uint32_t atlasSize,
         return lhs < rhs;
     });
 
+    if (atlasSize > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+
     outLayout.size = atlasSize;
     outLayout.rects.resize(sizes.size());
-    uint32_t cursorX = 0;
-    uint32_t cursorY = 0;
-    uint32_t shelfHeight = 0;
+    detail::AtlasNode root(static_cast<int>(atlasSize), static_cast<int>(atlasSize));
 
     for (uint32_t index : order) {
         const uint32_t size = sizes[index];
@@ -174,23 +179,20 @@ bool packLightmapSquares(const std::vector<uint32_t>& sizes, uint32_t atlasSize,
             return false;
         }
         const uint64_t cell = static_cast<uint64_t>(size) + 2ull * padding;
-        if (cell > atlasSize) {
-            outLayout = {};
-            return false;
-        }
-        if (static_cast<uint64_t>(cursorX) + cell > atlasSize) {
-            cursorY += shelfHeight;
-            cursorX = 0;
-            shelfHeight = 0;
-        }
-        if (static_cast<uint64_t>(cursorY) + cell > atlasSize) {
+        if (cell > atlasSize || cell > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
             outLayout = {};
             return false;
         }
 
-        outLayout.rects[index] = LightmapRect{cursorX + padding, cursorY + padding, size};
-        cursorX += static_cast<uint32_t>(cell);
-        shelfHeight = std::max(shelfHeight, static_cast<uint32_t>(cell));
+        detail::AtlasNodeRect node;
+        if (!root.insert(static_cast<int>(cell), static_cast<int>(cell), &node)) {
+            outLayout = {};
+            return false;
+        }
+
+        outLayout.rects[index] = LightmapRect{
+            static_cast<uint32_t>(node.x + static_cast<int>(padding)),
+            static_cast<uint32_t>(node.y + static_cast<int>(padding)), size};
     }
 
     return true;

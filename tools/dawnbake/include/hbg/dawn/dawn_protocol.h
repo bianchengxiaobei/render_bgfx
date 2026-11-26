@@ -723,6 +723,41 @@ struct Lightmap2DInput {
 static_assert(sizeof(Lightmap2DInput) == 160);
 static_assert(offsetof(Lightmap2DInput, overrideBakingParams) == 60);
 
+struct SdfShadowInputHeader {
+    Guid jobId;
+    Guid meshId;
+    uint32_t flags = 0;
+    uint32_t isHlodActorMapping = 0;
+    Int2 size;
+    int32_t upsampleFactor = 1;
+    uint16_t lightmapUVIndex = 0;
+    uint8_t padding0[2] = {};
+    uint32_t scenePartitionIndex = 0;
+    float padding = 0.0f;
+};
+static_assert(sizeof(SdfShadowInputHeader) == 64);
+static_assert(offsetof(SdfShadowInputHeader, size) == 40);
+static_assert(offsetof(SdfShadowInputHeader, upsampleFactor) == 48);
+static_assert(offsetof(SdfShadowInputHeader, lightmapUVIndex) == 52);
+static_assert(offsetof(SdfShadowInputHeader, scenePartitionIndex) == 56);
+static_assert(offsetof(SdfShadowInputHeader, padding) == 60);
+
+struct SdfShadowInput {
+    SdfShadowInputHeader header;
+    std::vector<Guid> lights;
+    std::vector<Guid> shadowmaskLights;
+};
+
+struct SdfShadowGroupInput {
+    Guid jobId;
+    int32_t groupSize = 0;
+    int32_t upsampleFactor = 0;
+    Guid lightId;
+    std::vector<int32_t> shadowJobIndices;
+    std::vector<Int3> mappingOffsets;
+    int32_t scenePartitionIndex = 0;
+};
+
 struct Lightmap2DSample {
     Float4 shVectorR;
     Float4 shVectorG;
@@ -764,6 +799,14 @@ struct MappingGroupInput {
     std::vector<Int3> mappingOffsets;
 };
 
+struct MappingSplitInput {
+    Guid jobId;
+    int32_t splitSize = 0;
+    int32_t overlapSize = 3;
+    int32_t scenePartitionIndex = 0;
+    Int3 mappingOffsets;
+};
+
 struct Lightmap2DOutput {
     Lightmap2DOutputHeader header;
     int32_t jobInputIndex = 0;
@@ -774,6 +817,24 @@ struct Lightmap2DOutput {
     std::vector<Lightmap2DSample> lightmapData;
 };
 
+struct SdfShadowSample {
+    float distance = 0.0f;
+    float penumbraSize = 0.0f;
+    uint8_t isMapped = 0;
+    uint8_t padding[3] = {};
+};
+static_assert(sizeof(SdfShadowSample) == 12);
+
+struct SdfShadowMap {
+    Guid lightId;
+    std::vector<SdfShadowSample> shadowData;
+};
+
+struct SdfShadowOutput {
+    Lightmap2DOutputHeader header;
+    std::vector<SdfShadowMap> shadowMaps;
+};
+
 struct BakingJobInputs {
     BakingJobParameters bakingParameters;
     AdaptiveVolumetricLightmapParams adaptiveVolumetricLightmapParameter;
@@ -782,10 +843,13 @@ struct BakingJobInputs {
     PrecomputedVisibilityParameters precomputedVisibilityParameter;
     BakingDebugInput debugInput;
     std::vector<Lightmap2DInput> lightmap2DJobs;
+    std::vector<SdfShadowInput> sdfShadowJobs;
+    std::vector<SdfShadowGroupInput> sdfShadowGroupJobs;
     std::vector<MappingGroupInput> mappingGroupJobs;
+    std::vector<MappingSplitInput> mappingSplitJobs;
 
-    // Arrays unused by the v1 lightmap path. They are serialized as counts and
-    // must stay zero; non-zero data from a real Dawn job is rejected by the reader.
+    // Mapping split jobs are used for oversized lightmaps; the remaining
+    // arrays are unused by the v1 lightmap path and must stay zero.
     uint32_t sdfShadowJobsCount = 0;
     uint32_t sdfShadowGroupJobsCount = 0;
     uint32_t shadowDepthMapJobsCount = 0;

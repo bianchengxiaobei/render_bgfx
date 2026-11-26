@@ -1,6 +1,9 @@
 add_executable(hbg_dawnbake
     main.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/shadows/shadow_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/shadows/contact_shadow.cpp
     src/dawn_export.cpp
+    src/dawn_scene.cpp
     src/dawn_gzip.cpp
     src/dawn_package.cpp
     src/dawn_serialize.cpp
@@ -12,11 +15,40 @@ add_executable(hbg_dawnbake
     src/lightmap_atlas.cpp
     src/lightmap_dds.cpp
     src/lightmap_result.cpp
+    src/shadowmask_result.cpp
 )
 
 target_include_directories(hbg_dawnbake PRIVATE include)
 target_compile_definitions(hbg_dawnbake PRIVATE HBG_DAWN_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+if(HBG_BLENDER_EXECUTABLE)
+    target_compile_definitions(hbg_dawnbake PRIVATE HBG_BLENDER_EXECUTABLE="${HBG_BLENDER_EXECUTABLE}")
+endif()
 target_link_libraries(hbg_dawnbake PRIVATE hbg_asset hbg_xatlas ${HBG_NLOHMANN_JSON_TARGET} bimg_encode bimg bx)
+
+if(HBG_PARCEL_AVAILABLE AND TARGET parcel_hbg)
+    target_sources(hbg_dawnbake PRIVATE src/dawn_parcel.cpp)
+    target_include_directories(hbg_dawnbake PRIVATE "${HBG_PARCEL_ROOT}/cpp/include")
+    target_compile_definitions(hbg_dawnbake PRIVATE HBG_DAWN_HAVE_PARCEL=1)
+    target_link_libraries(hbg_dawnbake PRIVATE
+        parcel_hbg
+        parcel_import
+        parcel_entt
+        parcel_assets
+        parcel_scene
+        parcel_serialize
+        parcel_core
+    )
+    if(TARGET parcel_assimp)
+        target_link_libraries(hbg_dawnbake PRIVATE parcel_assimp)
+    endif()
+    if(DEFINED PARCEL_ASSIMP_RUNTIME_DLL AND EXISTS "${PARCEL_ASSIMP_RUNTIME_DLL}")
+        add_custom_command(TARGET hbg_dawnbake POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${PARCEL_ASSIMP_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:hbg_dawnbake>"
+        )
+    endif()
+endif()
 if(MSVC)
     target_compile_options(hbg_dawnbake PRIVATE /wd4324)
 endif()

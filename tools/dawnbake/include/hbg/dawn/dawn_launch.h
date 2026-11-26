@@ -67,6 +67,8 @@ struct DawnLaunchOptions {
     std::string guid;
     std::chrono::milliseconds timeout{std::chrono::minutes(10)};
     std::filesystem::path logPath;
+    std::filesystem::path atlasOutputDirectory;
+    uint32_t atlasEdgePadding = 2;
     std::vector<std::filesystem::path> expectedResults;
     std::chrono::milliseconds resultGrace{std::chrono::seconds(2)};
     bool keepJob = false;

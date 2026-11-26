@@ -136,8 +136,9 @@ bool parseDawnConfig(std::string_view json, DawnConfig& config, std::string& err
     const Json* lightmap = nullptr;
     if (!requireObject(document, "lightmap", "dawn config", &lightmap, error) ||
         !rejectUnknownKeys(*lightmap,
-                           {"uv2VFlip", "texelsPerUnit", "maxLightmapSize", "atlasSize", "maxAtlases", "padding",
-                            "dilationIterations", "directional", "format", "layers"},
+                           {"uv2VFlip", "texelsPerUnit", "maxLightmapSize", "atlasSize", "taskPackSize",
+                            "splitLightmaps", "maxAtlases", "padding", "dilationIterations", "directional", "format",
+                            "layers"},
                            "dawn config.lightmap", error)) {
         return false;
     }
@@ -145,6 +146,8 @@ bool parseDawnConfig(std::string_view json, DawnConfig& config, std::string& err
         !readFloat(*lightmap, "texelsPerUnit", "dawn config.lightmap", parsed.lightmap.texelsPerUnit, error) ||
         !readUint(*lightmap, "maxLightmapSize", "dawn config.lightmap", parsed.lightmap.maxLightmapSize, error) ||
         !readUint(*lightmap, "atlasSize", "dawn config.lightmap", parsed.lightmap.atlasSize, error) ||
+        !readUint(*lightmap, "taskPackSize", "dawn config.lightmap", parsed.lightmap.taskPackSize, error) ||
+        !readBool(*lightmap, "splitLightmaps", "dawn config.lightmap", parsed.lightmap.splitLightmaps, error) ||
         !readUint(*lightmap, "maxAtlases", "dawn config.lightmap", parsed.lightmap.maxAtlases, error) ||
         !readUint(*lightmap, "padding", "dawn config.lightmap", parsed.lightmap.padding, error) ||
         !readUint(*lightmap, "dilationIterations", "dawn config.lightmap", parsed.lightmap.dilationIterations, error) ||
@@ -187,6 +190,11 @@ bool parseDawnConfig(std::string_view json, DawnConfig& config, std::string& err
     }
     if (parsed.lightmap.maxLightmapSize > parsed.lightmap.atlasSize) {
         error = "dawn config.lightmap.maxLightmapSize must not exceed atlasSize";
+        return false;
+    }
+    if (parsed.lightmap.taskPackSize != 256 && parsed.lightmap.taskPackSize != 512 &&
+        parsed.lightmap.taskPackSize != 1024 && parsed.lightmap.taskPackSize != 2048) {
+        error = "dawn config.lightmap.taskPackSize must be 256, 512, 1024 or 2048";
         return false;
     }
     if (parsed.lightmap.maxAtlases == 0 || parsed.lightmap.maxAtlases > 16) {

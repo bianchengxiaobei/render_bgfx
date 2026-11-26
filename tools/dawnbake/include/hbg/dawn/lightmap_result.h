@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace hbg::dawn {
 
@@ -17,5 +18,8 @@ struct Lightmap2DResultBinding {
 bool validateLightmap2DResult(const Lightmap2DOutput& output, const Lightmap2DInput& input, std::string* error);
 bool bindLightmap2DResult(const SceneInfo& scene, const BakingJobInputs& jobs, const Lightmap2DOutput& output,
                           Lightmap2DResultBinding* binding, std::string* error);
+bool mergeLightmapSplitResults(const Lightmap2DInput& input, const std::vector<const MappingSplitInput*>& splits,
+                               const std::vector<const Lightmap2DOutput*>& outputs, Lightmap2DOutput* merged,
+                               std::string* error);
 
 }  // namespace hbg::dawn

@@ -21,12 +21,17 @@
 #include "hbg/dawn/dawn_gzip.h"
 #include "hbg/dawn/dawn_launch.h"
 #include "hbg/dawn/dawn_package.h"
+#include "hbg/dawn/dawn_scene.h"
+#if defined(HBG_DAWN_HAVE_PARCEL) && HBG_DAWN_HAVE_PARCEL
+#include "hbg/dawn/dawn_parcel.h"
+#endif
 #include "hbg/dawn/dawn_serialize.h"
 #include "hbg/dawn/dawn_unwrap.h"
 #include "hbg/dawn/dawn_uv_dump.h"
 #include "hbg/dawn/lightmap_atlas.h"
 #include "hbg/dawn/lightmap_dds.h"
 #include "hbg/dawn/lightmap_result.h"
+#include "hbg/dawn/shadowmask_result.h"
 
 #include "asset/mesh.h"
 #include "render/scene/render_scene.h"
@@ -38,6 +43,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -89,10 +95,12 @@ void printUsage() {
                  "<file>] [--keep-job]\n"
               << "  hbg_dawnbake --run-dawn <guid32hex> --job-dir <dir> [--dawn <Dawn.exe>] [--timeout <seconds>]\n"
               << "  hbg_dawnbake --bake <job-dir> <guid32hex> [--dawn <Dawn.exe>] [--timeout <seconds>] "
-                 "[--result-grace <ms>] [--keep-job]\n"
-              << "  hbg_dawnbake --bake <guid32hex> --job-dir <dir> [--dawn <Dawn.exe>] [--timeout <seconds>]\n"
+                 "[--result-grace <ms>] [--keep-job] [--atlas-out <dir>]\n"
+              << "  hbg_dawnbake --bake <guid32hex> --job-dir <dir> [--dawn <Dawn.exe>] [--timeout <seconds>] "
+                 "[--atlas-out <dir>]\n"
               << "  hbg_dawnbake --bake <job-dir> <guid32hex> --agent <http://127.0.0.1:5009> "
-                 "[--agent-files <http://127.0.0.1:5011>] [--agent-download-results] [--agent-force-download]\n"
+                 "[--agent-files <http://127.0.0.1:5011>] [--agent-download-results] [--agent-force-download] "
+                 "[--atlas-out <dir>]\n"
               << "  hbg_dawnbake --agent-upload <agent-address> <job-id> <local-file> <remote-path>\n"
               << "  hbg_dawnbake --agent-cache-upload <agent-address> <job-id> <hash> <remote-path> "
                  "[<hash> <remote-path> ...]\n"
@@ -120,17 +128,35 @@ void printUsage() {
               << "  hbg_dawnbake --export-t1-color <dir> [guid32hex]\n"
               << "  hbg_dawnbake --export-t3-tile <dir> <tile-index-0..3> [guid32hex]\n"
               << "  hbg_dawnbake --export-t6 <dir> [guid32hex]\n"
+              << "  hbg_dawnbake --export-scene <scene> <out-dir> [guid32hex] [--sidecar <hdrp.json>] "
+                 "[--config <dawn.json>] [--sky <hdr|exr>] [--sky-intensity <v>] [--sky-rotation <deg>] "
+                 "[--blender <exe>] [--blender-timeout <seconds>] [--all-objects] [--samples <n>] [--bounces <n>]\n"
+              << "  hbg_dawnbake --scene=<scene> --out=<dir> [--sidecar=<hdrp.json>] "
+                 "[--config=<dawn.json>] [--sky=<hdr|exr>] [--sky-intensity=<v>] [--sky-rotation=<deg>] "
+                 "[--blender=<exe>] [--blender-timeout=<seconds>] [--guid=<guid32hex>] [--all-objects] "
+                 "[--samples=<n>] [--bounces=<n>]\n"
+              << "  scene: .gltf/.glb, Parcel/Assimp .fbx/.obj/.dae/.3ds/.ply/.stl, Blender .blend\n"
               << "  hbg_dawnbake --t6-test\n"
+              << "  hbg_dawnbake --scene-export-test\n"
+#if defined(HBG_DAWN_HAVE_PARCEL) && HBG_DAWN_HAVE_PARCEL
+              << "  hbg_dawnbake --parcel-test\n"
+#endif
               << "  hbg_dawnbake --dawn-config-test [path]\n"
               << "  hbg_dawnbake --protocol-version-test\n"
               << "  hbg_dawnbake --write-tile-atlas <out-dir> <atlas-size> <edge-padding> "
                  "<file.lmgz> <x> <y> ...\n"
+              << "  hbg_dawnbake --write-job-atlas <job-dir> <guid32hex> <lightmap.json> <out-dir> "
+                 "[edge-padding]\n"
+              << "  hbg_dawnbake --verify-job-atlas <job-dir> <guid32hex> <lightmap.json> <atlas-dir>\n"
               << "  hbg_dawnbake --write-lightmap-dds <file.lmgz> <out-dir> <atlas-size> <x> <y>\n"
               << "  hbg_dawnbake --write-empty <dir> <guid32hex>\n"
               << "  hbg_dawnbake --write-min <dir> <guid32hex>\n"
               << "  hbg_dawnbake --roundtrip <file.scene|scenegz> <file.jobs|jobgz>\n"
               << "  hbg_dawnbake --lmgz-test\n"
               << "  hbg_dawnbake --lmgz-bind-test\n"
+              << "  hbg_dawnbake --sdfgz-test\n"
+              << "  hbg_dawnbake --split-test\n"
+              << "  hbg_dawnbake --job-atlas-test\n"
               << "  hbg_dawnbake --sh-atlas-test\n"
               << "  hbg_dawnbake --sh-atlas-dds-test\n"
               << "  hbg_dawnbake --sh-atlas-dds-verify-test\n"
@@ -139,7 +165,9 @@ void printUsage() {
               << "  hbg_dawnbake --verify-sh-atlas-dds <file.lmgz> <dds-dir> <atlas-index> <target-x> <target-y> "
                  "<atlas-size>\n"
               << "  hbg_dawnbake --inspect-lmgz <file.lmgz>\n"
+              << "  hbg_dawnbake --inspect-sdfgz <file.sdfgz>\n"
               << "  hbg_dawnbake --verify-lmgz <job-dir> <guid32hex>\n"
+              << "  hbg_dawnbake --verify-sdfgz <job-dir> <guid32hex>\n"
               << "  hbg_dawnbake --inspect <file.scene|scenegz|jobs|jobgz|mesh|meshgz|mat|matgz>\n\n"
               << "The tool writes protocol version 1002: raw .scene/.jobs and gzip\n"
               << "v2.<guid>.scenegz/.jobgz (deflate when zlib is linked) plus meshgz/matgz packages.\n";
@@ -1290,6 +1318,859 @@ int exportT6Package(const std::filesystem::path& directory, const std::string& g
     return 0;
 }
 
+std::string defaultSceneGuid(const std::filesystem::path& scenePath) {
+    const std::string text = std::filesystem::absolute(scenePath).lexically_normal().string();
+    uint32_t hash[4] = {0x811C9DC5u, 0x9E3779B9u, 0x85EBCA6Bu, 0xC2B2AE35u};
+    for (const char character : text) {
+        const uint32_t value = static_cast<uint8_t>(character);
+        for (uint32_t index = 0; index < 4; ++index) {
+            hash[index] = (hash[index] ^ (value + index)) * 0x01000193u;
+        }
+    }
+    return formatGuid(Guid{hash[0], hash[1], hash[2], hash[3]});
+}
+
+bool readOptionValue(const std::string& argument, const char* prefix, std::string& value) {
+    const std::string key = std::string(prefix) + "=";
+    if (argument.rfind(key, 0) != 0) {
+        return false;
+    }
+    value = argument.substr(key.size());
+    return true;
+}
+
+int exportGenericSceneCommand(int argc, char** argv) {
+    std::filesystem::path gltf;
+    std::filesystem::path outDirectory;
+    std::filesystem::path sidecar;
+    std::filesystem::path skyImage;
+    std::filesystem::path configPath;
+    std::filesystem::path blenderExecutable;
+    uint32_t blenderTimeoutSeconds = 600;
+    std::string guid;
+    bool includeAllObjects = false;
+    bool loadSidecar = true;
+    float skyIntensity = 1.0f;
+    bool skyIntensitySet = false;
+    float skyRotation = 0.0f;
+    bool skyRotationSet = false;
+    uint32_t samples = 1024;
+    uint32_t bounces = 4;
+
+    int index = 1;
+    if (std::string(argv[1]) == "--export-scene") {
+        if (argc < 4) {
+            throw std::runtime_error("--export-scene requires <scene> <out-dir>");
+        }
+        gltf = argv[2];
+        outDirectory = argv[3];
+        index = 4;
+    }
+
+    while (index < argc) {
+        const std::string argument = argv[index++];
+        std::string value;
+        if (readOptionValue(argument, "--scene", value)) {
+            gltf = value;
+        } else if (readOptionValue(argument, "--out", value)) {
+            outDirectory = value;
+        } else if (readOptionValue(argument, "--sidecar", value)) {
+            sidecar = value;
+        } else if (readOptionValue(argument, "--config", value)) {
+            configPath = value;
+        } else if (readOptionValue(argument, "--guid", value)) {
+            guid = value;
+        } else if (readOptionValue(argument, "--sky", value)) {
+            skyImage = value;
+        } else if (readOptionValue(argument, "--sky-intensity", value)) {
+            skyIntensity = std::stof(value);
+            skyIntensitySet = true;
+        } else if (readOptionValue(argument, "--sky-rotation", value)) {
+            skyRotation = std::stof(value);
+            skyRotationSet = true;
+        } else if (readOptionValue(argument, "--blender", value)) {
+            blenderExecutable = value;
+        } else if (readOptionValue(argument, "--blender-timeout", value)) {
+            blenderTimeoutSeconds = static_cast<uint32_t>(std::stoul(value));
+        } else if (readOptionValue(argument, "--samples", value)) {
+            samples = static_cast<uint32_t>(std::stoul(value));
+        } else if (readOptionValue(argument, "--bounces", value)) {
+            bounces = static_cast<uint32_t>(std::stoul(value));
+        } else if (argument == "--all-objects") {
+            includeAllObjects = true;
+        } else if (argument == "--no-sidecar") {
+            loadSidecar = false;
+            sidecar.clear();
+        } else if (argument == "--sidecar" || argument == "--config" || argument == "--guid" ||
+                   argument == "--sky" || argument == "--sky-intensity" || argument == "--sky-rotation" ||
+                   argument == "--blender" || argument == "--blender-timeout" ||
+                   argument == "--samples" || argument == "--bounces") {
+            if (index >= argc) {
+                throw std::runtime_error(argument + " requires a value");
+            }
+            value = argv[index++];
+            if (argument == "--sidecar") {
+                sidecar = value;
+            } else if (argument == "--config") {
+                configPath = value;
+            } else if (argument == "--guid") {
+                guid = value;
+            } else if (argument == "--sky") {
+                skyImage = value;
+            } else if (argument == "--sky-intensity") {
+                skyIntensity = std::stof(value);
+                skyIntensitySet = true;
+            } else if (argument == "--sky-rotation") {
+                skyRotation = std::stof(value);
+                skyRotationSet = true;
+            } else if (argument == "--blender") {
+                blenderExecutable = value;
+            } else if (argument == "--blender-timeout") {
+                blenderTimeoutSeconds = static_cast<uint32_t>(std::stoul(value));
+            } else if (argument == "--samples") {
+                samples = static_cast<uint32_t>(std::stoul(value));
+            } else {
+                bounces = static_cast<uint32_t>(std::stoul(value));
+            }
+        } else if (argument == "--scene") {
+            if (index >= argc) {
+                throw std::runtime_error("--scene requires a scene path");
+            }
+            gltf = argv[index++];
+        } else if (argument == "--out") {
+            if (index >= argc) {
+                throw std::runtime_error("--out requires a directory");
+            }
+            outDirectory = argv[index++];
+        } else if (argument.size() == 32u && isHexGuid(argument)) {
+            guid = argument;
+        } else {
+            throw std::runtime_error("unknown --export-scene argument: " + argument);
+        }
+    }
+
+    if (gltf.empty() || outDirectory.empty()) {
+        throw std::runtime_error("scene export requires both --scene and --out");
+    }
+    if (samples == 0u || bounces == 0u) {
+        throw std::runtime_error("--samples and --bounces must be positive");
+    }
+    if (!std::isfinite(skyIntensity) || skyIntensity < 0.0f) {
+        throw std::runtime_error("--sky-intensity must be a finite non-negative number");
+    }
+    if (!std::isfinite(skyRotation)) {
+        throw std::runtime_error("--sky-rotation must be finite");
+    }
+    if (guid.empty()) {
+        guid = defaultSceneGuid(gltf);
+    }
+    if (!isHexGuid(guid)) {
+        throw std::runtime_error("guid must be 32 hex characters");
+    }
+
+    DawnSceneExportOptions options;
+    options.config = loadDawnConfigOrThrow(configPath.empty() ? defaultDawnConfigPath() : configPath);
+    options.sidecar = sidecar;
+    options.skyImage = skyImage;
+    options.loadSidecar = loadSidecar;
+    options.includeAllOpaque = includeAllObjects;
+    options.skyIntensity = skyIntensity;
+    options.skyIntensitySet = skyIntensitySet;
+    options.skyRotationDegrees = skyRotation;
+    options.skyRotationSet = skyRotationSet;
+    options.samplesPerPixel = samples;
+    options.maxBounces = bounces;
+    options.blenderExecutable = blenderExecutable;
+    options.blenderTimeoutSeconds = blenderTimeoutSeconds;
+    DawnScenePackage package;
+#if defined(HBG_DAWN_HAVE_PARCEL) && HBG_DAWN_HAVE_PARCEL
+    if (isParcelScenePath(gltf)) {
+        package = buildDawnScenePackageFromParcel(gltf, options);
+    } else
+#endif
+    {
+        package = buildDawnScenePackage(gltf, options);
+    }
+    const PackageFiles files = writeDawnPackage(outDirectory, guid, package.scene, package.jobs, &package.lightmap);
+    std::printf("scene export: objects=%zu meshes=%zu atlases=%zu jobs=%zu guid=%s\n", package.objectCount,
+                package.meshCount, package.atlasCount, package.jobs.lightmap2DJobs.size(), guid.c_str());
+    std::cout << "wrote " << files.scene.string() << "\n";
+    std::cout << "wrote " << files.jobs.string() << "\n";
+    std::cout << "wrote " << files.lightmap.string() << "\n";
+    return 0;
+}
+
+int sceneExportTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const auto near = [](float value, float expected, float tolerance = 1.0e-5f) {
+        return std::fabs(value - expected) <= tolerance;
+    };
+    constexpr float kPi = 3.14159265358979323846f;
+
+    const std::filesystem::path asset =
+        std::filesystem::path(HBG_DAWN_PROJECT_ROOT) / "vfx/tests/assets/vfx_lit.gltf";
+    require(std::filesystem::is_regular_file(asset), "scene export test asset is missing");
+
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / "hbg_dawnbake_scene_export_test";
+    std::error_code removeError;
+    std::filesystem::remove_all(directory, removeError);
+
+    DawnSceneExportOptions options;
+    options.config = loadDawnConfigOrThrow();
+    options.samplesPerPixel = 8;
+    options.maxBounces = 2;
+    const DawnScenePackage package = buildDawnScenePackage(asset, options);
+    require(package.objectCount > 0u, "scene export produced no objects");
+    require(package.meshCount > 0u, "scene export produced no meshes");
+    require(package.atlasCount > 0u, "scene export produced no atlases");
+    require(package.jobs.lightmap2DJobs.size() == package.objectCount, "scene export job count mismatch");
+    require(package.lightmap.objects.size() == package.objectCount, "scene export sidecar count mismatch");
+    require(package.scene.meshInstances.size() == package.objectCount, "scene export instance count mismatch");
+
+    const std::string guid = "CAFEBABECAFEBABECAFEBABECAFEBABE";
+    const PackageFiles files = writeDawnPackage(directory, guid, package.scene, package.jobs, &package.lightmap);
+    require(std::filesystem::is_regular_file(files.scene), "scene export did not write .scene");
+    require(std::filesystem::is_regular_file(files.jobs), "scene export did not write .jobs");
+    require(std::filesystem::is_regular_file(files.lightmap), "scene export did not write lightmap sidecar");
+
+    const SceneInfo readBack = readSceneFile(files.scene);
+    const BakingJobInputs jobsBack = readBakingJobInputsFile(files.jobs);
+    require(readBack.meshes.size() == package.meshCount, "scene export mesh readback mismatch");
+    require(readBack.meshInstances.size() == package.objectCount, "scene export instance readback mismatch");
+    require(jobsBack.lightmap2DJobs.size() == package.objectCount, "scene export job readback mismatch");
+    for (const MeshInstanceInfo& instance : readBack.meshInstances) {
+        require(instance.header.uv2MapSize.x > 0u && instance.header.uv2MapSize.y > 0u,
+                "scene export instance has no UV2 map size");
+    }
+
+    const std::filesystem::path sidecar = directory / "scene_export_test.hdrp.json";
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":true},{"name":"ShadowCaster","contributeGI":false}],)"
+                R"("sky":{"mode":"flat","instanceId":305419897,"ambientColor":[0.25,0.5,1.0],"intensity":2.0,"indirectMultiplier":0.5,"shadowTranslucency":0.75}})";
+    }
+    DawnSceneExportOptions giOptions = options;
+    giOptions.sidecar = sidecar;
+    const DawnScenePackage giPackage = buildDawnScenePackage(asset, giOptions);
+    require(giPackage.objectCount == 1u, "contributeGI sidecar did not filter objects");
+    require(giPackage.lightmap.objects.size() == 1u && giPackage.lightmap.objects[0].name == "Mesh",
+            "contributeGI sidecar selected the wrong object");
+
+    const SkyLightInfoHeader& flatSky = giPackage.scene.skyLight.skyData;
+    require(near(flatSky.color.x, 0.5f) && near(flatSky.color.y, 1.0f) && near(flatSky.color.z, 2.0f),
+            "flat sky color/intensity mismatch");
+    require(flatSky.mipDimensions.x == 8 && flatSky.mipDimensions.y == 128 && flatSky.mipDimensions.z == 0,
+            "flat sky mip dimensions mismatch");
+    require(near(flatSky.indirectLightingIntensity, 0.5f), "flat sky indirect intensity mismatch");
+    require(near(flatSky.shadowTranslucency, 0.75f), "flat sky shadow translucency mismatch");
+    require(near(giPackage.scene.skyLight.envCube[0].x, 1.0f / kPi) &&
+                near(giPackage.scene.skyLight.envCube[0].y, 1.0f / kPi) &&
+                near(giPackage.scene.skyLight.envCube[0].z, 1.0f / kPi) &&
+                near(giPackage.scene.skyLight.envCube[0].w, 1.0f / kPi),
+            "flat sky env cube mismatch");
+    require(giPackage.scene.lights.size() == 2u, "flat sidecar sky did not append a sky light");
+    std::size_t flatSkyIndex = giPackage.scene.lights.size();
+    for (std::size_t index = 0; index < giPackage.scene.lights.size(); ++index) {
+        if ((giPackage.scene.lights[index].flags & kLightFlagTypeMask) == kLightFlagSky) {
+            flatSkyIndex = index;
+            break;
+        }
+    }
+    require(flatSkyIndex < giPackage.scene.lights.size(), "sidecar sky light missing");
+    const LightInfo& flatSkyLight = giPackage.scene.lights[flatSkyIndex];
+    require((flatSkyLight.flags & kLightFlagTypeMask) == kLightFlagSky, "sidecar sky light type mismatch");
+    require((flatSkyLight.flags & kLightFlagCastShadow) != 0u, "sidecar sky light cast shadow missing");
+    require((flatSkyLight.flags & kLightFlagDirectLighting) != 0u,
+            "sidecar sky light direct lighting missing");
+    require(near(flatSkyLight.attenuation, 0.5f), "sidecar sky light attenuation mismatch");
+    require(near(flatSkyLight.color.x, 0.5f) && near(flatSkyLight.color.y, 1.0f) &&
+                near(flatSkyLight.color.z, 2.0f),
+            "sidecar sky light color mismatch");
+    require(near(flatSkyLight.indirectColor.x, 0.5f), "sidecar sky light indirect color mismatch");
+    require(flatSkyLight.dimensions.x == 8.0f && flatSkyLight.dimensions.y == 128.0f,
+            "sidecar sky light dimensions mismatch");
+    require(giPackage.scene.lightGuids[flatSkyIndex].d == 305419897u,
+            "sidecar sky light instanceId guid mismatch");
+    require(giPackage.scene.lightPowers[flatSkyIndex] == 0.0f, "sidecar sky light power must be zero");
+    require((giPackage.scene.lights.front().flags & kLightFlagTypeMask) == kLightFlagDirectional,
+            "directional light must precede the sky light");
+
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":true},{"name":"ShadowCaster","contributeGI":false}],)"
+                R"("sky":{"mode":"trilight","skyColor":[0.2,0.4,0.8],"equatorColor":[0.1,0.2,0.3],)"
+                R"("groundColor":[0.8,0.4,0.2],"lerpExp":1.0,"intensity":1.5,"indirectIntensity":0.25}})";
+    }
+    const DawnScenePackage gradientPackage = buildDawnScenePackage(asset, giOptions);
+    const SkyLightInfoHeader& gradientSky = gradientPackage.scene.skyLight.skyData;
+    require(near(gradientSky.color.x, 1.5f) && near(gradientSky.color.y, 1.5f) &&
+                near(gradientSky.color.z, 1.5f),
+            "trilight sky color/intensity mismatch");
+    require(gradientSky.mipDimensions.x == 8 && gradientSky.mipDimensions.y == 128,
+            "trilight sky mip dimensions mismatch");
+    constexpr uint32_t kGradientFaceSize = 128u;
+    constexpr uint32_t kGradientFacePixels = kGradientFaceSize * kGradientFaceSize;
+    const Float4 topPixel =
+        gradientPackage.scene.skyLight.envCube[2u * kGradientFacePixels + kGradientFaceSize * 64u + 64u];
+    const Float4 bottomPixel =
+        gradientPackage.scene.skyLight.envCube[3u * kGradientFacePixels + kGradientFaceSize * 64u + 64u];
+    require(near(topPixel.x, 0.2f / kPi, 1.0e-3f) && near(topPixel.z, 0.8f / kPi, 1.0e-3f),
+            "trilight top sky color mismatch");
+    require(near(bottomPixel.x, 0.8f / kPi, 1.0e-3f) && near(bottomPixel.z, 0.2f / kPi, 1.0e-3f),
+            "trilight ground color mismatch");
+    const LightInfo* gradientSkyLight = nullptr;
+    for (const LightInfo& light : gradientPackage.scene.lights) {
+        if ((light.flags & kLightFlagTypeMask) == kLightFlagSky) {
+            gradientSkyLight = &light;
+            break;
+        }
+    }
+    require(gradientSkyLight != nullptr, "trilight sky light missing");
+    require(near(gradientSkyLight->attenuation, 0.25f),
+            "trilight sky light attenuation mismatch");
+
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":true},{"name":"ShadowCaster","contributeGI":false}],)"
+                R"("sky":{"mode":"skybox","enabled":false}})";
+    }
+    const DawnScenePackage disabledSkyPackage = buildDawnScenePackage(asset, giOptions);
+    require(disabledSkyPackage.scene.lights.size() == 1u, "disabled sidecar sky appended a sky light");
+    require(near(disabledSkyPackage.scene.skyLight.skyData.color.x, 0.0f),
+            "disabled sidecar sky must use the black placeholder");
+
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":true},{"name":"ShadowCaster","contributeGI":false}],)"
+                R"("sky":{"mode":"skybox"}})";
+    }
+    bool rejectedMissingSkyTexture = false;
+    try {
+        (void)buildDawnScenePackage(asset, giOptions);
+    } catch (const std::exception&) {
+        rejectedMissingSkyTexture = true;
+    }
+    require(rejectedMissingSkyTexture, "skybox sidecar without a texture was not rejected");
+
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":false},{"name":"ShadowCaster","contributeGI":false}]})";
+    }
+    bool rejectedAllExcluded = false;
+    try {
+        (void)buildDawnScenePackage(asset, giOptions);
+    } catch (const std::exception&) {
+        rejectedAllExcluded = true;
+    }
+    require(rejectedAllExcluded, "sidecar excluded all objects but export did not fail");
+
+    {
+        std::ofstream file(sidecar);
+        file << R"({"objects":[{"name":"Mesh","contributeGI":true},{"name":"ShadowCaster","contributeGI":true}],)"
+                R"("lights":[{"name":"Sun","bakeMode":"mixed","mixedMode":"shadowmask","castShadows":true}]})";
+    }
+    const DawnScenePackage shadowPackage = buildDawnScenePackage(asset, giOptions);
+    require(shadowPackage.scene.lights.size() == 1u, "shadowmask sidecar light count mismatch");
+    require((shadowPackage.scene.lights[0].flags & kLightFlagTypeMask) == kLightFlagDirectional,
+            "shadowmask sidecar light must be directional");
+    require((shadowPackage.scene.lights[0].flags & kLightFlagDirectLighting) == 0u,
+            "mixed shadowmask light must not bake direct lighting");
+    require(shadowPackage.scene.meshInstances.size() == 2u, "shadowmask instance count mismatch");
+    require(shadowPackage.jobs.lightmap2DJobs.size() == 2u, "shadowmask lightmap job count mismatch");
+    require(shadowPackage.jobs.mappingGroupJobs.size() == 1u, "lightmap group packing count mismatch");
+    require(shadowPackage.jobs.mappingGroupJobsCount == 1u, "lightmap group count mismatch");
+    require(shadowPackage.jobs.partialJobsTotalNum.numMappingGroupJobs == 1u,
+            "lightmap partial group count mismatch");
+    {
+        const MappingGroupInput& group = shadowPackage.jobs.mappingGroupJobs.front();
+        require(group.jobId.a == 0u && group.jobId.b == 0u && group.jobId.c == 0u &&
+                    group.jobId.d == 0xFFFFFFFFu,
+                "lightmap group id mismatch");
+        require(group.groupedSize == static_cast<int32_t>(giOptions.config.lightmap.taskPackSize),
+                "lightmap group size mismatch");
+        std::vector<int32_t> groupedJobs;
+        for (const Int3& offset : group.mappingOffsets) {
+            groupedJobs.push_back(offset.z);
+        }
+        std::sort(groupedJobs.begin(), groupedJobs.end());
+        require(groupedJobs == std::vector<int32_t>{0, 1}, "lightmap group job indices mismatch");
+    }
+    require(shadowPackage.jobs.sdfShadowJobs.size() == 2u, "shadowmask SDF job count mismatch");
+    require(shadowPackage.jobs.sdfShadowJobsCount == 2u, "shadowmask SDF count mismatch");
+    require(shadowPackage.jobs.partialJobsTotalNum.numSdfShadowJobs == 2u,
+            "shadowmask partial SDF count mismatch");
+    require(shadowPackage.jobs.bakingParameters.sdfShadowParameter.maxUpsamplingFactor == 4 &&
+                shadowPackage.jobs.bakingParameters.sdfShadowParameter.shadowRayFactor == 1.0f &&
+                shadowPackage.jobs.bakingParameters.sdfShadowParameter.denoiserMode == 0 &&
+                shadowPackage.jobs.bakingParameters.sdfShadowParameter.shadowMaskSmoothLevel == 1 &&
+                shadowPackage.jobs.shadowSettingParameter.bAllowSignedDistanceFieldShadows == 1 &&
+                shadowPackage.jobs.shadowSettingParameter.minDistanceFieldUpsampleFactor == 5,
+            "shadowmask SDF baking parameters mismatch");
+    for (std::size_t index = 0; index < shadowPackage.scene.meshInstances.size(); ++index) {
+        const MeshInstanceInfo& instance = shadowPackage.scene.meshInstances[index];
+        require(instance.relevantLights == std::vector<uint32_t>{0u},
+                "shadowmask relevant light index mismatch");
+        require((shadowPackage.jobs.lightmap2DJobs[index].flags & kLightmapFlagDirect) == 0u,
+                "shadowmask lightmap job must not bake direct lighting");
+        require((shadowPackage.jobs.lightmap2DJobs[index].flags & kLightmapFlagPadding) != 0u,
+                "lightmap padding flag missing");
+
+        const SdfShadowInput& shadow = shadowPackage.jobs.sdfShadowJobs[index];
+        require(shadow.header.jobId.a == instance.header.guid.a &&
+                    shadow.header.jobId.b == 1u && shadow.header.jobId.c == index &&
+                    shadow.header.jobId.d == instance.header.guid.d,
+                "shadowmask job id mismatch");
+        require(shadow.header.meshId.a == instance.header.guid.a &&
+                    shadow.header.meshId.b == instance.header.guid.b &&
+                    shadow.header.meshId.c == instance.header.guid.c &&
+                    shadow.header.meshId.d == instance.header.guid.d,
+                "shadowmask mesh id mismatch");
+        require((shadow.header.flags & kLightmapFlagBilinearFilter) != 0u,
+                "shadowmask bilinear flag missing");
+        require((shadow.header.flags & kLightmapFlagPadding) != 0u,
+                "shadowmask padding flag missing");
+        require((shadow.header.flags & kLightmapFlagPadding) ==
+                    (shadowPackage.jobs.lightmap2DJobs[index].flags & kLightmapFlagPadding),
+                "shadowmask/lightmap padding flags mismatch");
+        require(shadow.header.size.x == shadowPackage.jobs.lightmap2DJobs[index].size.x &&
+                    shadow.header.size.y == shadowPackage.jobs.lightmap2DJobs[index].size.y,
+                "shadowmask size mismatch");
+        require(shadow.header.upsampleFactor == 4 && shadow.header.lightmapUVIndex == 1,
+                "shadowmask upsample/uv index mismatch");
+        require(shadow.lights.size() == 1u && shadow.shadowmaskLights.size() == 1u,
+                "shadowmask light guid count mismatch");
+        const Guid& lightGuid = shadowPackage.scene.lightGuids[0];
+        require(shadow.lights[0].a == lightGuid.a && shadow.lights[0].b == lightGuid.b &&
+                    shadow.lights[0].c == lightGuid.c && shadow.lights[0].d == lightGuid.d,
+                "shadowmask light guid mismatch");
+        const Guid& maskGuid = shadow.shadowmaskLights[0];
+        require(maskGuid.a == lightGuid.a && maskGuid.b == lightGuid.b &&
+                    maskGuid.c == lightGuid.c && maskGuid.d == lightGuid.d,
+                "shadowmask shadowmask-light guid mismatch");
+    }
+    require(shadowPackage.jobs.sdfShadowGroupJobs.size() == 1u,
+            "shadowmask SDF group packing count mismatch");
+    {
+        const SdfShadowGroupInput& group = shadowPackage.jobs.sdfShadowGroupJobs.front();
+        require(group.jobId.a == 102u && group.jobId.b == 1u && group.jobId.c == 0u &&
+                    group.jobId.d == 0xFFFFFFFFu,
+                "shadowmask SDF group id mismatch");
+        require(group.groupSize == static_cast<int32_t>(giOptions.config.lightmap.taskPackSize),
+                "shadowmask SDF group size mismatch");
+        require(group.shadowJobIndices.size() == 2u && group.mappingOffsets.size() == 2u,
+                "shadowmask SDF packed group job count mismatch");
+        std::vector<int32_t> packedJobs = group.shadowJobIndices;
+        std::sort(packedJobs.begin(), packedJobs.end());
+        require(packedJobs == std::vector<int32_t>{0, 1}, "shadowmask SDF packed job indices mismatch");
+        const MappingGroupInput& lightmapGroup = shadowPackage.jobs.mappingGroupJobs.front();
+        for (const Int3& offset : group.mappingOffsets) {
+            const auto lightmapOffset = std::find_if(
+                lightmapGroup.mappingOffsets.begin(), lightmapGroup.mappingOffsets.end(),
+                [&](const Int3& candidate) { return candidate.z == offset.z; });
+            require(lightmapOffset != lightmapGroup.mappingOffsets.end() && lightmapOffset->x == offset.x &&
+                        lightmapOffset->y == offset.y,
+                    "shadowmask SDF packed offset must match lightmap group offset");
+        }
+    }
+
+    const std::filesystem::path shadowDirectory = directory / "shadowmask";
+    const PackageFiles shadowFiles =
+        writeDawnPackage(shadowDirectory, "0123456789ABCDEF0123456789ABCDEF",
+                         shadowPackage.scene, shadowPackage.jobs, &shadowPackage.lightmap);
+    const SceneInfo shadowSceneBack = readSceneFile(shadowFiles.scene);
+    const BakingJobInputs shadowJobsBack = readBakingJobInputsFile(shadowFiles.jobs);
+    require(shadowSceneBack.meshInstances.size() == 2u &&
+                shadowSceneBack.meshInstances[0].relevantLights == std::vector<uint32_t>{0u},
+            "shadowmask relevant lights did not round-trip");
+    require(shadowJobsBack.sdfShadowJobs.size() == 2u &&
+                shadowJobsBack.sdfShadowJobs[1].header.jobId.c == 1u &&
+                shadowJobsBack.sdfShadowJobs[1].lights.size() == 1u,
+            "shadowmask SDF job did not round-trip");
+    require(shadowJobsBack.sdfShadowGroupJobs.size() == 1u &&
+                shadowJobsBack.sdfShadowGroupJobs[0].shadowJobIndices.size() == 2u &&
+                shadowJobsBack.sdfShadowGroupJobs[0].mappingOffsets.size() == 2u &&
+                shadowJobsBack.sdfShadowGroupJobs[0].groupSize ==
+                    static_cast<int32_t>(giOptions.config.lightmap.taskPackSize),
+            "shadowmask SDF group did not round-trip");
+    require(shadowJobsBack.mappingGroupJobs.size() == 1u &&
+                shadowJobsBack.mappingGroupJobs[0].mappingOffsets.size() == 2u &&
+                shadowJobsBack.mappingGroupJobs[0].groupedSize ==
+                    static_cast<int32_t>(giOptions.config.lightmap.taskPackSize),
+            "lightmap group did not round-trip");
+
+    std::printf("scene export test OK: objects=%zu meshes=%zu atlases=%zu jobs=%zu mapping_groups=%zu "
+                "sdf_groups=%zu gi_objects=%zu sky=%s\n",
+                package.objectCount, package.meshCount, package.atlasCount, package.jobs.lightmap2DJobs.size(),
+                shadowPackage.jobs.mappingGroupJobs.size(), shadowPackage.jobs.sdfShadowGroupJobs.size(),
+                giPackage.objectCount, "flat+trilight");
+    std::filesystem::remove_all(directory, removeError);
+    return 0;
+}
+
+#if defined(HBG_DAWN_HAVE_PARCEL) && HBG_DAWN_HAVE_PARCEL
+int parcelImportTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const auto requireNear = [&require](float value, float expected, const char* message) {
+        require(std::fabs(value - expected) <= 1.0e-5f, message);
+    };
+    const std::filesystem::path root = std::filesystem::path(HBG_DAWN_PROJECT_ROOT);
+    const std::filesystem::path asset = root / "tests/assets/parcel_triangle.obj";
+    DawnSceneExportOptions options;
+    options.config = loadDawnConfigOrThrow();
+    const DawnScenePackage package = buildDawnScenePackageFromParcel(asset, options);
+    require(package.objectCount == 1u, "Parcel OBJ object count mismatch");
+    require(package.meshCount == 1u, "Parcel OBJ mesh count mismatch");
+    require(package.jobs.lightmap2DJobs.size() == 1u, "Parcel OBJ job count mismatch");
+
+    for (const char* name : {"parcel_triangle.stl", "parcel_triangle.ply",
+                             "parcel_triangle.dae", "parcel_triangle.3ds"}) {
+        const DawnScenePackage formatPackage =
+            buildDawnScenePackageFromParcel(root / "tests/assets" / name, options);
+        require(formatPackage.objectCount == 1u, "Parcel format object count mismatch");
+        require(formatPackage.meshCount == 1u, "Parcel format mesh count mismatch");
+        require(formatPackage.jobs.lightmap2DJobs.size() == 1u,
+                "Parcel format job count mismatch");
+    }
+
+#ifdef HBG_BLENDER_EXECUTABLE
+    bool blendTested = false;
+    const std::filesystem::path blendAsset = root / "tests/assets/parcel_triangle.blend";
+    if (std::filesystem::is_regular_file(blendAsset) &&
+        std::filesystem::is_regular_file(std::filesystem::path(HBG_BLENDER_EXECUTABLE))) {
+        const DawnScenePackage blendPackage =
+            buildDawnScenePackageFromParcel(blendAsset, options);
+        require(blendPackage.objectCount == 1u, "Parcel BLEND object count mismatch");
+        require(blendPackage.meshCount == 1u, "Parcel BLEND mesh count mismatch");
+        require(blendPackage.jobs.lightmap2DJobs.size() == 1u, "Parcel BLEND job count mismatch");
+
+        std::error_code relativeError;
+        const std::filesystem::path relativeBlend =
+            std::filesystem::relative(blendAsset, relativeError);
+        if (!relativeError && relativeBlend.is_relative()) {
+            const DawnScenePackage relativePackage =
+                buildDawnScenePackageFromParcel(relativeBlend, options);
+            require(relativePackage.objectCount == 1u,
+                    "Parcel relative BLEND object count mismatch");
+            require(relativePackage.meshCount == 1u, "Parcel relative BLEND mesh count mismatch");
+            require(relativePackage.jobs.lightmap2DJobs.size() == 1u,
+                    "Parcel relative BLEND job count mismatch");
+        }
+
+        const std::filesystem::path sidecarBlendDirectory =
+            std::filesystem::temp_directory_path() / "hbg_dawnbake" / "blend_sidecar";
+        std::error_code sidecarError;
+        std::filesystem::remove_all(sidecarBlendDirectory, sidecarError);
+        std::filesystem::create_directories(sidecarBlendDirectory, sidecarError);
+        const std::filesystem::path sidecarBlend = sidecarBlendDirectory / "blend_sidecar.blend";
+        const std::filesystem::path sidecarJson = sidecarBlendDirectory / "blend_sidecar.hdrp.json";
+        if (!sidecarError &&
+            std::filesystem::copy_file(blendAsset, sidecarBlend, sidecarError) &&
+            !sidecarError &&
+            std::filesystem::copy_file(root / "tests/assets/parcel_sidecar.hdrp.json", sidecarJson,
+                                       sidecarError) &&
+            !sidecarError) {
+            const DawnScenePackage sidecarBlendPackage =
+                buildDawnScenePackageFromParcel(sidecarBlend, options);
+            require(sidecarBlendPackage.objectCount == 1u,
+                    "Parcel BLEND sidecar object count mismatch");
+            require(sidecarBlendPackage.scene.lights.size() == 1u,
+                    "Parcel BLEND source sidecar was not applied");
+            require(sidecarBlendPackage.scene.skyLight.envCube.size() == 6u * 128u * 128u,
+                    "Parcel BLEND source sidecar cube size mismatch");
+        }
+        std::filesystem::remove_all(sidecarBlendDirectory, sidecarError);
+        blendTested = true;
+    }
+#else
+    constexpr bool blendTested = false;
+#endif
+
+    const std::filesystem::path sidecarScene = root / "tests/assets/parcel_sidecar.obj";
+    const DawnScenePackage sidecarPackage =
+        buildDawnScenePackageFromParcel(sidecarScene, options);
+    require(sidecarPackage.objectCount == 1u, "Parcel sidecar object count mismatch");
+    require(sidecarPackage.meshCount == 1u, "Parcel sidecar mesh count mismatch");
+    require(sidecarPackage.jobs.lightmap2DJobs.size() == 1u, "Parcel sidecar job count mismatch");
+    require(sidecarPackage.scene.lights.size() == 1u, "Parcel sidecar sky light missing");
+    require(sidecarPackage.scene.skyLight.envCube.size() == 6u * 128u * 128u,
+            "Parcel sidecar sky cube size mismatch");
+    require(sidecarPackage.scene.skyLight.skyData.color.x == 0.5f &&
+                sidecarPackage.scene.skyLight.skyData.color.y == 1.0f &&
+                sidecarPackage.scene.skyLight.skyData.color.z == 1.5f,
+            "Parcel sidecar sky color mismatch");
+
+    const std::filesystem::path textureScene = root / "tests/assets/parcel_texture_scene.obj";
+    const DawnScenePackage texturePackage =
+        buildDawnScenePackageFromParcel(textureScene, options);
+    require(texturePackage.objectCount == 1u, "Parcel PNG object count mismatch");
+    require(texturePackage.meshCount == 1u, "Parcel PNG mesh count mismatch");
+    require(texturePackage.jobs.lightmap2DJobs.size() == 1u, "Parcel PNG job count mismatch");
+    require(!texturePackage.scene.materials.empty(), "Parcel PNG scene has no material");
+    require(texturePackage.scene.materials.front().diffuseTexture.header.sizeX == 4u,
+            "Parcel PNG texture was not imported");
+    require(texturePackage.scene.materials.front().diffuseTexture.colors.size() == 16u,
+            "Parcel PNG texture payload mismatch");
+    require(!texturePackage.scene.meshInstances.empty() &&
+                (texturePackage.scene.meshInstances.front().header.flags &
+                 kMeshInstanceFlagUseEmissionLighting) != 0u,
+            "Parcel emissive material did not set the instance emission flag");
+
+    const std::filesystem::path giSidecarScene = root / "tests/assets/parcel_gi_scene.obj";
+    DawnSceneExportOptions noSidecarOptions = options;
+    noSidecarOptions.loadSidecar = false;
+    const DawnScenePackage unfilteredGiPackage =
+        buildDawnScenePackageFromParcel(giSidecarScene, noSidecarOptions);
+    require(unfilteredGiPackage.objectCount == 2u,
+            "Parcel GI fixture must contain two objects before filtering");
+    const DawnScenePackage giSidecarPackage =
+        buildDawnScenePackageFromParcel(giSidecarScene, options);
+    require(giSidecarPackage.objectCount == 1u,
+            "Parcel sidecar contributeGI did not filter objects");
+    require(giSidecarPackage.jobs.lightmap2DJobs.size() == 1u,
+            "Parcel sidecar contributeGI job count mismatch");
+
+    const std::filesystem::path lightScene = root / "tests/assets/parcel_light.fbx";
+    const DawnScenePackage lightPackage =
+        buildDawnScenePackageFromParcel(lightScene, options);
+    require(lightPackage.objectCount == 1u && lightPackage.jobs.lightmap2DJobs.size() == 1u,
+            "Parcel light scene object/job mismatch");
+    require(lightPackage.scene.lights.size() == 1u, "Parcel light was not imported");
+    const LightInfo& parcelLight = lightPackage.scene.lights.front();
+    require((parcelLight.flags & kLightFlagTypeMask) == kLightFlagPoint,
+            "Parcel light type mismatch");
+    require((parcelLight.flags & kLightFlagCastShadow) != 0u,
+            "Parcel light sidecar castShadows missing");
+    requireNear(parcelLight.attenuation, 0.25f, "Parcel light sidecar range mismatch");
+    requireNear(parcelLight.dimensions.x, 0.75f, "Parcel light source radius mismatch");
+    requireNear(parcelLight.dimensions.y, 0.75f, "Parcel light source soft radius mismatch");
+    requireNear(parcelLight.dimensions.z, 1.25f, "Parcel light source length mismatch");
+    requireNear(parcelLight.shadowTranslucency, 0.5f,
+                "Parcel light sidecar shadowTranslucency mismatch");
+    require(parcelLight.bEnablePenumbra == 1u, "Parcel light sidecar penumbra missing");
+    requireNear(parcelLight.penumbraTint.x, 0.1f, "Parcel light penumbra tint mismatch");
+    requireNear(parcelLight.penumbraLuma, 0.75f, "Parcel light penumbra luma mismatch");
+    requireNear(parcelLight.color.x, 500.0f, "Parcel light color x was multiplied twice");
+    requireNear(parcelLight.color.y, 250.0f, "Parcel light color y was multiplied twice");
+    requireNear(parcelLight.color.z, 125.0f, "Parcel light color z was multiplied twice");
+    requireNear(parcelLight.indirectColor.x, 125.0f,
+                "Parcel light indirect multiplier x mismatch");
+    requireNear(parcelLight.indirectColor.y, 62.5f,
+                "Parcel light indirect multiplier y mismatch");
+    requireNear(parcelLight.indirectColor.z, 31.25f,
+                "Parcel light indirect multiplier z mismatch");
+    require(parcelLight.iesTextureSlice == 0, "Parcel light cookie slice mismatch");
+    require(parcelLight.lightTextureMode == 1, "Parcel light cookie mode mismatch");
+    require(lightPackage.scene.cookieTextureDatas.size() == 1u,
+            "Parcel light cookie texture missing");
+    require(lightPackage.scene.cookieTextureDatas.front().header.sizeX == 8u &&
+                lightPackage.scene.cookieTextureDatas.front().header.sizeY == 8u,
+            "Parcel light cookie texture size mismatch");
+
+    const std::filesystem::path iesScene = root / "tests/assets/parcel_ies.fbx";
+    const DawnScenePackage iesPackage =
+        buildDawnScenePackageFromParcel(iesScene, options);
+    require(iesPackage.scene.lights.size() == 1u, "Parcel IES light was not imported");
+    const LightInfo& iesLight = iesPackage.scene.lights.front();
+    require((iesLight.flags & kLightFlagTypeMask) == kLightFlagPoint,
+            "Parcel IES light type mismatch");
+    require(iesLight.lightTextureMode == 1, "Parcel IES texture mode mismatch");
+    require(iesLight.iesTextureSlice == 0, "Parcel IES texture slice mismatch");
+    require(iesPackage.scene.cookieTextureDatas.size() == 1u,
+            "Parcel IES cookie texture missing");
+    const auto& iesCookie = iesPackage.scene.cookieTextureDatas.front();
+    require(iesCookie.header.sizeX == 64u && iesCookie.header.sizeY == 64u,
+            "Parcel IES point cookie size mismatch");
+    const auto iesPixel = [&iesCookie](uint32_t x, uint32_t y) {
+        return iesCookie.colors[static_cast<std::size_t>(y) * iesCookie.header.sizeX + x].x;
+    };
+    require(iesPixel(32, 63) > 0.85f, "Parcel IES cookie lost its up-facing intensity");
+    require(iesPixel(32, 32) < 0.05f, "Parcel IES cookie should fall off at 90 degrees");
+    require(iesPixel(32, 0) < 0.05f, "Parcel IES cookie should be dark downward");
+
+    const std::filesystem::path iesSpotScene = root / "tests/assets/parcel_ies_spot.fbx";
+    const DawnScenePackage iesSpotPackage =
+        buildDawnScenePackageFromParcel(iesSpotScene, options);
+    require(iesSpotPackage.scene.lights.size() == 1u, "Parcel IES spot was not imported");
+    const LightInfo& iesSpotLight = iesSpotPackage.scene.lights.front();
+    require((iesSpotLight.flags & kLightFlagTypeMask) == kLightFlagSpot,
+            "Parcel IES spot type mismatch");
+    require(iesSpotLight.lightTextureMode == 1, "Parcel IES spot texture mode mismatch");
+    require(iesSpotLight.iesTextureSlice == 0, "Parcel IES spot texture slice mismatch");
+    require(iesSpotPackage.scene.cookieTextureDatas.size() == 1u,
+            "Parcel IES spot cookie texture missing");
+    const auto& iesSpotCookie = iesSpotPackage.scene.cookieTextureDatas.front();
+    require(iesSpotCookie.header.sizeX == 8u && iesSpotCookie.header.sizeY == 8u,
+            "Parcel IES spot cookie size mismatch");
+    const auto iesSpotPixel = [&iesSpotCookie](uint32_t x, uint32_t y) {
+        return iesSpotCookie.colors[static_cast<std::size_t>(y) * iesSpotCookie.header.sizeX + x].x;
+    };
+    require(iesSpotPixel(3, 3) > 0.8f, "Parcel IES spot cookie lost central intensity");
+    require(iesSpotPixel(0, 0) < 0.05f, "Parcel IES spot cookie should fall off at the edge");
+
+    const std::filesystem::path areaLightScene = root / "tests/assets/parcel_area.fbx";
+    const DawnScenePackage areaLightPackage =
+        buildDawnScenePackageFromParcel(areaLightScene, options);
+    require(areaLightPackage.objectCount == 1u &&
+                areaLightPackage.jobs.lightmap2DJobs.size() == 1u,
+            "Parcel area light scene object/job mismatch");
+    require(areaLightPackage.scene.lights.size() == 1u, "Parcel area light was not imported");
+    const LightInfo& areaLight = areaLightPackage.scene.lights.front();
+    require((areaLight.flags & kLightFlagTypeMask) == kLightFlagRect,
+            "Parcel area light type mismatch");
+    requireNear(areaLight.dimensions.x, 2.0f, "Parcel area light width mismatch");
+    requireNear(areaLight.dimensions.y, 2.0f, "Parcel area light height mismatch");
+    requireNear(areaLight.dimensions.z, 1.0f, "Parcel area light attention radius mismatch");
+    requireNear(areaLight.shaping.x, 0.70710678f, "Parcel area light barn door angle mismatch");
+    requireNear(areaLight.shaping.y, 3.0f, "Parcel area light barn door length mismatch");
+    requireNear(areaLight.attenuation, 0.2f, "Parcel area light range mismatch");
+    require((areaLight.flags & kLightFlagNonInverseSquareFalloff) == 0u,
+            "Parcel area light must be inverse-square");
+    require((areaLight.flags & kLightFlagBakeryFakeFalloff) != 0u,
+            "Parcel area light bakery-fake flag missing");
+    requireNear(areaLight.penumbraTint.x, 0.0f,
+                "Parcel area light disabled penumbra tint mismatch");
+    requireNear(areaLight.penumbraLuma, 0.0f,
+                "Parcel area light disabled penumbra luma mismatch");
+
+    const std::filesystem::path discLightScene =
+        root / "tests/assets/parcel_disc_area.fbx";
+    const DawnScenePackage discLightPackage =
+        buildDawnScenePackageFromParcel(discLightScene, options);
+    require(discLightPackage.scene.lights.size() == 1u,
+            "Parcel disc area light was not imported");
+    const LightInfo& discLight = discLightPackage.scene.lights.front();
+    require((discLight.flags & kLightFlagTypeMask) == kLightFlagDisc,
+            "Parcel disc area light type mismatch");
+    require((discLight.flags & kLightFlagCastShadow) != 0u,
+            "Parcel disc area light castShadows missing");
+    requireNear(discLight.dimensions.x, 2.0f, "Parcel disc area light width mismatch");
+    requireNear(discLight.dimensions.y, 2.0f, "Parcel disc area light height mismatch");
+    requireNear(discLight.dimensions.z, 10.0f,
+                "Parcel disc area light attention diameter mismatch");
+    requireNear(discLight.shaping.x, 0.70710678f,
+                "Parcel disc area light barn door angle mismatch");
+    requireNear(discLight.shaping.y, 3.0f,
+                "Parcel disc area light barn door length mismatch");
+    requireNear(discLight.attenuation, 0.2f, "Parcel disc area light range mismatch");
+    require((discLight.flags & kLightFlagNonInverseSquareFalloff) == 0u,
+            "Parcel disc area light must be inverse-square");
+    require((discLight.flags & kLightFlagBakeryFalloff) != 0u,
+            "Parcel disc area light bakery-physical flag missing");
+    requireNear(discLight.penumbraTint.x, 0.0f,
+                "Parcel disc area light disabled penumbra tint mismatch");
+    requireNear(discLight.penumbraLuma, 0.0f,
+                "Parcel disc area light disabled penumbra luma mismatch");
+
+    const std::filesystem::path spotLightScene = root / "tests/assets/parcel_spot.fbx";
+    const DawnScenePackage spotLightPackage =
+        buildDawnScenePackageFromParcel(spotLightScene, options);
+    require(spotLightPackage.scene.lights.size() == 1u, "Parcel spot light was not imported");
+    const LightInfo& spotLight = spotLightPackage.scene.lights.front();
+    require((spotLight.flags & kLightFlagTypeMask) == kLightFlagSpot,
+            "Parcel spot light type mismatch");
+    require((spotLight.flags & kLightFlagCastShadow) != 0u,
+            "Parcel spot light castShadows missing");
+    requireNear(spotLight.dimensions.x, 0.4f, "Parcel spot source radius mismatch");
+    requireNear(spotLight.dimensions.y, 0.4f, "Parcel spot source soft radius mismatch");
+    requireNear(spotLight.dimensions.z, 0.8f, "Parcel spot source length mismatch");
+    requireNear(spotLight.shaping.x, 0.8660254f, "Parcel spot outer cone half-angle mismatch");
+    requireNear(spotLight.shaping.y, 17.284851f, "Parcel spot cone falloff mismatch");
+    requireNear(spotLight.attenuation, 1.0f / 6.0f, "Parcel spot range mismatch");
+
+    const std::filesystem::path directionalLightScene =
+        root / "tests/assets/parcel_directional.fbx";
+    const DawnScenePackage directionalLightPackage =
+        buildDawnScenePackageFromParcel(directionalLightScene, options);
+    require(directionalLightPackage.scene.lights.size() == 1u,
+            "Parcel directional light was not imported");
+    const LightInfo& directionalLight = directionalLightPackage.scene.lights.front();
+    require((directionalLight.flags & kLightFlagTypeMask) == kLightFlagDirectional,
+            "Parcel directional light type mismatch");
+    require((directionalLight.flags & kLightFlagCastShadow) != 0u,
+            "Parcel directional light castShadows missing");
+    requireNear(directionalLight.dimensions.x, 0.08715574f,
+                "Parcel directional light source angle mismatch");
+    requireNear(directionalLight.attenuation, 1.0f,
+                "Parcel directional light attenuation mismatch");
+    requireNear(directionalLight.shadowTranslucency, 0.25f,
+                "Parcel directional light shadowTranslucency mismatch");
+
+    const std::filesystem::path embeddedFbx =
+        root / "tests/assets/parcel_embedded_texture.fbx";
+    const DawnScenePackage embeddedPackage =
+        buildDawnScenePackageFromParcel(embeddedFbx, options);
+    require(embeddedPackage.objectCount == 1u, "Parcel embedded FBX object count mismatch");
+    require(embeddedPackage.meshCount == 1u, "Parcel embedded FBX mesh count mismatch");
+    require(!embeddedPackage.scene.materials.empty(), "Parcel embedded FBX has no material");
+    require(embeddedPackage.scene.materials.front().diffuseTexture.header.sizeX > 1u,
+            "Parcel embedded FBX texture was not imported");
+
+    const std::filesystem::path embeddedExrFbx =
+        root / "tests/assets/parcel_embedded_exr.fbx";
+    const DawnScenePackage embeddedExrPackage =
+        buildDawnScenePackageFromParcel(embeddedExrFbx, options);
+    require(embeddedExrPackage.objectCount == 1u,
+            "Parcel embedded EXR FBX object count mismatch");
+    require(!embeddedExrPackage.scene.materials.empty(),
+            "Parcel embedded EXR FBX has no material");
+    const Texture2D<MaterialColor>& embeddedExrDiffuse =
+        embeddedExrPackage.scene.materials.front().diffuseTexture;
+    require(embeddedExrDiffuse.header.sizeX == 4u && embeddedExrDiffuse.header.sizeY == 4u,
+            "Parcel embedded EXR texture was not imported");
+    require(embeddedExrDiffuse.colors.size() == 16u,
+            "Parcel embedded EXR texture payload mismatch");
+
+    const std::filesystem::path isolatedExrDirectory =
+        std::filesystem::temp_directory_path() / "hbg_dawnbake" / "embedded_exr";
+    std::error_code isolatedError;
+    std::filesystem::remove_all(isolatedExrDirectory, isolatedError);
+    std::filesystem::create_directories(isolatedExrDirectory, isolatedError);
+    const std::filesystem::path isolatedExrFbx = isolatedExrDirectory / "embedded_exr.fbx";
+    std::filesystem::copy_file(embeddedExrFbx, isolatedExrFbx, isolatedError);
+    require(!isolatedError, "Parcel embedded EXR fixture copy failed");
+    const DawnScenePackage isolatedExrPackage =
+        buildDawnScenePackageFromParcel(isolatedExrFbx, options);
+    require(!isolatedExrPackage.scene.materials.empty(),
+            "Parcel isolated embedded EXR has no material");
+    const Texture2D<MaterialColor>& isolatedExrDiffuse =
+        isolatedExrPackage.scene.materials.front().diffuseTexture;
+    require(isolatedExrDiffuse.header.sizeX == 4u && isolatedExrDiffuse.header.sizeY == 4u &&
+                isolatedExrDiffuse.colors.size() == 16u,
+            "Parcel embedded EXR fallback requires an external texture");
+    std::filesystem::remove_all(isolatedExrDirectory, isolatedError);
+
+    const std::filesystem::path exrScene = root / "tests/assets/parcel_exr_scene.obj";
+    const DawnScenePackage exrPackage = buildDawnScenePackageFromParcel(exrScene, options);
+    require(exrPackage.objectCount == 1u, "Parcel EXR object count mismatch");
+    require(!exrPackage.scene.materials.empty(), "Parcel EXR scene has no material");
+    const Texture2D<MaterialColor>& exrDiffuse =
+        exrPackage.scene.materials.front().diffuseTexture;
+    require(exrDiffuse.header.sizeX == 4u, "Parcel EXR texture was not imported");
+    require(exrDiffuse.colors.size() == 16u, "Parcel EXR texture payload mismatch");
+    std::printf("Parcel import test OK: objects=%zu meshes=%zu jobs=%zu formats=stl+ply+dae+3ds "
+                "blend=%s sidecar_light=%zu parcel_light=1 png_texture=%ux%u embedded_texture=%ux%u "
+                "embedded_exr_texture=%ux%u exr_texture=%ux%u\n",
+                package.objectCount, package.meshCount, package.jobs.lightmap2DJobs.size(),
+                blendTested ? "tested" : "skipped", sidecarPackage.scene.lights.size(),
+                texturePackage.scene.materials.front().diffuseTexture.header.sizeX,
+                texturePackage.scene.materials.front().diffuseTexture.header.sizeY,
+                embeddedPackage.scene.materials.front().diffuseTexture.header.sizeX,
+                embeddedPackage.scene.materials.front().diffuseTexture.header.sizeY,
+                embeddedExrDiffuse.header.sizeX, embeddedExrDiffuse.header.sizeY,
+                exrPackage.scene.materials.front().diffuseTexture.header.sizeX,
+                exrPackage.scene.materials.front().diffuseTexture.header.sizeY);
+    return 0;
+}
+#endif
+
 int t6PerfTest() {
     const auto require = [](bool condition, const char* message) {
         if (!condition) {
@@ -1351,6 +2232,7 @@ int dawnConfigTest(const std::filesystem::path& path) {
     require(config.lightmap.dilationIterations == atlasOptions.dilationIterations, "dilation count mismatch");
     require(config.lightmap.atlasSize == kT6AtlasSize, "dawn config atlas size no longer matches T6");
     require(config.lightmap.padding == 2u, "dawn config padding no longer matches T6");
+    require(config.lightmap.splitLightmaps, "dawn config must enable oversized lightmap splitting");
 
     DawnConfig invalid;
     std::string invalidError;
@@ -1461,10 +2343,13 @@ int meshExportTest() {
     object.world = hbg::Mat4::identity();
     object.worldBounds = mesh.bounds;
 
+    options.useEmissionLighting = true;
     const MeshInstanceInfo instance = exportMeshInstance(mesh, object, 0, 0, options);
     require(instance.header.meshIndex == 0, "unexpected instance mesh index");
     require(instance.header.lightmapId == 0, "LightmapId must equal the mesh index");
     require((instance.header.flags & kMeshInstanceFlagShadowCast) != 0, "shadow cast flag missing");
+    require((instance.header.flags & kMeshInstanceFlagUseEmissionLighting) != 0,
+            "emission lighting flag missing");
     require(instance.materialOverrides.size() == 1 && instance.materialOverrides[0] == 0,
             "material override was not copied");
     require(instance.header.transform.mm[0] == 1.0f && instance.header.transform.mm[5] == 1.0f &&
@@ -1615,6 +2500,10 @@ int lightExportTest() {
     directional.color = hbg::Vec3{0.5f, 0.25f, 0.75f};
     directional.intensity = 2.0f;
     directional.castShadows = true;
+    directional.shadowTranslucency = 0.35f;
+    directional.enablePenumbra = true;
+    directional.penumbraTint = hbg::Vec4{0.1f, 0.2f, 0.3f, 0.4f};
+    directional.penumbraLuma = 0.75f;
     const LightFullInfo sun = exportLight(directional, options, 0);
     require((sun.lightData.flags & kLightFlagTypeMask) == kLightFlagDirectional, "directional type flag mismatch");
     requireFlag(sun.lightData.flags, kLightFlagCastShadow, true, "directional shadow flag missing");
@@ -1631,9 +2520,95 @@ int lightExportTest() {
     requireNear(sun.lightData.color.z, 1.5f, "directional color z mismatch");
     requireNear(sun.lightData.indirectColor.x, 0.5f, "directional indirect color mismatch");
     requireNear(sun.lightData.attenuation, 1.0f, "directional attenuation mismatch");
+    requireNear(sun.lightData.shadowTranslucency, 0.35f, "directional shadow translucency mismatch");
+    require(sun.lightData.bEnablePenumbra == 1u, "directional penumbra flag mismatch");
+    requireNear(sun.lightData.penumbraTint.x, 0.1f, "directional penumbra tint x mismatch");
+    requireNear(sun.lightData.penumbraTint.w, 0.4f, "directional penumbra tint w mismatch");
+    requireNear(sun.lightData.penumbraLuma, 0.75f, "directional penumbra luma mismatch");
     requireNear(sun.lightData.dimensions.x, 0.0f, "directional source angle mismatch");
     requireNear(sun.lightPower, 0.38175f, "directional light power mismatch");
     require(sun.lightGuid.d != 0u, "directional light guid missing");
+
+    render::Light idLight = directional;
+    idLight.instanceId = 0x12345678u;
+    const LightFullInfo idLightInfo = exportLight(idLight, options, 0);
+    require(idLightInfo.lightGuid.d == 0x12345678u,
+            "explicit light instanceId did not populate LightGuid.D");
+
+    render::Light warmSun = directional;
+    warmSun.useColorTemperature = true;
+    warmSun.colorTemperature = 2000.0f;
+    const LightFullInfo warmSunInfo = exportLight(warmSun, options, 0);
+    requireNear(warmSunInfo.lightData.color.x, 1.0f,
+                "color temperature changed red channel");
+    requireNear(warmSunInfo.lightData.color.y, 0.2683693f,
+                "color temperature green channel mismatch");
+    requireNear(warmSunInfo.lightData.color.z, 0.0817886f,
+                "color temperature blue channel mismatch");
+
+    render::Light hardSun = directional;
+    hardSun.shadowType = render::LightShadowType::Hard;
+    const LightFullInfo hardSunInfo = exportLight(hardSun, options, 0);
+    requireNear(hardSunInfo.lightData.dimensions.x, 0.0f,
+                "hard-shadow directional source angle must be zero");
+    requireFlag(hardSunInfo.lightData.flags, kLightFlagCastShadow, true,
+                "hard-shadow directional cast flag missing");
+
+    render::Light hardPoint;
+    hardPoint.name = "HardPoint";
+    hardPoint.castShadows = true;
+    hardPoint.shadowType = render::LightShadowType::Hard;
+    hardPoint.sourceRadius = 0.5f;
+    hardPoint.sourceLength = 1.0f;
+    const LightFullInfo hardPointInfo = exportLight(hardPoint, options, 0);
+    requireNear(hardPointInfo.lightData.dimensions.x, 0.0f,
+                "hard-shadow point radius must be zero");
+    requireNear(hardPointInfo.lightData.dimensions.z, 0.0f,
+                "hard-shadow point length must be zero");
+
+    render::Light noShadow = hardPoint;
+    noShadow.shadowType = render::LightShadowType::None;
+    const LightFullInfo noShadowInfo = exportLight(noShadow, options, 0);
+    requireFlag(noShadowInfo.lightData.flags, kLightFlagCastShadow, false,
+                "shadowType none must clear cast-shadow flag");
+
+    render::Light mixedBake;
+    mixedBake.name = "MixedBake";
+    mixedBake.bakeMode = render::LightBakeMode::Mixed;
+    mixedBake.lightingChannel = 2;
+    const LightFullInfo mixedShadowMask = exportLight(mixedBake, options, 0);
+    requireFlag(mixedShadowMask.lightData.flags, kLightFlagStationary, true,
+                "mixed shadowmask stationary flag missing");
+    requireFlag(mixedShadowMask.lightData.flags, kLightFlagDistanceFieldShadow, true,
+                "mixed shadowmask distance-field flag missing");
+    requireFlag(mixedShadowMask.lightData.flags, kLightFlagDirectLighting, false,
+                "mixed shadowmask must not bake direct lighting");
+    require((mixedShadowMask.lightData.flags & kLightFlagLightingChannelMask) == 2u,
+            "mixed shadowmask lighting channel mismatch");
+
+    mixedBake.mixedMode = render::LightMixedMode::IndirectOnly;
+    const LightFullInfo mixedIndirectOnly = exportLight(mixedBake, options, 0);
+    requireFlag(mixedIndirectOnly.lightData.flags, kLightFlagStationary, true,
+                "mixed indirect-only stationary flag missing");
+    requireFlag(mixedIndirectOnly.lightData.flags, kLightFlagDistanceFieldShadow, false,
+                "mixed indirect-only must not set distance-field shadow");
+    requireFlag(mixedIndirectOnly.lightData.flags, kLightFlagDirectLighting, false,
+                "mixed indirect-only must not bake direct lighting");
+
+    render::Light realtimeBake;
+    realtimeBake.name = "RealtimeBake";
+    realtimeBake.bakeMode = render::LightBakeMode::Realtime;
+    const LightFullInfo realtimeInfo = exportLight(realtimeBake, options, 0);
+    requireFlag(realtimeInfo.lightData.flags, kLightFlagStationary, false,
+                "realtime light must not set stationary");
+    requireFlag(realtimeInfo.lightData.flags, kLightFlagDirectLighting, false,
+                "realtime light must not bake direct lighting");
+
+    render::Light wideSun = directional;
+    wideSun.lightSourceAngle = 10.0f;
+    const LightFullInfo wideSunInfo = exportLight(wideSun, options, 0);
+    requireNear(wideSunInfo.lightData.dimensions.x, 0.08715574f,
+                "directional per-light source angle mismatch");
 
     const LightFullInfo sunAgain = exportLight(directional, options, 0);
     require(sunAgain.lightGuid.d == sun.lightGuid.d, "light guid must be stable");
@@ -1649,12 +2624,44 @@ int lightExportTest() {
     point.world.values[14] = 3.0f;
     const LightFullInfo lamp = exportLight(point, options, 1);
     require((lamp.lightData.flags & kLightFlagTypeMask) == kLightFlagPoint, "point type flag mismatch");
+    requireFlag(lamp.lightData.flags, kLightFlagNonInverseSquareFalloff, false,
+                "point inverse-square flag mismatch");
     requireNear(lamp.lightData.attenuation, 0.125f, "point attenuation mismatch");
     requireNear(lamp.lightData.falloffExponent, 1.0f, "point falloff exponent mismatch");
     requireNear(lamp.lightData.normal.z, -1.0f, "point normal mismatch");
     requireNear(lamp.lightData.boundMin.x, -7.0f, "point bound min x mismatch");
     requireNear(lamp.lightData.boundMax.y, 10.0f, "point bound max y mismatch");
+    requireNear(lamp.lightData.shadowTranslucency, 1.0f, "point default shadow translucency mismatch");
+    require(lamp.lightData.bEnablePenumbra == 0u, "point default penumbra flag mismatch");
+    requireNear(lamp.lightData.penumbraTint.x, 0.0f, "point default penumbra tint mismatch");
+    requireNear(lamp.lightData.penumbraLuma, 0.0f, "point default penumbra luma mismatch");
     requireNear(lamp.lightPower, 2.0f, "point light power mismatch");
+
+    render::Light dimIndirect = point;
+    dimIndirect.indirectMultiplier = 0.25f;
+    const LightFullInfo dimIndirectInfo = exportLight(dimIndirect, options, 1);
+    requireNear(dimIndirectInfo.lightData.indirectColor.x, 0.5f,
+                "per-light indirect multiplier mismatch");
+    requireNear(dimIndirectInfo.lightData.color.x, 4.0f,
+                "per-light indirect multiplier changed direct color");
+
+    render::Light bakery = point;
+    bakery.falloffMode = render::LightFalloffMode::BakeryPhysical;
+    const LightFullInfo bakeryInfo = exportLight(bakery, options, 1);
+    requireFlag(bakeryInfo.lightData.flags, kLightFlagNonInverseSquareFalloff, true,
+                "bakery-physical non-inverse-square flag missing");
+    requireFlag(bakeryInfo.lightData.flags, kLightFlagBakeryFalloff, true,
+                "bakery-physical falloff flag missing");
+    requireFlag(bakeryInfo.lightData.flags, kLightFlagBakeryFakeFalloff, false,
+                "bakery-physical must not set fake falloff");
+
+    render::Light fakeFalloff = point;
+    fakeFalloff.falloffMode = render::LightFalloffMode::BakeryFake;
+    const LightFullInfo fakeFalloffInfo = exportLight(fakeFalloff, options, 1);
+    requireFlag(fakeFalloffInfo.lightData.flags, kLightFlagNonInverseSquareFalloff, true,
+                "bakery-fake non-inverse-square flag missing");
+    requireFlag(fakeFalloffInfo.lightData.flags, kLightFlagBakeryFakeFalloff, true,
+                "bakery-fake falloff flag missing");
 
     render::Light spot;
     spot.name = "Spot";
@@ -1687,6 +2694,8 @@ int lightExportTest() {
     rect.range = 5.0f;
     const LightFullInfo rectInfo = exportLight(rect, options, 3);
     require((rectInfo.lightData.flags & kLightFlagTypeMask) == kLightFlagRect, "rect type flag mismatch");
+    requireFlag(rectInfo.lightData.flags, kLightFlagNonInverseSquareFalloff, false,
+                "rect must be inverse-square");
     requireNear(rectInfo.lightData.dimensions.x, 2.0f, "rect width mismatch");
     requireNear(rectInfo.lightData.dimensions.y, 1.0f, "rect height mismatch");
     requireNear(rectInfo.lightData.dimensions.z, 1.0f, "rect depth mismatch");
@@ -2106,6 +3115,23 @@ int atlasTest() {
     require(stressPacked.atlases.size() == 1u, "100-block stress test should fit one atlas");
     verifyPacking(stressPacked, stressSizes, packingSettings);
 
+    std::vector<Lightmap2DInput> mappingJobs(3u);
+    mappingJobs[0].size = Int2{16, 16};
+    mappingJobs[1].size = Int2{64, 64};
+    mappingJobs[2].size = Int2{32, 32};
+    const std::vector<MappingGroupInput> mappingGroups = packMappingGroups(mappingJobs, 128u);
+    require(mappingGroups.size() == 1u && mappingGroups[0].mappingOffsets.size() == 3u,
+            "mapping group AtlasNode packing count mismatch");
+    require(mappingGroups[0].mappingOffsets[0].z == 0 && mappingGroups[0].mappingOffsets[0].x == 0 &&
+                mappingGroups[0].mappingOffsets[0].y == 0,
+            "mapping group smallest job offset mismatch");
+    require(mappingGroups[0].mappingOffsets[1].z == 2 && mappingGroups[0].mappingOffsets[1].x == 0 &&
+                mappingGroups[0].mappingOffsets[1].y == 16,
+            "mapping group middle job offset mismatch");
+    require(mappingGroups[0].mappingOffsets[2].z == 1 && mappingGroups[0].mappingOffsets[2].x == 32 &&
+                mappingGroups[0].mappingOffsets[2].y == 16,
+            "mapping group largest job offset mismatch");
+
     std::printf("atlas test OK: size=12/24/6/4/1022, pixels=%zu, atlases=%zu scale=%.3f, stress=%zu\n",
                 atlas.rects.size(), twoAtlas.atlases.size(), twoAtlas.atlases[0].scale, stressSizes.size());
     return 0;
@@ -2515,6 +3541,11 @@ int processDriverTest() {
 
 int runDawnCommand(int argc, char** argv);
 
+bool writeJobAtlasFromDirectory(const std::filesystem::path& jobDirectory, const std::string& guid,
+                                const std::filesystem::path& sidecarPath,
+                                const std::filesystem::path& outputDirectory, uint32_t edgePadding,
+                                std::size_t* atlasCount, std::size_t* blockCount, std::string* error);
+
 std::string guidHex(const Guid& guid) {
     char buffer[33] = {};
     std::snprintf(buffer, sizeof(buffer), "%08X%08X%08X%08X", guid.a, guid.b, guid.c, guid.d);
@@ -2566,6 +3597,10 @@ DawnLaunchOptions parseDawnLaunchOptions(int argc, char** argv, bool allowResult
             options.timeout = std::chrono::seconds(seconds);
         } else if (argument == "--log" && index + 1 < argc) {
             options.logPath = argv[++index];
+        } else if (argument == "--atlas-out" && index + 1 < argc) {
+            options.atlasOutputDirectory = argv[++index];
+        } else if (argument.rfind("--atlas-out=", 0) == 0) {
+            options.atlasOutputDirectory = argument.substr(12);
         } else if (argument == "--result-grace" && allowResultGrace && index + 1 < argc) {
             const int milliseconds = std::stoi(argv[++index]);
             if (milliseconds < 0) {
@@ -2639,8 +3674,8 @@ int runDawnCommand(int argc, char** argv) {
     return static_cast<int>(result.exitCode);
 }
 
-std::vector<std::filesystem::path> expectedLightmapResults(const std::filesystem::path& jobDirectory,
-                                                           const std::string& guid) {
+std::vector<std::filesystem::path> expectedDawnResults(const std::filesystem::path& jobDirectory,
+                                                       const std::string& guid) {
     std::string lowerGuid = guid;
     std::transform(lowerGuid.begin(), lowerGuid.end(), lowerGuid.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -2650,10 +3685,25 @@ std::vector<std::filesystem::path> expectedLightmapResults(const std::filesystem
         std::filesystem::is_regular_file(rawJobs) ? rawJobs : gzipJobs;
     const BakingJobInputs jobs = readBakingJobInputsFile(jobsPath);
 
+    std::vector<bool> splitLightmapJobs(jobs.lightmap2DJobs.size(), false);
+    for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+        if (split.mappingOffsets.z >= 0 &&
+            static_cast<std::size_t>(split.mappingOffsets.z) < splitLightmapJobs.size()) {
+            splitLightmapJobs[static_cast<std::size_t>(split.mappingOffsets.z)] = true;
+        }
+    }
     std::vector<std::filesystem::path> results;
-    results.reserve(jobs.lightmap2DJobs.size());
-    for (const Lightmap2DInput& job : jobs.lightmap2DJobs) {
-        results.push_back(jobDirectory / lightmapResultFileName(job.jobId));
+    results.reserve(jobs.lightmap2DJobs.size() + jobs.mappingSplitJobs.size() + jobs.sdfShadowJobs.size());
+    for (std::size_t index = 0; index < jobs.lightmap2DJobs.size(); ++index) {
+        if (!splitLightmapJobs[index]) {
+            results.push_back(jobDirectory / lightmapResultFileName(jobs.lightmap2DJobs[index].jobId));
+        }
+    }
+    for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+        results.push_back(jobDirectory / lightmapResultFileName(split.jobId));
+    }
+    for (const SdfShadowInput& job : jobs.sdfShadowJobs) {
+        results.push_back(jobDirectory / shadowmaskResultFileName(job.header.jobId));
     }
     return results;
 }
@@ -2680,23 +3730,115 @@ std::filesystem::path findJobObjectFile(const std::filesystem::path& directory, 
                              directory.string());
 }
 
+std::filesystem::path findLightmapSidecar(const std::filesystem::path& directory, const std::string& guid) {
+    const std::vector<std::filesystem::path> candidates = {
+        directory / (lowercaseGuid(guid) + ".lightmap.json"),
+        directory / (guid + ".lightmap.json"),
+    };
+    for (const std::filesystem::path& candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+bool loadLightmap2DOutputs(const std::filesystem::path& jobDirectory, const BakingJobInputs& jobs,
+                           const std::string& guid, std::vector<Lightmap2DOutput>* outputs,
+                           std::vector<std::size_t>* splitCounts, std::string* error) {
+    try {
+        std::vector<std::vector<const MappingSplitInput*>> splitsByJob(jobs.lightmap2DJobs.size());
+        for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+            if (split.mappingOffsets.z < 0 ||
+                static_cast<std::size_t>(split.mappingOffsets.z) >= splitsByJob.size()) {
+                if (error != nullptr) {
+                    *error = "split lightmap for " + guid + " has invalid lightmap index " +
+                             std::to_string(split.mappingOffsets.z);
+                }
+                return false;
+            }
+            splitsByJob[static_cast<std::size_t>(split.mappingOffsets.z)].push_back(&split);
+        }
+
+        outputs->clear();
+        splitCounts->clear();
+        outputs->reserve(jobs.lightmap2DJobs.size());
+        splitCounts->reserve(jobs.lightmap2DJobs.size());
+        for (std::size_t jobIndex = 0; jobIndex < jobs.lightmap2DJobs.size(); ++jobIndex) {
+            const Lightmap2DInput& input = jobs.lightmap2DJobs[jobIndex];
+            const std::vector<const MappingSplitInput*>& jobSplits = splitsByJob[jobIndex];
+            if (jobSplits.empty()) {
+                const std::filesystem::path resultPath = jobDirectory / lightmapResultFileName(input.jobId);
+                if (!std::filesystem::is_regular_file(resultPath)) {
+                    if (error != nullptr) {
+                        *error = "missing lightmap result " + resultPath.string();
+                    }
+                    return false;
+                }
+                outputs->push_back(readLightmap2DOutputFile(resultPath));
+                splitCounts->push_back(0u);
+                continue;
+            }
+
+            std::vector<Lightmap2DOutput> splitStorage;
+            splitStorage.reserve(jobSplits.size());
+            for (const MappingSplitInput* split : jobSplits) {
+                const std::filesystem::path splitPath = jobDirectory / lightmapResultFileName(split->jobId);
+                if (!std::filesystem::is_regular_file(splitPath)) {
+                    if (error != nullptr) {
+                        *error = "missing split lightmap result " + splitPath.string();
+                    }
+                    return false;
+                }
+                splitStorage.push_back(readLightmap2DOutputFile(splitPath));
+            }
+            std::vector<const Lightmap2DOutput*> splitOutputs;
+            splitOutputs.reserve(splitStorage.size());
+            for (const Lightmap2DOutput& splitOutput : splitStorage) {
+                splitOutputs.push_back(&splitOutput);
+            }
+            Lightmap2DOutput merged;
+            std::string mergeError;
+            if (!mergeLightmapSplitResults(input, jobSplits, splitOutputs, &merged, &mergeError)) {
+                if (error != nullptr) {
+                    *error = "split lightmap " + guidHex(input.jobId) + ": " + mergeError;
+                }
+                return false;
+            }
+            outputs->push_back(std::move(merged));
+            splitCounts->push_back(jobSplits.size());
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = exception.what();
+        }
+        return false;
+    }
+}
+
 bool verifyLightmap2DResultSet(const std::filesystem::path& jobDirectory, const std::string& guid, bool verbose,
                                std::string* error) {
     try {
         const BakingJobInputs jobs = readBakingJobInputsFile(findJobObjectFile(jobDirectory, guid, ".jobs", ".jobgz"));
         const SceneInfo scene = readSceneFile(findJobObjectFile(jobDirectory, guid, ".scene", ".scenegz"));
 
+        std::vector<Lightmap2DOutput> outputs;
+        std::vector<std::size_t> splitCounts;
+        if (!loadLightmap2DOutputs(jobDirectory, jobs, guid, &outputs, &splitCounts, error)) {
+            return false;
+        }
+
         std::size_t totalSamples = 0;
         std::size_t mappedSamples = 0;
-        for (const Lightmap2DInput& input : jobs.lightmap2DJobs) {
-            const std::filesystem::path resultPath = jobDirectory / lightmapResultFileName(input.jobId);
-            if (!std::filesystem::is_regular_file(resultPath)) {
-                if (error != nullptr) {
-                    *error = "missing lightmap result " + resultPath.string();
-                }
-                return false;
-            }
-            const Lightmap2DOutput output = readLightmap2DOutputFile(resultPath);
+        for (std::size_t jobIndex = 0; jobIndex < jobs.lightmap2DJobs.size(); ++jobIndex) {
+            const Lightmap2DInput& input = jobs.lightmap2DJobs[jobIndex];
+            const Lightmap2DOutput& output = outputs[jobIndex];
+            const std::filesystem::path resultPath =
+                splitCounts[jobIndex] == 0u
+                    ? jobDirectory / lightmapResultFileName(input.jobId)
+                    : jobDirectory / ("split." + guidHex(input.jobId) + ".lmgz");
+
             Lightmap2DResultBinding binding;
             std::string bindError;
             if (!bindLightmap2DResult(scene, jobs, output, &binding, &bindError)) {
@@ -2719,7 +3861,11 @@ bool verifyLightmap2DResultSet(const std::filesystem::path& jobDirectory, const 
                 std::cout << "Lightmap result: " << resultPath.filename().string() << " job=" << binding.jobIndex
                           << " instance=" << binding.instanceIndex << " meshIndex=" << instance.header.meshIndex
                           << " size=" << output.header.size.x << "x" << output.header.size.y
-                          << " samples=" << output.lightmapData.size() << " mapped=" << mapped << "\n";
+                          << " samples=" << output.lightmapData.size() << " mapped=" << mapped;
+                if (splitCounts[jobIndex] != 0u) {
+                    std::cout << " split=" << splitCounts[jobIndex];
+                }
+                std::cout << "\n";
             }
         }
 
@@ -2734,6 +3880,98 @@ bool verifyLightmap2DResultSet(const std::filesystem::path& jobDirectory, const 
         }
         return false;
     }
+}
+
+bool verifySdfShadowResultSet(const std::filesystem::path& jobDirectory, const std::string& guid, bool verbose,
+                              std::string* error) {
+    try {
+        const BakingJobInputs jobs = readBakingJobInputsFile(findJobObjectFile(jobDirectory, guid, ".jobs", ".jobgz"));
+        const SceneInfo scene = readSceneFile(findJobObjectFile(jobDirectory, guid, ".scene", ".scenegz"));
+
+        std::size_t totalSamples = 0;
+        std::size_t totalMapped = 0;
+        for (const SdfShadowInput& input : jobs.sdfShadowJobs) {
+            const std::filesystem::path resultPath = jobDirectory / shadowmaskResultFileName(input.header.jobId);
+            if (!std::filesystem::is_regular_file(resultPath)) {
+                if (error != nullptr) {
+                    *error = "missing SDF shadow result " + resultPath.string();
+                }
+                return false;
+            }
+            const SdfShadowOutput output = readSdfShadowOutputFile(resultPath);
+            SdfShadowResultBinding binding;
+            std::string bindError;
+            if (!bindSdfShadowResult(scene, jobs, output, &binding, &bindError)) {
+                if (error != nullptr) {
+                    *error = resultPath.filename().string() + ": " + bindError;
+                }
+                return false;
+            }
+
+            std::size_t mapped = 0;
+            std::size_t samples = 0;
+            for (const SdfShadowMap& map : output.shadowMaps) {
+                samples += map.shadowData.size();
+                for (const SdfShadowSample& sample : map.shadowData) {
+                    if (sample.isMapped != 0u) {
+                        ++mapped;
+                    }
+                }
+            }
+            totalSamples += samples;
+            totalMapped += mapped;
+            if (verbose) {
+                std::cout << "SDF shadow result: " << resultPath.filename().string() << " job=" << binding.jobIndex
+                          << " instance=" << binding.instanceIndex << " size=" << output.header.size.x << "x"
+                          << output.header.size.y << " maps=" << output.shadowMaps.size() << " samples=" << samples
+                          << " mapped=" << mapped << "\n";
+            }
+        }
+
+        if (verbose) {
+            std::cout << "SDF shadow results: jobs=" << jobs.sdfShadowJobs.size() << " samples=" << totalSamples
+                      << " mapped=" << totalMapped << "\n";
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = exception.what();
+        }
+        return false;
+    }
+}
+
+int completeDawnBake(const DawnLaunchOptions& options, const std::string& guid) {
+    std::string verifyError;
+    if (!verifyLightmap2DResultSet(options.jobDirectory, guid, false, &verifyError)) {
+        std::cerr << "error: " << verifyError << "\n";
+        return 1;
+    }
+    if (!verifySdfShadowResultSet(options.jobDirectory, guid, false, &verifyError)) {
+        std::cerr << "error: " << verifyError << "\n";
+        return 1;
+    }
+    if (!options.atlasOutputDirectory.empty()) {
+        const std::filesystem::path sidecar = findLightmapSidecar(options.jobDirectory, guid);
+        if (sidecar.empty()) {
+            std::cerr << "error: missing lightmap sidecar for " << guid << " in " << options.jobDirectory.string()
+                      << "\n";
+            return 1;
+        }
+        std::size_t atlasCount = 0;
+        std::size_t blockCount = 0;
+        std::string atlasError;
+        if (!writeJobAtlasFromDirectory(options.jobDirectory, guid, sidecar, options.atlasOutputDirectory,
+                                        options.atlasEdgePadding, &atlasCount, &blockCount, &atlasError)) {
+            std::cerr << "error: " << atlasError << "\n";
+            return 1;
+        }
+        std::cout << "Dawn atlas: atlases=" << atlasCount << " blocks=" << blockCount
+                  << " edgePadding=" << options.atlasEdgePadding << " dir=" << options.atlasOutputDirectory.string()
+                  << "\n";
+    }
+    std::cout << "Dawn results: validated\n";
+    return 0;
 }
 
 #ifdef HBG_DAWN_GRPC
@@ -2774,12 +4012,91 @@ AgentJobSpec buildAgentJobSpec(const DawnLaunchOptions& options, const std::stri
         }
     }
 
-    for (const Lightmap2DInput& job : jobs.lightmap2DJobs) {
+    const auto clampTaskCost = [](uint64_t value) {
+        const uint64_t limit = static_cast<uint64_t>(std::numeric_limits<int32_t>::max() - 1);
+        return static_cast<int32_t>(std::min<uint64_t>(value, limit));
+    };
+    const uint64_t samples = static_cast<uint64_t>(
+        std::max(jobs.bakingParameters.lightmap2DParameter.iterationNum, 1));
+    const uint64_t bounces = static_cast<uint64_t>(
+        std::max(jobs.bakingParameters.lightmap2DParameter.maxDepth, 0) + 1);
+    const uint64_t lightmapGroupScale = samples * bounces;
+    const uint64_t sdfGroupScale = static_cast<uint64_t>(
+        static_cast<double>(samples) * jobs.bakingParameters.sdfShadowParameter.shadowRayFactor *
+        std::max(jobs.bakingParameters.sdfShadowParameter.maxUpsamplingFactor, 1));
+
+    std::vector<bool> packedLightmapJobs(jobs.lightmap2DJobs.size(), false);
+    for (const MappingGroupInput& group : jobs.mappingGroupJobs) {
+        for (const Int3& offset : group.mappingOffsets) {
+            if (offset.z < 0 || static_cast<std::size_t>(offset.z) >= jobs.lightmap2DJobs.size()) {
+                throw std::runtime_error("lightmap group references an invalid job index");
+            }
+            packedLightmapJobs[static_cast<std::size_t>(offset.z)] = true;
+        }
+    }
+    std::vector<bool> splitLightmapJobs(jobs.lightmap2DJobs.size(), false);
+    for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+        if (split.mappingOffsets.z < 0 ||
+            static_cast<std::size_t>(split.mappingOffsets.z) >= jobs.lightmap2DJobs.size()) {
+            throw std::runtime_error("lightmap split references an invalid job index");
+        }
+        splitLightmapJobs[static_cast<std::size_t>(split.mappingOffsets.z)] = true;
+    }
+    for (std::size_t index = 0; index < jobs.lightmap2DJobs.size(); ++index) {
+        if (packedLightmapJobs[index] || splitLightmapJobs[index]) {
+            continue;
+        }
+        const Lightmap2DInput& job = jobs.lightmap2DJobs[index];
         AgentTaskSpec task;
         task.taskId = guidHex(job.jobId);
         task.parameters = "LIGHTMAP2D";
-        task.cost = 1;
+        task.cost = clampTaskCost(static_cast<uint64_t>(std::max(job.size.x, 0)) *
+                                  static_cast<uint64_t>(std::max(job.size.y, 0)) * samples);
         task.resultFiles.push_back(lightmapResultFileName(job.jobId));
+        spec.tasks.push_back(std::move(task));
+    }
+    for (const MappingGroupInput& group : jobs.mappingGroupJobs) {
+        if (group.mappingOffsets.empty()) {
+            throw std::runtime_error("lightmap group has no jobs");
+        }
+        AgentTaskSpec task;
+        task.taskId = guidHex(group.jobId);
+        task.parameters = "LIGHTMAP2D_GROUP";
+        task.cost = clampTaskCost(static_cast<uint64_t>(std::max(group.groupedSize, 0)) *
+                                  static_cast<uint64_t>(std::max(group.groupedSize, 0)) *
+                                  lightmapGroupScale);
+        for (const Int3& offset : group.mappingOffsets) {
+            task.resultFiles.push_back(
+                lightmapResultFileName(jobs.lightmap2DJobs[static_cast<std::size_t>(offset.z)].jobId));
+        }
+        spec.tasks.push_back(std::move(task));
+    }
+    for (const SdfShadowGroupInput& group : jobs.sdfShadowGroupJobs) {
+        AgentTaskSpec task;
+        task.taskId = guidHex(group.jobId);
+        task.parameters = "SHADOWMASK_GROUP";
+        uint64_t lightCount = 0;
+        for (const int32_t index : group.shadowJobIndices) {
+            if (index < 0 || static_cast<std::size_t>(index) >= jobs.sdfShadowJobs.size()) {
+                throw std::runtime_error("SDF shadow group references an invalid job index");
+            }
+            lightCount = std::max<uint64_t>(
+                lightCount, jobs.sdfShadowJobs[static_cast<std::size_t>(index)].shadowmaskLights.size());
+            task.resultFiles.push_back(
+                shadowmaskResultFileName(jobs.sdfShadowJobs[static_cast<std::size_t>(index)].header.jobId));
+        }
+        task.cost = clampTaskCost(static_cast<uint64_t>(std::max(group.groupSize, 0)) *
+                                  static_cast<uint64_t>(std::max(group.groupSize, 0)) * lightCount *
+                                  sdfGroupScale);
+        spec.tasks.push_back(std::move(task));
+    }
+    for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+        AgentTaskSpec task;
+        task.taskId = guidHex(split.jobId);
+        task.parameters = "LIGHTMAP2D_SPLIT";
+        task.cost = clampTaskCost(static_cast<uint64_t>(std::max(split.splitSize, 0)) *
+                                  static_cast<uint64_t>(std::max(split.splitSize, 0)) * lightmapGroupScale);
+        task.resultFiles.push_back(lightmapResultFileName(split.jobId));
         spec.tasks.push_back(std::move(task));
     }
     return spec;
@@ -2819,13 +4136,7 @@ int runAgentBake(const DawnLaunchOptions& options, const std::string& guid) {
     if (result.error != DawnBakeError::None) {
         return 1;
     }
-    std::string verifyError;
-    if (!verifyLightmap2DResultSet(options.jobDirectory, guid, false, &verifyError)) {
-        std::cerr << "error: " << verifyError << "\n";
-        return 1;
-    }
-    std::cout << "Dawn results: validated\n";
-    return 0;
+    return completeDawnBake(options, guid);
 }
 #endif
 
@@ -2939,7 +4250,7 @@ int bakeDawnCommand(int argc, char** argv) {
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     options.guid = guid;
     options.jobDirectory = workspace.path;
-    options.expectedResults = expectedLightmapResults(options.jobDirectory, guid);
+    options.expectedResults = expectedDawnResults(options.jobDirectory, guid);
     options.onProgress = [](std::size_t completed, std::size_t total) {
         const double percent = total > 0u ? 100.0 * static_cast<double>(completed) / static_cast<double>(total) : 0.0;
         std::cout << "DAWN_PROGRESS phase=building completed=" << completed << " total=" << total
@@ -2980,13 +4291,7 @@ int bakeDawnCommand(int argc, char** argv) {
     if (result.error != DawnBakeError::None) {
         return 1;
     }
-    std::string verifyError;
-    if (!verifyLightmap2DResultSet(options.jobDirectory, guid, false, &verifyError)) {
-        std::cerr << "error: " << verifyError << "\n";
-        return 1;
-    }
-    std::cout << "Dawn results: validated\n";
-    return 0;
+    return completeDawnBake(options, guid);
 }
 
 int resultPollTest(const std::filesystem::path& fakeDawn) {
@@ -3268,6 +4573,55 @@ int agentSpecTest() {
 
     const std::string guid = "55556666777788889999aaaabbbbcccc";
     ExportedSceneBundle bundle = buildExportedScene();
+    SdfShadowInput shadow;
+    shadow.header.jobId = Guid{0u, 1u, 0u, 0u};
+    shadow.header.meshId = bundle.scene.meshInstances.front().header.guid;
+    shadow.header.flags = kLightmapFlagBilinearFilter;
+    shadow.header.size = Int2{64, 64};
+    shadow.header.upsampleFactor = 4;
+    shadow.header.lightmapUVIndex = 1;
+    shadow.lights.push_back(bundle.scene.lightGuids.front());
+    shadow.shadowmaskLights.push_back(bundle.scene.lightGuids.front());
+    bundle.jobs.sdfShadowJobs.push_back(shadow);
+    SdfShadowGroupInput shadowGroup;
+    shadowGroup.jobId = Guid{102u, 1u, 0u, 0xFFFFFFFFu};
+    shadowGroup.groupSize = 64;
+    shadowGroup.upsampleFactor = 4;
+    shadowGroup.shadowJobIndices.push_back(0);
+    shadowGroup.mappingOffsets.push_back(Int3{0, 0, 0});
+    bundle.jobs.sdfShadowGroupJobs.push_back(shadowGroup);
+    bundle.jobs.sdfShadowJobsCount = 1u;
+    bundle.jobs.sdfShadowGroupJobsCount = 1u;
+    bundle.jobs.partialJobsTotalNum.numSdfShadowJobs = 1u;
+    bundle.jobs.partialJobsTotalNum.numSdfShadowGroupJobs = 1u;
+    bundle.jobs.bakingParameters.sdfShadowParameter.maxUpsamplingFactor = 4;
+    bundle.jobs.bakingParameters.sdfShadowParameter.shadowRayFactor = 1.0f;
+    MappingGroupInput lightmapGroup;
+    lightmapGroup.jobId = Guid{0u, 0u, 0u, 0xFFFFFFFFu};
+    lightmapGroup.groupedSize = 64;
+    lightmapGroup.mappingOffsets.push_back(Int3{0, 0, 0});
+    bundle.jobs.mappingGroupJobs.push_back(lightmapGroup);
+    bundle.jobs.mappingGroupJobsCount = 1u;
+    bundle.jobs.partialJobsTotalNum.numMappingGroupJobs = 1u;
+    Lightmap2DInput oversizedLightmap;
+    oversizedLightmap.jobId = Guid{0u, 0u, 1u, 5u};
+    oversizedLightmap.meshId = bundle.scene.meshInstances.front().header.guid;
+    oversizedLightmap.size = Int2{128, 128};
+    oversizedLightmap.lightmapUVIndex = 1;
+    oversizedLightmap.flags = kLightmapFlagDirect | kLightmapFlagIndirect | kLightmapFlagBilinearFilter;
+    bundle.jobs.lightmap2DJobs.push_back(oversizedLightmap);
+    Lightmap2DInput splitLightmap = oversizedLightmap;
+    splitLightmap.jobId = Guid{0u, 0u, 2u, 5u};
+    bundle.jobs.lightmap2DJobs.push_back(splitLightmap);
+    MappingSplitInput splitJob;
+    splitJob.jobId = Guid{0u, 103u, 0u, 2u};
+    splitJob.splitSize = 64;
+    splitJob.overlapSize = 3;
+    splitJob.mappingOffsets = Int3{0, 0, 2};
+    bundle.jobs.mappingSplitJobs.push_back(splitJob);
+    bundle.jobs.mappingSplitJobsCount = 1u;
+    bundle.jobs.partialJobsTotalNum.numLightmap2DJobs = 3u;
+    bundle.jobs.partialJobsTotalNum.numMappingSplitJobs = 1u;
     const PackageFiles files = writeDawnPackage(directory, guid, bundle.scene, bundle.jobs, &bundle.lightmap);
     std::filesystem::remove(files.scene);
     std::filesystem::remove(files.jobs);
@@ -3284,9 +4638,35 @@ int agentSpecTest() {
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     require(spec.missionId == guid, "agent mission id should stay lower-case");
     require(spec.jobId == expectedJobId, "agent job id must use original %08X upper-case form");
-    require(spec.tasks.size() == 1u, "agent task count mismatch");
-    require(spec.tasks[0].taskId == "00000000000000000000000000000005",
-            "agent task id must use upper-case guidHex form");
+    require(spec.tasks.size() == 4u, "agent task count mismatch");
+    require(spec.tasks[0].taskId == "00000000000000000000000100000005" &&
+                spec.tasks[0].parameters == "LIGHTMAP2D",
+            "agent individual lightmap task id/parameters mismatch");
+    require(spec.tasks[0].resultFiles.size() == 1u &&
+                spec.tasks[0].resultFiles[0] == "v2.00000000000000000000000100000005.lmgz" &&
+                spec.tasks[0].cost == 128 * 128 * 64,
+            "agent individual lightmap result/cost mismatch");
+    require(spec.tasks[1].taskId == "000000000000000000000000FFFFFFFF" &&
+                spec.tasks[1].parameters == "LIGHTMAP2D_GROUP",
+            "agent lightmap group task id/parameters mismatch");
+    require(spec.tasks[1].resultFiles.size() == 1u &&
+                spec.tasks[1].resultFiles[0] == "v2.00000000000000000000000000000005.lmgz" &&
+                spec.tasks[1].cost == 64 * 64 * 64 * 4,
+            "agent lightmap group result/cost mismatch");
+    require(spec.tasks[2].taskId == "000000660000000100000000FFFFFFFF" &&
+                spec.tasks[2].parameters == "SHADOWMASK_GROUP",
+            "agent shadowmask group task id/parameters mismatch");
+    require(spec.tasks[2].resultFiles.size() == 1u &&
+                spec.tasks[2].resultFiles[0] == "v2.00000000000000010000000000000000.sdfgz" &&
+                spec.tasks[2].cost == 64 * 64 * 64 * 4,
+            "agent shadowmask result/cost mismatch");
+    require(spec.tasks[3].taskId == "00000000000000670000000000000002" &&
+                spec.tasks[3].parameters == "LIGHTMAP2D_SPLIT",
+            "agent split lightmap task id/parameters mismatch");
+    require(spec.tasks[3].resultFiles.size() == 1u &&
+                spec.tasks[3].resultFiles[0] == "v2.00000000000000670000000000000002.lmgz" &&
+                spec.tasks[3].cost == 64 * 64 * 64 * 4,
+            "agent split lightmap result/cost mismatch");
 
     bool hasSceneGz = false;
     bool hasJobsGz = false;
@@ -3297,10 +4677,16 @@ int agentSpecTest() {
     require(hasSceneGz && hasJobsGz, "agent job files must include scenegz/jobgz");
     require(spec.jobFiles.size() == 4u, "agent job files should only contain gzip side/cache files");
 
-    const std::vector<std::filesystem::path> results = expectedLightmapResults(directory, guid);
-    require(results.size() == 1u, "agent expected result count mismatch");
+    const std::vector<std::filesystem::path> results = expectedDawnResults(directory, guid);
+    require(results.size() == 4u, "agent expected result count mismatch");
     require(results[0].filename().string() == "v2.00000000000000000000000000000005.lmgz",
-            "agent expected result name mismatch");
+            "agent lightmap result name mismatch");
+    require(results[1].filename().string() == "v2.00000000000000000000000100000005.lmgz",
+            "agent oversized lightmap result name mismatch");
+    require(results[2].filename().string() == "v2.00000000000000670000000000000002.lmgz",
+            "agent split lightmap result name mismatch");
+    require(results[3].filename().string() == "v2.00000000000000010000000000000000.sdfgz",
+            "agent shadowmask result name mismatch");
 
     std::printf("agent spec test OK: job=%s tasks=%zu files=%zu\n", spec.jobId.c_str(), spec.tasks.size(),
                 spec.jobFiles.size());
@@ -4671,6 +6057,9 @@ int inspect(const std::filesystem::path& path) {
         std::printf("  lights=%u meshes=%u materials=%u instances=%u lightmapInstances=%u\n", scene.header.numLights,
                     scene.header.numMeshes, scene.header.numMaterials, scene.header.numMeshInstances,
                     static_cast<unsigned>(scene.meshInstances.size()));
+        for (std::size_t index = 0; index < scene.lightGuids.size(); ++index) {
+            std::printf("  light[%zu] guid=%s\n", index, formatGuid(scene.lightGuids[index]).c_str());
+        }
         for (std::size_t index = 0; index < scene.meshes.size(); ++index) {
             const MeshInfo& mesh = scene.meshes[index];
             std::printf("  mesh[%zu] guid=%s indexInSceneInfo=%u uv=%d texcoords=%zu\n", index,
@@ -4705,8 +6094,38 @@ int inspect(const std::filesystem::path& path) {
     } else {
         BakingJobInputs jobs;
         readBakingJobInputs(reader, jobs, version);
-        std::printf("  lightmap2DJobs=%zu mappingGroupJobs=%zu consumed=%zu remaining=%zu\n", jobs.lightmap2DJobs.size(),
-                    jobs.mappingGroupJobs.size(), reader.offset(), reader.remaining());
+        std::printf("  lightmap2DJobs=%zu sdfShadowJobs=%zu sdfShadowGroupJobs=%zu mappingGroupJobs=%zu "
+                    "mappingSplitJobs=%zu consumed=%zu remaining=%zu\n",
+                    jobs.lightmap2DJobs.size(), jobs.sdfShadowJobs.size(), jobs.sdfShadowGroupJobs.size(),
+                    jobs.mappingGroupJobs.size(), jobs.mappingSplitJobs.size(), reader.offset(), reader.remaining());
+        for (std::size_t index = 0; index < jobs.lightmap2DJobs.size(); ++index) {
+            const Lightmap2DInput& lightmap = jobs.lightmap2DJobs[index];
+            std::printf("  lightmap2D[%zu] job=%s mesh=%s size=%dx%d flags=0x%X\n", index,
+                        formatGuid(lightmap.jobId).c_str(), formatGuid(lightmap.meshId).c_str(), lightmap.size.x,
+                        lightmap.size.y, lightmap.flags);
+        }
+        for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+            std::printf("  mappingSplit job=%s size=%d overlap=%d offset=%d,%d,%d\n",
+                        formatGuid(split.jobId).c_str(), split.splitSize, split.overlapSize,
+                        split.mappingOffsets.x, split.mappingOffsets.y, split.mappingOffsets.z);
+        }
+        for (const SdfShadowInput& shadow : jobs.sdfShadowJobs) {
+            std::printf("  sdfShadow job=%s mesh=%s size=%dx%d flags=0x%X upsample=%d lights=%zu\n",
+                        formatGuid(shadow.header.jobId).c_str(), formatGuid(shadow.header.meshId).c_str(),
+                        shadow.header.size.x, shadow.header.size.y, shadow.header.flags,
+                        shadow.header.upsampleFactor, shadow.lights.size());
+            for (const Guid& lightGuid : shadow.shadowmaskLights) {
+                std::printf("    shadowmaskLight=%s\n", formatGuid(lightGuid).c_str());
+            }
+        }
+        for (const SdfShadowGroupInput& group : jobs.sdfShadowGroupJobs) {
+            std::printf("  sdfShadowGroup job=%s size=%d upsample=%d jobs=%zu offsets=%zu\n",
+                        formatGuid(group.jobId).c_str(), group.groupSize, group.upsampleFactor,
+                        group.shadowJobIndices.size(), group.mappingOffsets.size());
+            for (const Int3& offset : group.mappingOffsets) {
+                std::printf("    offset=%d,%d,%d\n", offset.x, offset.y, offset.z);
+            }
+        }
         for (const MappingGroupInput& group : jobs.mappingGroupJobs) {
             std::printf("  mappingGroup guid=%s size=%d offsets=%zu\n", formatGuid(group.jobId).c_str(),
                         group.groupedSize, group.mappingOffsets.size());
@@ -4912,6 +6331,201 @@ int lightmap2DBindingTest() {
 
     std::printf("lmgz binding test OK: jobs=%zu instances=%zu\n", jobs.lightmap2DJobs.size(),
                 scene.meshInstances.size());
+    return 0;
+}
+
+int sdfShadowOutputTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    SceneInfo scene = buildMinimalScene();
+    BakingJobInputs jobs = buildMinimalJobs();
+    const Guid jobGuid{0x12345678u, 0x9ABCDEF0u, 0x11223344u, 0x55667788u};
+    const Guid lightGuid{0x0BADF00Du, 0x13572468u, 0x24681357u, 0x99887766u};
+    const Guid secondLightGuid{0xF00DBABEu, 0x24681357u, 0x13572468u, 0x11223344u};
+    const Guid meshGuid = scene.meshInstances.front().header.guid;
+
+    SdfShadowInput input;
+    input.header.jobId = jobGuid;
+    input.header.meshId = meshGuid;
+    input.header.flags = kLightmapFlagBilinearFilter | kLightmapFlagPadding;
+    input.header.size = Int2{4, 2};
+    input.header.upsampleFactor = 4;
+    input.header.lightmapUVIndex = 1;
+    input.lights.push_back(lightGuid);
+    input.lights.push_back(secondLightGuid);
+    input.shadowmaskLights.push_back(lightGuid);
+    input.shadowmaskLights.push_back(secondLightGuid);
+    jobs.sdfShadowJobs.push_back(input);
+    jobs.sdfShadowJobsCount = 1u;
+    jobs.partialJobsTotalNum.numSdfShadowJobs = 1u;
+
+    SdfShadowOutput output;
+    output.header.jobId = jobGuid;
+    output.header.meshId = meshGuid;
+    output.header.size = Int2{6, 4};
+    output.header.executionTime = 2.5;
+    output.shadowMaps.resize(2);
+    output.shadowMaps[0].lightId = lightGuid;
+    output.shadowMaps[1].lightId = secondLightGuid;
+    for (std::size_t mapIndex = 0; mapIndex < output.shadowMaps.size(); ++mapIndex) {
+        output.shadowMaps[mapIndex].shadowData.resize(24);
+        for (std::size_t index = 0; index < output.shadowMaps[mapIndex].shadowData.size(); ++index) {
+            SdfShadowSample& sample = output.shadowMaps[mapIndex].shadowData[index];
+            sample.distance = static_cast<float>(index) * 0.25f + static_cast<float>(mapIndex);
+            sample.penumbraSize = static_cast<float>(index) * 0.5f + static_cast<float>(mapIndex);
+            sample.isMapped = static_cast<uint8_t>(index % 2u);
+        }
+    }
+
+    std::string error;
+    require(validateSdfShadowResult(output, input, &error), "valid SDF result did not validate");
+    SdfShadowResultBinding binding;
+    require(bindSdfShadowResult(scene, jobs, output, &binding, &error), "valid SDF result did not bind");
+    require(binding.jobIndex == 0u && binding.instanceIndex == 0u, "SDF binding index mismatch");
+    require(binding.input == &jobs.sdfShadowJobs[0] && binding.output == &output,
+            "SDF binding pointer mismatch");
+    require(shadowmaskResultFileName(jobGuid) == "v2.123456789ABCDEF01122334455667788.sdfgz",
+            "SDF result file name mismatch");
+
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "hbg_dawnbake_sdfgz_reader_test.sdfgz";
+    std::filesystem::remove(path);
+    Writer writer;
+    writeSdfShadowOutput(writer, output);
+    writeGzipFile(path, writer.bytes());
+    const SdfShadowOutput decoded = readSdfShadowOutputFile(path);
+    std::filesystem::remove(path);
+    require(decoded.header.jobId.a == jobGuid.a && decoded.header.jobId.b == jobGuid.b &&
+                decoded.header.jobId.c == jobGuid.c && decoded.header.jobId.d == jobGuid.d,
+            "sdfgz job id mismatch");
+    require(decoded.header.size.x == 6 && decoded.header.size.y == 4, "sdfgz size mismatch");
+    require(decoded.shadowMaps.size() == 2u && decoded.shadowMaps[0].shadowData.size() == 24u &&
+                decoded.shadowMaps[1].shadowData.size() == 24u,
+            "sdfgz sample count mismatch");
+    require(decoded.shadowMaps[0].shadowData[3].distance == output.shadowMaps[0].shadowData[3].distance &&
+                decoded.shadowMaps[0].shadowData[3].penumbraSize ==
+                    output.shadowMaps[0].shadowData[3].penumbraSize &&
+                decoded.shadowMaps[0].shadowData[3].isMapped == 1u &&
+                decoded.shadowMaps[1].shadowData[3].distance == output.shadowMaps[1].shadowData[3].distance,
+            "sdfgz sample payload mismatch");
+
+    SdfShadowOutput wrongJob = output;
+    wrongJob.header.jobId.a = 99u;
+    require(!validateSdfShadowResult(wrongJob, input, &error) && error.find("JobID") != std::string::npos,
+            "SDF result did not reject a mismatched JobID");
+    SdfShadowOutput wrongMesh = output;
+    wrongMesh.header.meshId.a = 99u;
+    require(!validateSdfShadowResult(wrongMesh, input, &error) && error.find("MeshID") != std::string::npos,
+            "SDF result did not reject a mismatched MeshID");
+    SdfShadowOutput wrongSize = output;
+    wrongSize.header.size.x = 5;
+    require(!validateSdfShadowResult(wrongSize, input, &error) &&
+                error.find("result size") != std::string::npos,
+            "SDF result did not reject a mismatched size");
+    SdfShadowOutput shortData = output;
+    shortData.shadowMaps[0].shadowData.pop_back();
+    require(!validateSdfShadowResult(shortData, input, &error) &&
+                error.find("sample count") != std::string::npos,
+            "SDF result did not reject a mismatched sample count");
+    SdfShadowOutput wrongLight = output;
+    wrongLight.shadowMaps[1].lightId = lightGuid;
+    require(!validateSdfShadowResult(wrongLight, input, &error) &&
+                error.find("LightID") != std::string::npos,
+            "SDF result did not reject a mismatched LightID");
+    require(decoded.shadowMaps[0].lightId.a == lightGuid.a && decoded.shadowMaps[0].lightId.b == lightGuid.b &&
+                decoded.shadowMaps[0].lightId.c == lightGuid.c && decoded.shadowMaps[0].lightId.d == lightGuid.d &&
+                decoded.shadowMaps[1].lightId.a == secondLightGuid.a &&
+                decoded.shadowMaps[1].lightId.b == secondLightGuid.b &&
+                decoded.shadowMaps[1].lightId.c == secondLightGuid.c &&
+                decoded.shadowMaps[1].lightId.d == secondLightGuid.d,
+            "sdfgz light id mismatch");
+    SdfShadowOutput missingMap = output;
+    missingMap.shadowMaps.clear();
+    require(!validateSdfShadowResult(missingMap, input, &error) &&
+                error.find("light count") != std::string::npos,
+            "SDF result did not reject a missing light map");
+    SdfShadowOutput unknownJob = output;
+    unknownJob.header.jobId.a = 99u;
+    require(!bindSdfShadowResult(scene, jobs, unknownJob, &binding, &error) &&
+                error.find("no SDF job") != std::string::npos,
+            "SDF result did not reject an unknown JobID");
+    BakingJobInputs duplicateJobs = jobs;
+    duplicateJobs.sdfShadowJobs.push_back(input);
+    require(!bindSdfShadowResult(scene, duplicateJobs, output, &binding, &error) &&
+                error.find("duplicate SDF job") != std::string::npos,
+            "SDF result did not reject a duplicate JobID");
+
+    std::vector<SdfShadowInput> packJobs(4);
+    packJobs[0].header.size = Int2{48, 48};
+    packJobs[1].header.size = Int2{29, 29};
+    packJobs[2].header.size = Int2{512, 512};
+    packJobs[3].header.size = Int2{311, 311};
+    const std::vector<SdfShadowGroupInput> packed = packSdfShadowGroups(packJobs, 256u);
+    require(packed.size() == 3u, "SDF group packing count mismatch");
+    require(packed[0].jobId.c == 0u && packed[0].groupSize == 311 &&
+                packed[0].shadowJobIndices == std::vector<int32_t>{3} && packed[0].mappingOffsets.size() == 1u &&
+                packed[0].mappingOffsets[0].x == 0 && packed[0].mappingOffsets[0].y == 0 &&
+                packed[0].mappingOffsets[0].z == 3,
+            "SDF single group packing mismatch");
+    require(packed[1].jobId.c == 1u && packed[1].groupSize == 512 &&
+                packed[1].shadowJobIndices == std::vector<int32_t>{2} && packed[1].mappingOffsets.size() == 1u &&
+                packed[1].mappingOffsets[0].z == 2,
+            "SDF oversized group packing mismatch");
+    require(packed[2].jobId.c == 2u && packed[2].groupSize == 256 &&
+                packed[2].shadowJobIndices == std::vector<int32_t>{1, 0} &&
+                packed[2].mappingOffsets.size() == 2u && packed[2].mappingOffsets[0].x == 0 &&
+                packed[2].mappingOffsets[0].y == 0 && packed[2].mappingOffsets[0].z == 1 &&
+                packed[2].mappingOffsets[1].x == 0 && packed[2].mappingOffsets[1].y == 29 &&
+                packed[2].mappingOffsets[1].z == 0,
+            "SDF packed group mapping mismatch");
+
+    MappingGroupInput lightmapGroup;
+    lightmapGroup.groupedSize = 128;
+    lightmapGroup.mappingOffsets = {Int3{0, 0, 0}, Int3{0, 48, 1}};
+    const std::vector<SdfShadowGroupInput> inherited = packSdfShadowGroups(packJobs, 256u, {lightmapGroup});
+    require(inherited.size() == 3u && inherited[0].groupSize == 311 &&
+                inherited[0].shadowJobIndices == std::vector<int32_t>{3} &&
+                inherited[1].groupSize == 512 && inherited[1].shadowJobIndices == std::vector<int32_t>{2},
+            "SDF inherited single group mismatch");
+    require(inherited[2].groupSize == 128 && inherited[2].shadowJobIndices == std::vector<int32_t>{0, 1} &&
+                inherited[2].mappingOffsets.size() == 2u && inherited[2].mappingOffsets[0].x == 0 &&
+                inherited[2].mappingOffsets[0].y == 0 && inherited[2].mappingOffsets[0].z == 0 &&
+                inherited[2].mappingOffsets[1].x == 0 && inherited[2].mappingOffsets[1].y == 48 &&
+                inherited[2].mappingOffsets[1].z == 1,
+            "SDF inherited lightmap group offsets mismatch");
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawnbake_sdfgz_bind_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    const std::string sceneGuid = "AABBCCDDEEFF00112233445566778899";
+    Writer sceneWriter;
+    sceneWriter.version(kExportVersion);
+    writeScene(sceneWriter, scene, kExportVersion);
+    writeFile(directory / (lowercaseGuid(sceneGuid) + ".scene"), sceneWriter.bytes());
+    Writer jobsWriter;
+    jobsWriter.version(kExportVersion);
+    writeBakingJobInputs(jobsWriter, jobs, kExportVersion);
+    writeFile(directory / (lowercaseGuid(sceneGuid) + ".jobs"), jobsWriter.bytes());
+    const std::filesystem::path resultPath = directory / shadowmaskResultFileName(jobGuid);
+    writeGzipFile(resultPath, writer.bytes());
+    require(verifySdfShadowResultSet(directory, sceneGuid, false, &error),
+            "SDF shadow result set did not verify");
+    std::filesystem::remove(resultPath);
+    require(!verifySdfShadowResultSet(directory, sceneGuid, false, &error) &&
+                error.find("missing SDF shadow result") != std::string::npos,
+            "SDF shadow result set did not reject a missing result");
+    std::filesystem::remove_all(directory);
+
+    std::printf("sdfgz test OK: jobs=%zu maps=%zu samples=%zu size=%dx%d\n", jobs.sdfShadowJobs.size(),
+                decoded.shadowMaps.size(),
+                decoded.shadowMaps[0].shadowData.size() * decoded.shadowMaps.size(), decoded.header.size.x,
+                decoded.header.size.y);
     return 0;
 }
 
@@ -5285,6 +6899,36 @@ int inspectLightmap2DOutput(const std::filesystem::path& path) {
     return 0;
 }
 
+int inspectSdfShadowOutput(const std::filesystem::path& path) {
+    const SdfShadowOutput output = readSdfShadowOutputFile(path);
+    std::printf("%s: job=%08X%08X%08X%08X mesh=%08X%08X%08X%08X size=%dx%d maps=%zu executionTime=%.6f\n",
+                path.filename().string().c_str(), output.header.jobId.a, output.header.jobId.b, output.header.jobId.c,
+                output.header.jobId.d, output.header.meshId.a, output.header.meshId.b, output.header.meshId.c,
+                output.header.meshId.d, output.header.size.x, output.header.size.y, output.shadowMaps.size(),
+                output.header.executionTime);
+    for (std::size_t index = 0; index < output.shadowMaps.size(); ++index) {
+        const SdfShadowMap& map = output.shadowMaps[index];
+        std::size_t mapped = 0;
+        float minDistance = std::numeric_limits<float>::max();
+        float maxDistance = std::numeric_limits<float>::lowest();
+        for (const SdfShadowSample& sample : map.shadowData) {
+            if (sample.isMapped != 0u) {
+                ++mapped;
+            }
+            minDistance = sample.distance < minDistance ? sample.distance : minDistance;
+            maxDistance = sample.distance > maxDistance ? sample.distance : maxDistance;
+        }
+        if (map.shadowData.empty()) {
+            minDistance = 0.0f;
+            maxDistance = 0.0f;
+        }
+        std::printf("  light[%zu]=%08X%08X%08X%08X samples=%zu mapped=%zu distance=[%.6f, %.6f]\n", index,
+                    map.lightId.a, map.lightId.b, map.lightId.c, map.lightId.d, map.shadowData.size(), mapped,
+                    minDistance, maxDistance);
+    }
+    return 0;
+}
+
 uint32_t parseUint32Argument(const char* text, const char* name);
 
 int writeLightmapDdsCommand(int argc, char** argv) {
@@ -5396,6 +7040,242 @@ int writeTileAtlasCommand(int argc, char** argv) {
     return 0;
 }
 
+bool buildJobAtlasResults(const SceneInfo& scene, const BakingJobInputs& jobs, const LightmapSidecar& sidecar,
+                          const std::vector<Lightmap2DOutput>& outputs,
+                          std::vector<LightmapAtlasResult>* results, std::string* error) {
+    if (sidecar.atlases.empty()) {
+        if (error != nullptr) {
+            *error = "lightmap sidecar has no atlases";
+        }
+        return false;
+    }
+    if (jobs.lightmap2DJobs.size() != sidecar.objects.size()) {
+        if (error != nullptr) {
+            *error = "lightmap sidecar object count " + std::to_string(sidecar.objects.size()) +
+                     " does not match lightmap job count " + std::to_string(jobs.lightmap2DJobs.size());
+        }
+        return false;
+    }
+    if (scene.meshInstances.size() != jobs.lightmap2DJobs.size()) {
+        if (error != nullptr) {
+            *error = "scene mesh instance count " + std::to_string(scene.meshInstances.size()) +
+                     " does not match lightmap job count " + std::to_string(jobs.lightmap2DJobs.size());
+        }
+        return false;
+    }
+
+    results->clear();
+    results->reserve(jobs.lightmap2DJobs.size());
+    for (std::size_t index = 0; index < jobs.lightmap2DJobs.size(); ++index) {
+        const Lightmap2DInput& input = jobs.lightmap2DJobs[index];
+        const Lightmap2DOutput& output = outputs[index];
+        const MeshInstanceInfo& instance = scene.meshInstances[index];
+        if (formatGuid(input.meshId) != formatGuid(instance.header.guid)) {
+            if (error != nullptr) {
+                *error = "lightmap job " + std::to_string(index) + " mesh id " + formatGuid(input.meshId) +
+                         " does not match mesh instance " + formatGuid(instance.header.guid);
+            }
+            return false;
+        }
+        if (input.size.x <= 0 || input.size.y <= 0 || output.header.size.x <= 0 ||
+            output.header.size.y <= 0) {
+            if (error != nullptr) {
+                *error = "lightmap job " + std::to_string(index) + " has an invalid size";
+            }
+            return false;
+        }
+        if (instance.header.uv2MapSize.x != 0u || instance.header.uv2MapSize.y != 0u) {
+            if (instance.header.uv2MapSize.x != static_cast<uint32_t>(input.size.x) ||
+                instance.header.uv2MapSize.y != static_cast<uint32_t>(input.size.y)) {
+                if (error != nullptr) {
+                    *error = "lightmap job " + std::to_string(index) + " UV2 map size " +
+                             std::to_string(instance.header.uv2MapSize.x) + "x" +
+                             std::to_string(instance.header.uv2MapSize.y) + " does not match input size " +
+                             std::to_string(input.size.x) + "x" + std::to_string(input.size.y);
+                }
+                return false;
+            }
+        }
+        if (output.header.size.x != output.header.size.y ||
+            output.header.size.x != input.size.x + ((input.flags & kLightmapFlagPadding) != 0u ? 2 : 0) ||
+            output.header.size.y != input.size.y + ((input.flags & kLightmapFlagPadding) != 0u ? 2 : 0)) {
+            if (error != nullptr) {
+                *error = "lightmap job " + std::to_string(index) + " result size " +
+                         std::to_string(output.header.size.x) + "x" + std::to_string(output.header.size.y) +
+                         " does not match input size";
+            }
+            return false;
+        }
+
+        const uint32_t sidecarSize = static_cast<uint32_t>(input.size.x);
+        const auto matchesObject = [&instance, sidecarSize](const LightmapSidecarObject& object) {
+            return object.x == instance.header.uv2Offset.x && object.y == instance.header.uv2Offset.y &&
+                   object.size == sidecarSize;
+        };
+
+        const LightmapSidecarObject* matchedObject = nullptr;
+        if (index < sidecar.objects.size() && matchesObject(sidecar.objects[index])) {
+            matchedObject = &sidecar.objects[index];
+        }
+        if (matchedObject == nullptr) {
+            for (const LightmapSidecarObject& object : sidecar.objects) {
+                if (!matchesObject(object)) {
+                    continue;
+                }
+                if (matchedObject != nullptr) {
+                    if (error != nullptr) {
+                        *error = "lightmap job " + std::to_string(index) + " matches multiple sidecar objects (" +
+                                 matchedObject->name + ", " + object.name +
+                                 "); sidecar object order does not match lightmap job order";
+                    }
+                    return false;
+                }
+                matchedObject = &object;
+            }
+        }
+        if (matchedObject == nullptr) {
+            if (error != nullptr) {
+                *error = "no sidecar object matches lightmap job " + std::to_string(index) + " at " +
+                         std::to_string(instance.header.uv2Offset.x) + "," +
+                         std::to_string(instance.header.uv2Offset.y) + " size " +
+                         std::to_string(sidecarSize);
+            }
+            return false;
+        }
+        if (matchedObject->atlas >= sidecar.atlases.size()) {
+            if (error != nullptr) {
+                *error = "sidecar object " + matchedObject->name + " references an invalid atlas";
+            }
+            return false;
+        }
+        results->push_back(LightmapAtlasResult{&output, LightmapAtlasPlacement{
+            matchedObject->atlas, matchedObject->x, matchedObject->y,
+            static_cast<uint32_t>(input.size.x), static_cast<uint32_t>(input.size.y)}});
+    }
+    return true;
+}
+
+bool writeJobAtlasFromDirectory(const std::filesystem::path& jobDirectory, const std::string& guid,
+                                const std::filesystem::path& sidecarPath,
+                                const std::filesystem::path& outputDirectory, uint32_t edgePadding,
+                                std::size_t* atlasCount, std::size_t* blockCount, std::string* error) {
+    try {
+        if (jobDirectory.empty()) {
+            throw std::runtime_error("job atlas input directory is empty");
+        }
+        if (outputDirectory.empty()) {
+            throw std::runtime_error("job atlas output directory is empty");
+        }
+        if (sidecarPath.empty()) {
+            throw std::runtime_error("job atlas sidecar path is empty");
+        }
+        const BakingJobInputs jobs =
+            readBakingJobInputsFile(findJobObjectFile(jobDirectory, guid, ".jobs", ".jobgz"));
+        const SceneInfo scene = readSceneFile(findJobObjectFile(jobDirectory, guid, ".scene", ".scenegz"));
+        const LightmapSidecar sidecar = readLightmapSidecar(sidecarPath);
+
+        std::vector<Lightmap2DOutput> outputs;
+        std::vector<std::size_t> splitCounts;
+        if (!loadLightmap2DOutputs(jobDirectory, jobs, guid, &outputs, &splitCounts, error)) {
+            return false;
+        }
+        std::vector<LightmapAtlasResult> results;
+        if (!buildJobAtlasResults(scene, jobs, sidecar, outputs, &results, error)) {
+            return false;
+        }
+        std::vector<uint32_t> atlasSizes;
+        atlasSizes.reserve(sidecar.atlases.size());
+        for (const LightmapSidecarAtlas& atlas : sidecar.atlases) {
+            atlasSizes.push_back(atlas.size);
+        }
+        LightmapAtlasImageSet images;
+        LightmapAtlasOptions options;
+        options.edgePadding = edgePadding;
+        if (!buildLightmapAtlasImages(scene, jobs, results, atlasSizes, &images, error, options)) {
+            return false;
+        }
+        if (!writeLightmapAtlasDds(images, outputDirectory, error)) {
+            return false;
+        }
+        if (atlasCount != nullptr) {
+            *atlasCount = images.atlases.size();
+        }
+        if (blockCount != nullptr) {
+            *blockCount = results.size();
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error != nullptr) {
+            *error = exception.what();
+        }
+        return false;
+    }
+}
+
+int writeJobAtlasCommand(int argc, char** argv) {
+    if (argc != 6 && argc != 7) {
+        throw std::runtime_error("--write-job-atlas requires <job-dir> <guid32hex> <lightmap.json> "
+                                 "<out-dir> [edge-padding]");
+    }
+    if (!isHexGuid(argv[3])) {
+        throw std::runtime_error("--write-job-atlas requires a 32-character hexadecimal GUID");
+    }
+    const uint32_t edgePadding = argc == 7 ? parseUint32Argument(argv[6], "edge padding") : 2u;
+    std::size_t atlasCount = 0;
+    std::size_t blockCount = 0;
+    std::string error;
+    if (!writeJobAtlasFromDirectory(argv[2], argv[3], argv[4], argv[5], edgePadding, &atlasCount, &blockCount,
+                                    &error)) {
+        throw std::runtime_error(error);
+    }
+    std::printf("wrote job atlas: atlases=%zu blocks=%zu edgePadding=%u\n", atlasCount, blockCount, edgePadding);
+    return 0;
+}
+
+int verifyJobAtlasCommand(int argc, char** argv) {
+    if (argc != 6) {
+        throw std::runtime_error("--verify-job-atlas requires <job-dir> <guid32hex> <lightmap.json> <atlas-dir>");
+    }
+    if (!isHexGuid(argv[3])) {
+        throw std::runtime_error("--verify-job-atlas requires a 32-character hexadecimal GUID");
+    }
+    const BakingJobInputs jobs = readBakingJobInputsFile(findJobObjectFile(argv[2], argv[3], ".jobs", ".jobgz"));
+    const SceneInfo scene = readSceneFile(findJobObjectFile(argv[2], argv[3], ".scene", ".scenegz"));
+    const LightmapSidecar sidecar = readLightmapSidecar(argv[4]);
+
+    std::vector<Lightmap2DOutput> outputs;
+    std::vector<std::size_t> splitCounts;
+    std::string error;
+    if (!loadLightmap2DOutputs(argv[2], jobs, argv[3], &outputs, &splitCounts, &error)) {
+        throw std::runtime_error(error);
+    }
+    std::vector<LightmapAtlasResult> results;
+    if (!buildJobAtlasResults(scene, jobs, sidecar, outputs, &results, &error)) {
+        throw std::runtime_error(error);
+    }
+
+    std::vector<uint32_t> atlasSizes;
+    atlasSizes.reserve(sidecar.atlases.size());
+    for (const LightmapSidecarAtlas& atlas : sidecar.atlases) {
+        atlasSizes.push_back(atlas.size);
+    }
+    std::size_t verifiedBlocks = 0u;
+    for (std::size_t index = 0; index < results.size(); ++index) {
+        const LightmapAtlasPlacement& placement = results[index].placement;
+        const uint32_t padding = (jobs.lightmap2DJobs[index].flags & kLightmapFlagPadding) != 0u ? 1u : 0u;
+        if (placement.x < padding || placement.y < padding) {
+            throw std::runtime_error("job atlas result does not leave room for padding");
+        }
+        if (!verifyLightmapAtlasDds(outputs[index], placement.atlasIndex, placement.x - padding,
+                                    placement.y - padding, atlasSizes[placement.atlasIndex], argv[5], &error)) {
+            throw std::runtime_error(error);
+        }
+        ++verifiedBlocks;
+    }
+    std::printf("verified job atlas: atlases=%zu blocks=%zu\n", sidecar.atlases.size(), verifiedBlocks);
+    return 0;
+}
+
 int verifyLightmap2DResultsCommand(const std::filesystem::path& jobDirectory, const std::string& guid) {
     std::string error;
     if (!verifyLightmap2DResultSet(jobDirectory, guid, true, &error)) {
@@ -5461,6 +7341,325 @@ int verifyLightmapAtlasDdsCommand(int argc, char** argv) {
     return 0;
 }
 
+int lightmapSplitTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    std::vector<Lightmap2DInput> jobs(2);
+    jobs[0].jobId = Guid{0u, 0u, 0u, 5u};
+    jobs[0].size = Int2{128, 128};
+    jobs[1].jobId = Guid{0u, 0u, 1u, 5u};
+    jobs[1].size = Int2{64, 64};
+    std::vector<MappingSplitInput> splits = splitOversizedLightmaps(jobs, 64u);
+    require(splits.size() == 9u, "128x128 lightmap should split into 9 tiles");
+    const int32_t expectedOffsets[3] = {0, 58, 116};
+    for (std::size_t index = 0; index < splits.size(); ++index) {
+        const MappingSplitInput& split = splits[index];
+        require(split.splitSize == 64 && split.overlapSize == 3 && split.scenePartitionIndex == 0,
+                "split size/overlap mismatch");
+        require(split.jobId.a == 0u && split.jobId.b == 103u && split.jobId.c == index && split.jobId.d == 0u,
+                "split JobID does not match original deterministic ordering");
+        require(split.mappingOffsets.x == expectedOffsets[index / 3u] &&
+                    split.mappingOffsets.y == expectedOffsets[index % 3u] && split.mappingOffsets.z == 0,
+                "split mapping offset mismatch");
+    }
+
+    jobs[0].size = Int2{63, 63};
+    jobs[0].flags |= kLightmapFlagPadding;
+    jobs[1].size = Int2{32, 32};
+    splits = splitOversizedLightmaps(jobs, 64u);
+    require(splits.size() == 4u, "63x63 + padding lightmap should split into 4 tiles");
+    require(splits[0].mappingOffsets.x == 0 && splits[0].mappingOffsets.y == 0 &&
+                splits[1].mappingOffsets.x == 0 && splits[1].mappingOffsets.y == 58 &&
+                splits[2].mappingOffsets.x == 58 && splits[2].mappingOffsets.y == 0 &&
+                splits[3].mappingOffsets.x == 58 && splits[3].mappingOffsets.y == 58,
+            "padded split mapping offset mismatch");
+
+    Lightmap2DInput input;
+    input.jobId = Guid{7u, 8u, 9u, 10u};
+    input.meshId = Guid{11u, 12u, 13u, 14u};
+    input.size = Int2{6, 4};
+    std::vector<MappingSplitInput> mergeSplits(2);
+    mergeSplits[0].jobId = Guid{0u, 103u, 0u, 0u};
+    mergeSplits[0].splitSize = 4;
+    mergeSplits[0].overlapSize = 1;
+    mergeSplits[0].mappingOffsets = Int3{0, 0, 0};
+    mergeSplits[1].jobId = Guid{0u, 103u, 1u, 0u};
+    mergeSplits[1].splitSize = 4;
+    mergeSplits[1].overlapSize = 1;
+    mergeSplits[1].mappingOffsets = Int3{2, 0, 0};
+    std::vector<Lightmap2DOutput> splitOutputs(2);
+    for (std::size_t tile = 0; tile < splitOutputs.size(); ++tile) {
+        splitOutputs[tile].header.jobId = mergeSplits[tile].jobId;
+        splitOutputs[tile].header.meshId = input.meshId;
+        splitOutputs[tile].header.size = Int2{4, 4};
+        splitOutputs[tile].header.executionTime = static_cast<double>(tile + 1u);
+        splitOutputs[tile].lightmapData.resize(16);
+        for (int32_t y = 0; y < 4; ++y) {
+            for (int32_t x = 0; x < 4; ++x) {
+                splitOutputs[tile].lightmapData[static_cast<std::size_t>(y * 4 + x)].incidentLighting.x =
+                    static_cast<float>(tile * 1000 + x * 10 + y);
+                splitOutputs[tile].lightmapData[static_cast<std::size_t>(y * 4 + x)].bIsMapped = 1u;
+            }
+        }
+    }
+    std::vector<const MappingSplitInput*> splitPointers = {&mergeSplits[0], &mergeSplits[1]};
+    std::vector<const Lightmap2DOutput*> outputPointers = {&splitOutputs[0], &splitOutputs[1]};
+    Lightmap2DOutput merged;
+    std::string error;
+    require(mergeLightmapSplitResults(input, splitPointers, outputPointers, &merged, &error),
+            "split lightmap merge failed");
+    require(merged.header.size.x == 6 && merged.header.size.y == 4 && merged.lightmapData.size() == 24,
+            "merged lightmap size mismatch");
+    for (int32_t y = 0; y < 4; ++y) {
+        for (int32_t x = 0; x < 6; ++x) {
+            const float expected = x < 3 ? static_cast<float>(x * 10 + y)
+                                         : static_cast<float>(1000 + (x - 2) * 10 + y);
+            require(merged.lightmapData[static_cast<std::size_t>(y * 6 + x)].incidentLighting.x == expected,
+                    "merged split texel mismatch");
+        }
+    }
+    require(merged.header.executionTime == 3.0, "merged split execution time should sum");
+
+    Lightmap2DOutput incomplete;
+    require(!mergeLightmapSplitResults(input, {&mergeSplits[0]}, {&splitOutputs[0]}, &incomplete, &error) &&
+                error.find("do not cover") != std::string::npos,
+            "incomplete split coverage was accepted");
+    Lightmap2DOutput wrongJob = splitOutputs[1];
+    wrongJob.header.jobId = Guid{1u, 2u, 3u, 4u};
+    require(!mergeLightmapSplitResults(input, splitPointers, {&splitOutputs[0], &wrongJob}, &incomplete, &error) &&
+                error.find("JobID") != std::string::npos,
+            "split JobID mismatch was accepted");
+
+    std::printf("lightmap split test OK: tiles=%zu merged=%dx%d\n", splits.size(), merged.header.size.x,
+                merged.header.size.y);
+    return 0;
+}
+
+int lightmapJobAtlasTest() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
+        ("hbg_dawnbake_job_atlas_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } cleanup{directory};
+
+    std::string error;
+    const std::string guid = "11223344556677889900AABBCCDDEEFF";
+    SceneInfo scene;
+    BakingJobInputs jobs;
+    LightmapSidecar sidecar;
+    sidecar.atlases = {LightmapSidecarAtlas{"lm0", 32u, 3u, "rgba16f"},
+                       LightmapSidecarAtlas{"lm1", 32u, 3u, "rgba16f"}};
+    const auto makeJob = [](uint32_t index, uint32_t size, uint32_t x, uint32_t y) {
+        return std::array<uint32_t, 4>{index, size, x, y};
+    };
+    const std::array<std::array<uint32_t, 4>, 3> rectangles = {
+        makeJob(0u, 4u, 2u, 2u), makeJob(1u, 6u, 8u, 2u), makeJob(2u, 4u, 16u, 2u)};
+    for (const auto& rectangle : rectangles) {
+        const uint32_t index = rectangle[0];
+        const uint32_t size = rectangle[1];
+        MeshInstanceInfo instance;
+        instance.header.guid = Guid{0x4D455348u, 0u, 0u, index + 1u};
+        instance.header.lightmapId = index;
+        instance.header.uv2Offset = UInt2{rectangle[2], rectangle[3]};
+        instance.header.uv2MapSize = UInt2{size, size};
+        scene.meshInstances.push_back(instance);
+
+        Lightmap2DInput input;
+        input.jobId = Guid{0u, 0u, index, 5u};
+        input.meshId = instance.header.guid;
+        input.size = Int2{static_cast<int32_t>(size), static_cast<int32_t>(size)};
+        input.flags = kLightmapFlagIndirect;
+        if (index == 2u) {
+            input.flags |= kLightmapFlagPadding;
+        }
+        jobs.lightmap2DJobs.push_back(input);
+
+        sidecar.objects.push_back(LightmapSidecarObject{index == 0u ? "z0" : (index == 1u ? "a1" : "p2"),
+                                                        index == 1u ? 1u : 0u, rectangle[2], rectangle[3], size,
+                                                        1.0f, true});
+    }
+
+    uint32_t splitIndex = 0u;
+    for (uint32_t jobIndex = 1u; jobIndex <= 2u; ++jobIndex) {
+        for (int32_t y = 0; y < 2; ++y) {
+            for (int32_t x = 0; x < 2; ++x) {
+                MappingSplitInput split;
+                split.jobId = Guid{0u, 103u, splitIndex++, jobIndex};
+                split.splitSize = 4;
+                split.overlapSize = 1;
+                split.mappingOffsets = Int3{x * 2, y * 2, static_cast<int32_t>(jobIndex)};
+                jobs.mappingSplitJobs.push_back(split);
+            }
+        }
+    }
+    jobs.mappingSplitJobsCount = static_cast<uint32_t>(jobs.mappingSplitJobs.size());
+    jobs.partialJobsTotalNum.numMappingSplitJobs = jobs.mappingSplitJobsCount;
+
+    const PackageFiles files = writeDawnPackage(directory, guid, scene, jobs, &sidecar);
+    const LightmapSidecar readBack = readLightmapSidecar(files.lightmap);
+    require(readBack.objects.size() == 3u && readBack.objects[0].name == "z0" &&
+                readBack.objects[1].name == "a1" && readBack.objects[2].name == "p2",
+            "lightmap sidecar object order was not preserved");
+
+    SceneInfo duplicateScene;
+    BakingJobInputs duplicateJobs;
+    for (uint32_t index = 0; index < 2u; ++index) {
+        MeshInstanceInfo instance;
+        instance.header.guid = Guid{0x4455504Cu, 0u, 0u, index + 1u};
+        instance.header.lightmapId = index;
+        instance.header.uv2Offset = UInt2{2u, 2u};
+        instance.header.uv2MapSize = UInt2{4u, 4u};
+        duplicateScene.meshInstances.push_back(instance);
+        Lightmap2DInput input;
+        input.jobId = Guid{0u, 0u, index, 5u};
+        input.meshId = instance.header.guid;
+        input.size = Int2{4, 4};
+        duplicateJobs.lightmap2DJobs.push_back(input);
+    }
+    std::vector<Lightmap2DOutput> duplicateOutputs(2u);
+    for (Lightmap2DOutput& output : duplicateOutputs) {
+        output.header.size = Int2{4, 4};
+    }
+    LightmapSidecar duplicateSidecar;
+    duplicateSidecar.atlases = {LightmapSidecarAtlas{"lm0", 32u, 3u, "rgba16f"},
+                                LightmapSidecarAtlas{"lm1", 32u, 3u, "rgba16f"}};
+    duplicateSidecar.objects = {LightmapSidecarObject{"z0", 0u, 2u, 2u, 4u, 1.0f, true},
+                                LightmapSidecarObject{"a1", 1u, 2u, 2u, 4u, 1.0f, true}};
+    std::vector<LightmapAtlasResult> duplicateResults;
+    require(buildJobAtlasResults(duplicateScene, duplicateJobs, duplicateSidecar, duplicateOutputs,
+                                 &duplicateResults, &error),
+            "duplicate sidecar placement mapping failed");
+    require(duplicateResults.size() == 2u && duplicateResults[0].placement.atlasIndex == 0u &&
+                duplicateResults[1].placement.atlasIndex == 1u,
+            "multi-atlas duplicate placement mapped to the wrong atlas");
+
+    SceneInfo paddedScene;
+    MeshInstanceInfo paddedInstance;
+    paddedInstance.header.guid = Guid{0x50444444u, 0u, 0u, 7u};
+    paddedInstance.header.uv2Offset = UInt2{2u, 2u};
+    paddedInstance.header.uv2MapSize = UInt2{4u, 4u};
+    paddedScene.meshInstances.push_back(paddedInstance);
+    BakingJobInputs paddedJobs;
+    Lightmap2DInput paddedInput;
+    paddedInput.jobId = Guid{0u, 0u, 7u, 5u};
+    paddedInput.meshId = paddedInstance.header.guid;
+    paddedInput.size = Int2{4, 4};
+    paddedInput.flags = kLightmapFlagIndirect | kLightmapFlagPadding;
+    paddedJobs.lightmap2DJobs.push_back(paddedInput);
+    LightmapSidecar paddedSidecar;
+    paddedSidecar.atlases = {LightmapSidecarAtlas{"lm0", 32u, 3u, "rgba16f"}};
+    paddedSidecar.objects = {LightmapSidecarObject{"padded", 0u, 2u, 2u, 4u, 1.0f, true}};
+    std::vector<Lightmap2DOutput> paddedOutputs(1u);
+    paddedOutputs[0].header.jobId = paddedInput.jobId;
+    paddedOutputs[0].header.meshId = paddedInput.meshId;
+    paddedOutputs[0].header.size = Int2{6, 6};
+    paddedOutputs[0].lightmapData.resize(36u);
+    std::vector<LightmapAtlasResult> paddedResults;
+    require(buildJobAtlasResults(paddedScene, paddedJobs, paddedSidecar, paddedOutputs, &paddedResults, &error),
+            "padded job atlas result mapping failed");
+    require(paddedResults.size() == 1u && paddedResults[0].placement.width == 4u &&
+                paddedResults[0].placement.height == 4u,
+            "padded job atlas placement must use the unpadded lightmap size");
+
+    Lightmap2DOutput first;
+    first.header.jobId = jobs.lightmap2DJobs[0].jobId;
+    first.header.meshId = jobs.lightmap2DJobs[0].meshId;
+    first.header.size = Int2{4, 4};
+    first.lightmapData.resize(16u);
+    for (std::size_t index = 0; index < first.lightmapData.size(); ++index) {
+        first.lightmapData[index].incidentLighting = Float4{1.0f, 2.0f, 3.0f, 4.0f};
+        first.lightmapData[index].shVectorR = Float4{5.0f, 6.0f, 7.0f, 8.0f};
+        first.lightmapData[index].bIsMapped = 1u;
+    }
+    Writer writer;
+    writeLightmap2DOutput(writer, first);
+    writeGzipFile(directory / lightmapResultFileName(first.header.jobId), writer.take());
+
+    for (const MappingSplitInput& jobSplit : jobs.mappingSplitJobs) {
+        Lightmap2DOutput tile;
+        tile.header.jobId = jobSplit.jobId;
+        tile.header.meshId = jobs.lightmap2DJobs[static_cast<std::size_t>(jobSplit.mappingOffsets.z)].meshId;
+        tile.header.size = Int2{4, 4};
+        tile.lightmapData.resize(16u);
+        for (int32_t y = 0; y < 4; ++y) {
+            for (int32_t x = 0; x < 4; ++x) {
+                const std::size_t index = static_cast<std::size_t>(y * 4 + x);
+                tile.lightmapData[index].incidentLighting =
+                    Float4{static_cast<float>(jobSplit.mappingOffsets.x * 100 + jobSplit.mappingOffsets.y * 10 +
+                                              x * 2 + y),
+                           0.0f, 0.0f, 0.0f};
+                tile.lightmapData[index].bIsMapped = 1u;
+            }
+        }
+        Writer tileWriter;
+        writeLightmap2DOutput(tileWriter, tile);
+        writeGzipFile(directory / lightmapResultFileName(tile.header.jobId), tileWriter.take());
+    }
+
+    const std::filesystem::path atlasDirectory = directory / "atlas";
+    std::vector<std::string> arguments = {"hbg_dawnbake", "--write-job-atlas", directory.string(), guid,
+                                          files.lightmap.string(), atlasDirectory.string(), "0"};
+    std::vector<char*> argumentPointers;
+    argumentPointers.reserve(arguments.size());
+    for (std::string& argument : arguments) {
+        argumentPointers.push_back(argument.data());
+    }
+    require(writeJobAtlasCommand(static_cast<int>(argumentPointers.size()), argumentPointers.data()) == 0,
+            "job atlas command failed");
+
+    std::vector<Lightmap2DOutput> outputs;
+    std::vector<std::size_t> splitCounts;
+    require(loadLightmap2DOutputs(directory, jobs, guid, &outputs, &splitCounts, &error),
+            "job atlas split result load failed");
+    require(splitCounts.size() == 3u && splitCounts[0] == 0u && splitCounts[1] == 4u &&
+                splitCounts[2] == 4u,
+            "job atlas split count mismatch");
+    require(outputs[1].header.size.x == 6 && outputs[1].header.size.y == 6 &&
+                outputs[1].lightmapData[5].incidentLighting.x == 206.0f,
+            "job atlas split merge mismatch");
+    require(outputs[2].header.size.x == 6 && outputs[2].header.size.y == 6,
+            "padded split merge must keep the padded extent");
+    require(verifyLightmapAtlasDds(outputs[0], 0u, 2u, 2u, 32u, atlasDirectory, &error),
+            "job atlas first block verification failed");
+    require(verifyLightmapAtlasDds(outputs[1], 1u, 8u, 2u, 32u, atlasDirectory, &error),
+            "job atlas split block verification failed");
+    require(verifyLightmapAtlasDds(outputs[2], 0u, 15u, 1u, 32u, atlasDirectory, &error),
+            "padded job atlas block verification failed");
+    arguments = {"hbg_dawnbake", "--verify-job-atlas", directory.string(), guid, files.lightmap.string(),
+                 atlasDirectory.string()};
+    argumentPointers.clear();
+    for (std::string& argument : arguments) {
+        argumentPointers.push_back(argument.data());
+    }
+    require(verifyJobAtlasCommand(static_cast<int>(argumentPointers.size()), argumentPointers.data()) == 0,
+            "job atlas verification command failed");
+
+    DawnLaunchOptions bakeOptions;
+    bakeOptions.jobDirectory = directory;
+    bakeOptions.atlasOutputDirectory = directory / "post_bake_atlas";
+    require(completeDawnBake(bakeOptions, guid) == 0, "post-bake atlas generation failed");
+    require(std::filesystem::is_regular_file(bakeOptions.atlasOutputDirectory / "lm0_sh0.dds") &&
+                std::filesystem::is_regular_file(bakeOptions.atlasOutputDirectory / "lm1_sh2.dds"),
+            "post-bake atlas output missing");
+    std::printf("job atlas test OK: atlases=2 blocks=3 splitTiles=8\n");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -5489,6 +7688,11 @@ int main(int argc, char** argv) {
         if (command == "--sky-test") {
             return skyExportTest();
         }
+#if defined(HBG_DAWN_HAVE_PARCEL) && HBG_DAWN_HAVE_PARCEL
+        if (command == "--parcel-test") {
+            return parcelImportTest();
+        }
+#endif
         if (command == "--uv-test") {
             return uvUnwrapTest();
         }
@@ -5577,6 +7781,9 @@ int main(int argc, char** argv) {
         if (command == "--dump-uv" && argc == 3) {
             return dumpUvCommand(argv[2]);
         }
+        if (command == "--export-scene" || command.rfind("--scene=", 0) == 0) {
+            return exportGenericSceneCommand(argc, argv);
+        }
         if (command == "--export-min" && (argc == 3 || argc == 4)) {
             const std::string guid = argc == 4 ? argv[3] : "11111111222222223333333344444444";
             return exportPackageCommand(argv[2], guid);
@@ -5606,6 +7813,9 @@ int main(int argc, char** argv) {
         if (command == "--t6-test") {
             return t6PerfTest();
         }
+        if (command == "--scene-export-test") {
+            return sceneExportTest();
+        }
         if (command == "--dawn-config-test" && (argc == 2 || argc == 3)) {
             return dawnConfigTest(argc == 3 ? std::filesystem::path(argv[2]) : defaultDawnConfigPath());
         }
@@ -5623,6 +7833,12 @@ int main(int argc, char** argv) {
         }
         if (command == "--lmgz-bind-test") {
             return lightmap2DBindingTest();
+        }
+        if (command == "--sdfgz-test") {
+            return sdfShadowOutputTest();
+        }
+        if (command == "--split-test") {
+            return lightmapSplitTest();
         }
         if (command == "--sh-atlas-test") {
             return lightmapAtlasImageTest();
@@ -5642,6 +7858,15 @@ int main(int argc, char** argv) {
         if (command == "--write-tile-atlas") {
             return writeTileAtlasCommand(argc, argv);
         }
+        if (command == "--write-job-atlas") {
+            return writeJobAtlasCommand(argc, argv);
+        }
+        if (command == "--verify-job-atlas") {
+            return verifyJobAtlasCommand(argc, argv);
+        }
+        if (command == "--job-atlas-test") {
+            return lightmapJobAtlasTest();
+        }
         if (command == "--verify-sh-atlas-dds") {
             return verifyLightmapAtlasDdsCommand(argc, argv);
         }
@@ -5653,6 +7878,19 @@ int main(int argc, char** argv) {
         }
         if (command == "--inspect-lmgz" && argc == 3) {
             return inspectLightmap2DOutput(argv[2]);
+        }
+        if (command == "--inspect-sdfgz" && argc == 3) {
+            return inspectSdfShadowOutput(argv[2]);
+        }
+        if (command == "--verify-sdfgz" && argc == 4) {
+            if (!isHexGuid(argv[3])) {
+                throw std::runtime_error("--verify-sdfgz requires a 32-character hexadecimal GUID");
+            }
+            std::string error;
+            if (!verifySdfShadowResultSet(argv[2], argv[3], true, &error)) {
+                throw std::runtime_error(error);
+            }
+            return 0;
         }
         if (command == "--inspect" && argc == 3) {
             return inspect(argv[2]);

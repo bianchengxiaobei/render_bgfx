@@ -363,8 +363,20 @@ void writeBakingJobInputs(Writer& writer, const BakingJobInputs& jobs, int32_t v
     }
 
     writer.array(jobs.lightmap2DJobs);
-    writer.u32(jobs.sdfShadowJobsCount);
-    writer.u32(jobs.sdfShadowGroupJobsCount);
+    writeCustomArray(writer, jobs.sdfShadowJobs, [](Writer& w, const SdfShadowInput& input) {
+        w.pod(input.header);
+        w.array(input.lights);
+        w.array(input.shadowmaskLights);
+    });
+    writeCustomArray(writer, jobs.sdfShadowGroupJobs, [](Writer& w, const SdfShadowGroupInput& group) {
+        w.pod(group.jobId);
+        w.i32(group.groupSize);
+        w.i32(group.upsampleFactor);
+        w.pod(group.lightId);
+        w.array(group.shadowJobIndices);
+        w.array(group.mappingOffsets);
+        w.i32(group.scenePartitionIndex);
+    });
     writer.u32(jobs.shadowDepthMapJobsCount);
     writer.u32(jobs.customLightProbeJobsCount);
     writer.u32(jobs.importanceVolumeLightProbeJobsCount);
@@ -380,7 +392,14 @@ void writeBakingJobInputs(Writer& writer, const BakingJobInputs& jobs, int32_t v
         writer.i32(static_cast<int32_t>(group.mappingOffsets.size()));
         writer.podArray(group.mappingOffsets);
     }
-    writer.u32(jobs.mappingSplitJobsCount);
+    writer.u32(static_cast<uint32_t>(jobs.mappingSplitJobs.size()));
+    for (const MappingSplitInput& split : jobs.mappingSplitJobs) {
+        writer.pod(split.jobId);
+        writer.i32(split.splitSize);
+        writer.i32(split.overlapSize);
+        writer.i32(split.scenePartitionIndex);
+        writer.pod(split.mappingOffsets);
+    }
     writer.u32(jobs.seamFixGroupJobsCount);
     writer.u32(jobs.scenePartitionTasksCount);
     writer.pod(jobs.partialJobsTotalNum);
@@ -414,8 +433,22 @@ void readBakingJobInputs(Reader& reader, BakingJobInputs& jobs, int32_t version)
                                      ") at offset " + std::to_string(reader.offset()));
         }
     };
-    expectZero("SDFShadowJobs");
-    expectZero("SDFShadowGroupJobs");
+    jobs.sdfShadowJobs = readCustomArray<SdfShadowInput>(reader, [](Reader& r, SdfShadowInput& input) {
+        input.header = r.pod<SdfShadowInputHeader>();
+        input.lights = r.array<Guid>();
+        input.shadowmaskLights = r.array<Guid>();
+    });
+    jobs.sdfShadowJobsCount = static_cast<uint32_t>(jobs.sdfShadowJobs.size());
+    jobs.sdfShadowGroupJobs = readCustomArray<SdfShadowGroupInput>(reader, [](Reader& r, SdfShadowGroupInput& group) {
+        group.jobId = r.pod<Guid>();
+        group.groupSize = r.i32();
+        group.upsampleFactor = r.i32();
+        group.lightId = r.pod<Guid>();
+        group.shadowJobIndices = r.array<int32_t>();
+        group.mappingOffsets = r.array<Int3>();
+        group.scenePartitionIndex = r.i32();
+    });
+    jobs.sdfShadowGroupJobsCount = static_cast<uint32_t>(jobs.sdfShadowGroupJobs.size());
     expectZero("ShadowDepthMapJobs");
     expectZero("CustomLightProbeJobs");
     expectZero("ImportanceVolumeLightProbeJobs");
@@ -433,7 +466,17 @@ void readBakingJobInputs(Reader& reader, BakingJobInputs& jobs, int32_t version)
             group.mappingOffsets = reader.array<Int3>();
         }
     }
-    expectZero("MappingSplitJobs");
+    jobs.mappingSplitJobsCount = reader.u32();
+    if (jobs.mappingSplitJobsCount != 0u) {
+        jobs.mappingSplitJobs.resize(jobs.mappingSplitJobsCount);
+        for (MappingSplitInput& split : jobs.mappingSplitJobs) {
+            split.jobId = reader.pod<Guid>();
+            split.splitSize = reader.i32();
+            split.overlapSize = reader.i32();
+            split.scenePartitionIndex = reader.i32();
+            split.mappingOffsets = reader.pod<Int3>();
+        }
+    }
     expectZero("SeamFixGroupJobs");
     expectZero("ScenePartitionTasks");
 
@@ -523,6 +566,37 @@ Lightmap2DOutput readLightmap2DOutputFile(const std::filesystem::path& path) {
         return output;
     } catch (const std::exception& error) {
         throw std::runtime_error("failed to read lmgz " + path.string() + ": " + error.what());
+    }
+}
+
+void writeSdfShadowOutput(Writer& writer, const SdfShadowOutput& output) {
+    writer.pod(output.header);
+    writeCustomArray(writer, output.shadowMaps, [](Writer& w, const SdfShadowMap& map) {
+        w.pod(map.lightId);
+        w.array(map.shadowData);
+    });
+}
+
+void readSdfShadowOutput(Reader& reader, SdfShadowOutput& output) {
+    output.header = reader.pod<Lightmap2DOutputHeader>();
+    output.shadowMaps = readCustomArray<SdfShadowMap>(reader, [](Reader& r, SdfShadowMap& map) {
+        map.lightId = r.pod<Guid>();
+        map.shadowData = r.array<SdfShadowSample>();
+    });
+}
+
+SdfShadowOutput readSdfShadowOutputFile(const std::filesystem::path& path) {
+    try {
+        const std::vector<uint8_t> bytes = readDawnObjectBytes(path);
+        Reader reader(bytes);
+        SdfShadowOutput output;
+        readSdfShadowOutput(reader, output);
+        if (reader.remaining() != 0u) {
+            throw std::runtime_error("trailing bytes at offset " + std::to_string(reader.offset()));
+        }
+        return output;
+    } catch (const std::exception& error) {
+        throw std::runtime_error("failed to read sdfgz " + path.string() + ": " + error.what());
     }
 }
 

@@ -141,4 +141,8 @@ void writeLightmap2DOutput(Writer& writer, const Lightmap2DOutput& output);
 void readLightmap2DOutput(Reader& reader, Lightmap2DOutput& output);
 Lightmap2DOutput readLightmap2DOutputFile(const std::filesystem::path& path);
 
+void writeSdfShadowOutput(Writer& writer, const SdfShadowOutput& output);
+void readSdfShadowOutput(Reader& reader, SdfShadowOutput& output);
+SdfShadowOutput readSdfShadowOutputFile(const std::filesystem::path& path);
+
 }  // namespace hbg::dawn

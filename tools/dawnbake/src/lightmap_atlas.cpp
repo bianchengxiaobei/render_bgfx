@@ -205,13 +205,26 @@ bool buildLightmapAtlasImages(const SceneInfo& scene, const BakingJobInputs& job
                                 " atlas rect does not leave room for padding " + std::to_string(padding));
             return false;
         }
+        const uint64_t atlasSize = atlasSizes[placement.atlasIndex];
         const AtlasRect target{
             static_cast<uint64_t>(placement.x - padding), static_cast<uint64_t>(placement.y - padding),
             static_cast<uint64_t>(output.header.size.x), static_cast<uint64_t>(output.header.size.y)};
-        const uint32_t edgePadding = options.edgePadding;
-        if (target.width == 0u || target.height == 0u || target.x < edgePadding || target.y < edgePadding ||
-            target.x + target.width + edgePadding > atlasSizes[placement.atlasIndex] ||
-            target.y + target.height + edgePadding > atlasSizes[placement.atlasIndex]) {
+        if (target.width == 0u || target.height == 0u || target.x + target.width > atlasSize ||
+            target.y + target.height > atlasSize) {
+            setError(error, "lightmap result " + formatGuid(output.header.jobId) + " target rect " +
+                                sizeText(static_cast<uint32_t>(target.width), static_cast<uint32_t>(target.height)) +
+                                " at " + std::to_string(target.x) + "," + std::to_string(target.y) +
+                                " is outside atlas " + std::to_string(placement.atlasIndex));
+            return false;
+        }
+        uint32_t edgePadding = options.edgePadding;
+        if (padding != 0u) {
+            edgePadding = static_cast<uint32_t>(std::min<uint64_t>(
+                {edgePadding, target.x, target.y, atlasSize - target.x - target.width,
+                 atlasSize - target.y - target.height}));
+        } else if (target.x < edgePadding || target.y < edgePadding ||
+                   target.x + target.width + edgePadding > atlasSize ||
+                   target.y + target.height + edgePadding > atlasSize) {
             setError(error, "lightmap result " + formatGuid(output.header.jobId) + " target rect " +
                                 sizeText(static_cast<uint32_t>(target.width), static_cast<uint32_t>(target.height)) +
                                 " at " + std::to_string(target.x) + "," + std::to_string(target.y) +
@@ -262,7 +275,6 @@ bool buildLightmapAtlasImages(const SceneInfo& scene, const BakingJobInputs& job
         dilateBlock(&block, &valid, blockWidth, blockHeight, options.dilationIterations);
 
         LightmapAtlasImage& image = images->atlases[placement.atlasIndex];
-        const uint64_t atlasSize = atlasSizes[placement.atlasIndex];
         for (uint32_t y = 0; y < blockHeight; ++y) {
             for (uint32_t x = 0; x < blockWidth; ++x) {
                 const std::size_t index = static_cast<std::size_t>(y) * blockWidth + x;

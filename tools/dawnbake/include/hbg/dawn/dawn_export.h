@@ -6,6 +6,7 @@
 #include "hbg/dawn/dawn_protocol.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace hbg::dawn {
 
@@ -14,6 +15,7 @@ struct MeshExportOptions {
     float albedoBoost = 1.0f;
     float rayOffset = 0.0f;
     bool castShadows = true;
+    bool useEmissionLighting = false;
     UInt2 uv2MapSize{0, 0};
     UInt2 uv2Offset{0, 0};
     bool normalizeUv2 = true;
@@ -42,6 +44,9 @@ struct LightExportOptions {
 struct SkyLightExportOptions {
     uint32_t cubeSize = 512;
     Vec3 rotationEulerDegrees{0.0f, 0.0f, 0.0f};
+    bool splitRotation = false;
+    Vec3 sourceRotationEulerDegrees{0.0f, 0.0f, 0.0f};
+    Vec3 transformRotationEulerDegrees{0.0f, 0.0f, 0.0f};
     Vec3 color{1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
     float indirectMultiplier = 1.0f;
@@ -65,8 +70,14 @@ MaterialInfo exportMaterial(const asset::Material& material, const render::Rende
                             const MaterialExportOptions& options);
 
 LightFullInfo exportLight(const render::Light& light, const LightExportOptions& options,
-                          uint32_t lightIndex = 0);
+                          uint32_t lightIndex = 0,
+                          std::vector<Texture2D<Float4>>* cookieTextures = nullptr);
 
 SkyLightInfo exportSkyLight(const asset::ImageAsset* source, const SkyLightExportOptions& options);
+
+SkyLightInfo exportGradientSkyLight(const Vec3& skyColor, const Vec3& equatorColor, const Vec3& groundColor,
+                                    float lerpExponent, const SkyLightExportOptions& options);
+
+SkyLightInfo exportConstantSkyLight(const Vec4& radiance, const SkyLightExportOptions& options);
 
 }  // namespace hbg::dawn

@@ -50,6 +50,7 @@ struct PackageFiles {
 std::string formatGuid(const Guid& guid);
 std::string formatShaHash(const ShaHash& hash);
 std::string lightmapResultFileName(const Guid& guid);
+std::string shadowmaskResultFileName(const Guid& guid);
 std::string lightmapAtlasName(uint32_t atlasIndex);
 std::string lightmapAtlasDdsFileName(uint32_t atlasIndex, uint32_t shChannel);
 std::string meshFileName(const Guid& guid, uint32_t lodIndex, uint32_t index);
@@ -61,5 +62,7 @@ PackageFiles writeDawnPackage(const std::filesystem::path& directory, const std:
 
 void mergeLightmapSidecar(const std::filesystem::path& sceneSidecar, const std::filesystem::path& lightmapSidecar,
                           const std::filesystem::path& output);
+
+LightmapSidecar readLightmapSidecar(const std::filesystem::path& path);
 
 } // namespace hbg::dawn

@@ -12,6 +12,8 @@ struct DawnLightmapConfig {
     float texelsPerUnit = 6.0f;
     uint32_t maxLightmapSize = 1024;
     uint32_t atlasSize = 2048;
+    uint32_t taskPackSize = 512;
+    bool splitLightmaps = true;
     uint32_t maxAtlases = 2;
     uint32_t padding = 2;
     uint32_t dilationIterations = 4;

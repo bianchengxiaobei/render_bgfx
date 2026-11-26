@@ -135,7 +135,7 @@ ColorBuffer buildColorBuffer(const asset::ImageAsset* image, const Vec4& factor,
             if (image != nullptr) {
                 color = readPixel(*image, x, y, flipY);
             }
-            if (srgb) {
+            if (srgb && (image == nullptr || image->format == gfx::TextureFormat::RGBA8)) {
                 color.r = srgbToLinear(color.r);
                 color.g = srgbToLinear(color.g);
                 color.b = srgbToLinear(color.b);
@@ -236,11 +236,37 @@ Vec3 convertLightColor(const Vec3& color, bool convertSrgb) {
     return Vec3(srgbToLinear(color.x), srgbToLinear(color.y), srgbToLinear(color.z));
 }
 
+Vec3 correlatedColorTemperatureToRgb(float kelvin) {
+    const float temp = std::max(kelvin, 1.0f) / 100.0f;
+    float red = 0.0f;
+    float green = 0.0f;
+    float blue = 0.0f;
+    if (temp <= 66.0f) {
+        red = 255.0f;
+        green = 99.4708025861f * std::log(temp) - 161.1195681661f;
+        if (temp <= 19.0f) {
+            blue = 0.0f;
+        } else {
+            blue = 138.5177312231f * std::log(temp - 10.0f) - 305.0447927307f;
+        }
+    } else {
+        red = 329.698727446f * std::pow(temp - 60.0f, -0.1332047592f);
+        green = 288.1221695283f * std::pow(temp - 60.0f, -0.0755148492f);
+        blue = 255.0f;
+    }
+    return Vec3(std::clamp(red / 255.0f, 0.0f, 1.0f),
+                std::clamp(green / 255.0f, 0.0f, 1.0f),
+                std::clamp(blue / 255.0f, 0.0f, 1.0f));
+}
+
 float luminance(const Vec3& color) {
     return 0.299f * color.x + 0.587f * color.y + 0.114f * color.z;
 }
 
 uint32_t makeLightId(const render::Light& light, uint32_t lightIndex) {
+    if (light.instanceId != 0u) {
+        return light.instanceId;
+    }
     const uint32_t id = hashString32(light.name);
     return id != 0u ? id : (0x9E3779B9u ^ (lightIndex + 1u));
 }
@@ -280,6 +306,25 @@ uint32_t skyMipCount(uint32_t cubeSize) {
         ++mipCount;
     }
     return mipCount;
+}
+
+Vec3 cubeFaceDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t cubeSize) {
+    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(cubeSize) * 2.0f - 1.0f;
+    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(cubeSize) * 2.0f - 1.0f;
+    switch (face) {
+    case 0:
+        return Vec3(1.0f, -v, -u);
+    case 1:
+        return Vec3(-1.0f, -v, u);
+    case 2:
+        return Vec3(u, 1.0f, v);
+    case 3:
+        return Vec3(u, -1.0f, -v);
+    case 4:
+        return Vec3(u, -v, 1.0f);
+    default:
+        return Vec3(-u, -v, -1.0f);
+    }
 }
 
 bool isCubemapStrip(const asset::ImageAsset& image) {
@@ -527,6 +572,9 @@ MeshInstanceInfo exportMeshInstance(const asset::Mesh& mesh, const render::Rende
     result.header.texcoordIndex = 0;
     result.header.fullyOccludedSamplesFraction = 1.0f;
     result.header.flags = options.castShadows ? kMeshInstanceFlagShadowCast : 0u;
+    if (options.useEmissionLighting) {
+        result.header.flags |= kMeshInstanceFlagUseEmissionLighting;
+    }
     result.header.meshInstanceVisibilityMask = options.meshInstanceVisibilityMask;
     result.header.meshInstanceVisibilityMaskInHlodScene = options.meshInstanceVisibilityMask;
     result.header.lodLevelInHlodScene = -1;
@@ -668,7 +716,8 @@ MaterialInfo exportMaterial(const asset::Material& material, const render::Rende
 }
 
 LightFullInfo exportLight(const render::Light& light, const LightExportOptions& options,
-                          uint32_t lightIndex) {
+                          uint32_t lightIndex,
+                          std::vector<Texture2D<Float4>>* cookieTextures) {
     LightFullInfo result;
 
     const Mat4& world = light.world;
@@ -683,10 +732,19 @@ LightFullInfo exportLight(const render::Light& light, const LightExportOptions& 
     const bool directional = light.type == render::LightType::Directional;
     const Vec3 normal = directional ? engineForward * -1.0f : engineForward;
 
-    const Vec3 color = convertLightColor(light.color, options.srgbToLinear);
+    Vec3 sourceColor = light.color;
+    if (light.useColorTemperature) {
+        const Vec3 temperatureColor =
+            correlatedColorTemperatureToRgb(light.colorTemperature);
+        sourceColor = Vec3(sourceColor.x * temperatureColor.x,
+                           sourceColor.y * temperatureColor.y,
+                           sourceColor.z * temperatureColor.z);
+    }
+    const Vec3 color = convertLightColor(sourceColor, options.srgbToLinear);
     const Vec3 directColor = color * light.intensity;
     const Vec3 indirectColor =
-        color * (light.intensity * options.indirectMultiplier * options.indirectIntensity);
+        color * (light.intensity * std::max(light.indirectMultiplier, 0.0f) *
+                 options.indirectMultiplier * options.indirectIntensity);
 
     result.lightData.position = toFloat3(position);
     result.lightData.normal = toFloat3(normal);
@@ -697,9 +755,49 @@ LightFullInfo exportLight(const render::Light& light, const LightExportOptions& 
     result.lightData.attenuation = 1.0f;
     result.lightData.falloffExponent = 0.0f;
     result.lightData.iesTextureSlice = -1;
-    result.lightData.lightTextureMode = 0;
-    result.lightData.shadowTranslucency = 0.0f;
-    result.lightData.bEnablePenumbra = 0;
+    const bool hasCookie = light.cookieType != render::LightCookieType::None &&
+                           light.cookieMode != render::LightCookieMode::None;
+    result.lightData.lightTextureMode =
+        (hasCookie || light.hasIes) ? 1 : 0;
+    if (cookieTextures != nullptr && (light.hasIes || hasCookie)) {
+        constexpr uint32_t kLegacyCookieSize = 8;
+        uint32_t width = light.cookieNativeWidth;
+        uint32_t height = light.cookieNativeHeight;
+        const bool hasNative =
+            width > 0 && height > 0 &&
+            light.cookieNative.size() == static_cast<std::size_t>(width) * height;
+        if (!hasNative) {
+            width = kLegacyCookieSize;
+            height = kLegacyCookieSize;
+        }
+        Texture2D<Float4> texture;
+        texture.header.sizeX = width;
+        texture.header.sizeY = height;
+        texture.header.wrapMode = 0;
+        texture.header.format = 0;
+        texture.colors.resize(static_cast<std::size_t>(width) * height);
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                const float value =
+                    hasNative
+                        ? light.cookieNative[static_cast<std::size_t>(y) * width + x]
+                        : light.cookieSamples[static_cast<std::size_t>(y) * kLegacyCookieSize + x];
+                texture.colors[static_cast<std::size_t>(y) * width + x] =
+                    Float4{value, value, value, 1.0f};
+            }
+        }
+        result.lightData.iesTextureSlice = static_cast<int32_t>(cookieTextures->size());
+        cookieTextures->push_back(std::move(texture));
+    }
+    result.lightData.shadowTranslucency = std::clamp(light.shadowTranslucency, 0.0f, 1.0f);
+    result.lightData.bEnablePenumbra = light.enablePenumbra ? 1u : 0u;
+    result.lightData.penumbraTint = Float4{0.0f, 0.0f, 0.0f, 0.0f};
+    result.lightData.penumbraLuma = 0.0f;
+    if (light.enablePenumbra) {
+        result.lightData.penumbraTint =
+            Float4{light.penumbraTint.x, light.penumbraTint.y, light.penumbraTint.z, light.penumbraTint.w};
+        result.lightData.penumbraLuma = light.penumbraLuma;
+    }
 
     uint32_t typeFlag = kLightFlagPoint;
     if (directional) {
@@ -712,36 +810,63 @@ LightFullInfo exportLight(const render::Light& light, const LightExportOptions& 
 
     result.lightData.flags = typeFlag | kLightFlagHasStaticLighting | kLightFlagIndirectLighting |
                              kLightFlagIndirectLightingProbe;
-    if (options.directLighting) {
+    if (options.directLighting && light.bakeMode == render::LightBakeMode::Baked) {
         result.lightData.flags |= kLightFlagDirectLighting | kLightFlagDirectLightingProbe;
     }
-    if (light.castShadows) {
+    if (light.bakeMode == render::LightBakeMode::Mixed) {
+        result.lightData.flags |= kLightFlagStationary;
+        if (light.mixedMode == render::LightMixedMode::ShadowMask) {
+            result.lightData.flags |= kLightFlagDistanceFieldShadow;
+            result.lightData.flags &= ~kLightFlagLightingChannelMask;
+            result.lightData.flags |= static_cast<uint32_t>(light.lightingChannel & 0x7u);
+        }
+    }
+    if (light.castShadows && light.shadowType != render::LightShadowType::None) {
         result.lightData.flags |= kLightFlagCastShadow;
     }
-    if (directional) {
+    const bool area = light.type == render::LightType::Area;
+    const bool inverseSquared =
+        area || (!directional && light.falloffMode == render::LightFalloffMode::InverseSquared);
+    if (!inverseSquared) {
         result.lightData.flags |= kLightFlagNonInverseSquareFalloff;
+    }
+    if (!directional) {
+        if (light.falloffMode == render::LightFalloffMode::BakeryPhysical) {
+            result.lightData.flags |= kLightFlagBakeryFalloff;
+        } else if (light.falloffMode == render::LightFalloffMode::BakeryFake) {
+            result.lightData.flags |= kLightFlagBakeryFakeFalloff;
+        }
     }
 
     const float range = std::max(light.range, 0.0f);
+    const bool softShadows = light.shadowType == render::LightShadowType::Soft;
+    const float sourceRadius =
+        softShadows ? std::max(light.sourceRadius, std::max(options.sourceRadius, 0.0f)) : 0.0f;
+    const float sourceLength =
+        softShadows ? std::max(light.sourceLength, std::max(options.sourceLength, 0.0f)) : 0.0f;
+    const float directionalSourceAngle =
+        softShadows ? std::max(light.lightSourceAngle,
+                               std::max(options.directionalSourceAngleDegrees, 0.0f))
+                    : 0.0f;
+    const float barnDoorAngle =
+        light.barnDoorAngle > 0.0f ? light.barnDoorAngle : options.areaBarnDoorAngleDegrees;
+    const float barnDoorLength =
+        light.barnDoorLength > 0.0f ? light.barnDoorLength : options.areaBarnDoorLength;
     Vec3 boundMin{0.0f, 0.0f, 0.0f};
     Vec3 boundMax{0.0f, 0.0f, 0.0f};
 
     if (directional) {
-        const float halfAngle =
-            degreesToRadians(std::max(options.directionalSourceAngleDegrees, 0.0f) * 0.5f);
+        const float halfAngle = degreesToRadians(directionalSourceAngle * 0.5f);
         result.lightData.dimensions = Float3{std::sin(halfAngle), 0.0f, 0.0f};
         result.lightData.attenuation = 1.0f;
     } else if (light.type == render::LightType::Point) {
-        result.lightData.dimensions =
-            Float3{std::max(options.sourceRadius, 0.0f), std::max(options.sourceRadius, 0.0f),
-                   options.sourceLength};
+        result.lightData.dimensions = Float3{sourceRadius, sourceRadius, sourceLength};
         result.lightData.attenuation = range > 1.0e-6f ? 1.0f / range : 0.0f;
         result.lightData.falloffExponent = 1.0f;
         boundMin = position - Vec3(range, range, range);
         boundMax = position + Vec3(range, range, range);
     } else if (light.type == render::LightType::Spot) {
-        result.lightData.dimensions =
-            Float3{options.sourceRadius, std::max(options.sourceRadius, 0.0f), options.sourceLength};
+        result.lightData.dimensions = Float3{sourceRadius, sourceRadius, sourceLength};
 
         const float innerDegrees =
             std::clamp(radiansToDegrees(light.innerConeAngle), 0.0f, 89.0f);
@@ -781,11 +906,10 @@ LightFullInfo exportLight(const render::Light& light, const LightExportOptions& 
             result.lightData.dimensions = Float3{width, height, width * 0.5f};
         }
 
-        const float barnDoorAngle =
-            disc ? std::clamp(options.areaBarnDoorAngleDegrees, 1.0f, 89.0f)
-                 : options.areaBarnDoorAngleDegrees;
+        const float effectiveBarnDoorAngle =
+            disc ? std::clamp(barnDoorAngle, 1.0f, 89.0f) : barnDoorAngle;
         result.lightData.shaping =
-            Float2{std::cos(degreesToRadians(barnDoorAngle)), options.areaBarnDoorLength};
+            Float2{std::cos(degreesToRadians(effectiveBarnDoorAngle)), barnDoorLength};
         result.lightData.attenuation = range > 1.0e-6f ? 1.0f / range : 0.0f;
 
         const Vec3 discVector{std::sqrt(std::clamp(1.0f - normal.x * normal.x, 0.0f, 1.0f)),
@@ -812,13 +936,16 @@ SkyLightInfo exportSkyLight(const asset::ImageAsset* source, const SkyLightExpor
     const bool hasSource = source != nullptr && source->valid();
     const uint32_t cubeSize = hasSource ? std::clamp(options.cubeSize, 1u, 512u) : 1u;
     const uint32_t mipCount = skyMipCount(cubeSize);
-    const Mat4 rotation = makeEulerRotation(options.rotationEulerDegrees);
+    const Mat4 sourceRotation =
+        makeEulerRotation(options.splitRotation ? options.sourceRotationEulerDegrees : options.rotationEulerDegrees);
+    const Mat4 transformRotation =
+        makeEulerRotation(options.splitRotation ? options.transformRotationEulerDegrees : options.rotationEulerDegrees);
 
     result.skyData.color = toFloat3(options.color * options.intensity);
     result.skyData.mipDimensions =
         Int3{static_cast<int32_t>(mipCount), static_cast<int32_t>(cubeSize), 0};
     result.skyData.envColor = toFloat3(options.envColor);
-    result.skyData.transform = toMatrix4x4(hasSource ? transpose(rotation) : Mat4::identity());
+    result.skyData.transform = toMatrix4x4(hasSource ? transpose(transformRotation) : Mat4::identity());
     result.skyData.indirectLightingIntensity = options.indirectMultiplier * options.indirectIntensity;
     result.skyData.shadowTranslucency = options.shadowTranslucency;
     result.skyData.flags = 0;
@@ -837,36 +964,68 @@ SkyLightInfo exportSkyLight(const asset::ImageAsset* source, const SkyLightExpor
     for (uint32_t face = 0; face < 6u; ++face) {
         for (uint32_t y = 0; y < cubeSize; ++y) {
             for (uint32_t x = 0; x < cubeSize; ++x) {
-                const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(cubeSize) * 2.0f - 1.0f;
-                const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(cubeSize) * 2.0f - 1.0f;
-                Vec3 direction;
-                switch (face) {
-                case 0:
-                    direction = Vec3(1.0f, -v, -u);
-                    break;
-                case 1:
-                    direction = Vec3(-1.0f, -v, u);
-                    break;
-                case 2:
-                    direction = Vec3(u, 1.0f, v);
-                    break;
-                case 3:
-                    direction = Vec3(u, -1.0f, -v);
-                    break;
-                case 4:
-                    direction = Vec3(u, -v, 1.0f);
-                    break;
-                default:
-                    direction = Vec3(-u, -v, -1.0f);
-                    break;
-                }
+                const Vec3 direction = cubeFaceDirection(face, x, y, cubeSize);
                 const ColorRGBA color =
-                    sampleSkySource(*source, direction, rotation, options.srgbToLinear);
+                    sampleSkySource(*source, direction, sourceRotation, options.srgbToLinear);
                 result.envCube[pixelIndex++] =
                     Float4{color.r * invPi, color.g * invPi, color.b * invPi, color.a * invPi};
             }
         }
     }
+    return result;
+}
+
+SkyLightInfo exportGradientSkyLight(const Vec3& skyColor, const Vec3& equatorColor, const Vec3& groundColor,
+                                    float lerpExponent, const SkyLightExportOptions& options) {
+    SkyLightInfo result;
+    const uint32_t cubeSize = std::clamp(options.cubeSize, 1u, 512u);
+    const Mat4 transformRotation =
+        makeEulerRotation(options.splitRotation ? options.transformRotationEulerDegrees
+                                                : options.rotationEulerDegrees);
+
+    result.skyData.color = toFloat3(options.color * options.intensity);
+    result.skyData.mipDimensions =
+        Int3{static_cast<int32_t>(skyMipCount(cubeSize)), static_cast<int32_t>(cubeSize), 0};
+    result.skyData.envColor = toFloat3(options.envColor);
+    result.skyData.transform = toMatrix4x4(transpose(transformRotation));
+    result.skyData.indirectLightingIntensity = options.indirectMultiplier * options.indirectIntensity;
+    result.skyData.shadowTranslucency = options.shadowTranslucency;
+    result.skyData.flags = 0;
+
+    const float invPi = 1.0f / kPi;
+    const float exponent = std::max(lerpExponent, 0.0f);
+    result.envCube.resize(static_cast<std::size_t>(cubeSize) * cubeSize * 6u);
+    std::size_t pixelIndex = 0;
+    for (uint32_t face = 0; face < 6u; ++face) {
+        for (uint32_t y = 0; y < cubeSize; ++y) {
+            for (uint32_t x = 0; x < cubeSize; ++x) {
+                const Vec3 direction = normalize(cubeFaceDirection(face, x, y, cubeSize));
+                const Vec3 end = direction.y < 0.0f ? groundColor : skyColor;
+                const float blend = std::pow(std::fabs(direction.y), exponent);
+                const Vec3 color = equatorColor + (end - equatorColor) * blend;
+                result.envCube[pixelIndex++] = Float4{color.x * invPi, color.y * invPi, color.z * invPi, invPi};
+            }
+        }
+    }
+    return result;
+}
+
+SkyLightInfo exportConstantSkyLight(const Vec4& radiance, const SkyLightExportOptions& options) {
+    SkyLightInfo result;
+    const uint32_t cubeSize = std::clamp(options.cubeSize, 1u, 512u);
+    const float invPi = 1.0f / kPi;
+
+    result.skyData.color = toFloat3(options.color * options.intensity);
+    result.skyData.mipDimensions =
+        Int3{static_cast<int32_t>(skyMipCount(cubeSize)), static_cast<int32_t>(cubeSize), 0};
+    result.skyData.envColor = toFloat3(options.envColor);
+    result.skyData.transform = toMatrix4x4(Mat4::identity());
+    result.skyData.indirectLightingIntensity = options.indirectMultiplier * options.indirectIntensity;
+    result.skyData.shadowTranslucency = options.shadowTranslucency;
+    result.skyData.flags = 0;
+
+    result.envCube.assign(static_cast<std::size_t>(cubeSize) * cubeSize * 6u,
+                          Float4{radiance.x * invPi, radiance.y * invPi, radiance.z * invPi, radiance.w * invPi});
     return result;
 }
 

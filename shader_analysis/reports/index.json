@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-23T12:25:42Z",
+  "entries": [
+    {
+      "backend": "dxbc",
+      "source": "shaders/passes/forward.fs.sc",
+      "stage": "fragment",
+      "summaryPath": "dxbc/passes/forward.fs.json",
+      "variantCount": 2,
+      "okCount": 2,
+      "failedCount": 0,
+      "sourceSha256": "a8587275a4145297701e20048529abe2bdb6f03abfd3867c1a294bb014bc479f",
+      "generatedAt": "2026-11-23T10:26:08Z"
+    },
+    {
+      "backend": "spirv",
+      "source": "shaders/passes/forward.fs.sc",
+      "stage": "fragment",
+      "summaryPath": "spirv/passes/forward.fs.json",
+      "variantCount": 2,
+      "okCount": 2,
+      "failedCount": 0,
+      "sourceSha256": "a8587275a4145297701e20048529abe2bdb6f03abfd3867c1a294bb014bc479f",
+      "generatedAt": "2026-11-23T10:26:08Z"
+    },
+    {
+      "backend": "spirv",
+      "source": "shaders/passes/forward.vs.sc",
+      "stage": "vertex",
+      "summaryPath": "spirv/passes/forward.vs.json",
+      "variantCount": 1,
+      "okCount": 1,
+      "failedCount": 0,
+      "sourceSha256": "fd96394e6062c6c05c0d205862a1e854951cbc17e92791e00dd91c199422cb76",
+      "generatedAt": "2026-11-23T12:25:42Z"
+    }
+  ]
+}

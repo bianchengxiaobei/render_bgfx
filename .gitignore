@@ -20,3 +20,16 @@ tools/dawnbake/**/bin/
 tools/dawnbake/**/obj/
 tools/dawn-coordinator/bin/
 tools/dawn-coordinator/obj/
+
+# Shader analysis local artifacts
+/shader_analysis/cache/
+/shader_analysis/reports/**/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+/shader_analysis/reports/**/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-debug.json
+/shader_analysis/reports/diff*.json
+/shader_analysis/reports/*.csv
+/shader_analysis/reports_previous/
+/tools/shader_analysis/web/node_modules/
+/tools/shader_analysis/web/dist/
+/web/node_modules/
+/web/dist/
+/web/.vite/

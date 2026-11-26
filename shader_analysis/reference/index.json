@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-23T10:09:57Z",
+  "entries": [
+    {
+      "backend": "dxbc",
+      "source": "shaders/passes/forward.fs.sc",
+      "stage": "fragment",
+      "summaryPath": "dxbc/passes/forward.fs.json",
+      "variantCount": 32,
+      "okCount": 32,
+      "failedCount": 0,
+      "sourceSha256": "a8587275a4145297701e20048529abe2bdb6f03abfd3867c1a294bb014bc479f",
+      "generatedAt": "2026-11-23T08:40:33Z"
+    },
+    {
+      "backend": "spirv",
+      "source": "shaders/passes/forward.fs.sc",
+      "stage": "fragment",
+      "summaryPath": "spirv/passes/forward.fs.json",
+      "variantCount": 32,
+      "okCount": 32,
+      "failedCount": 0,
+      "sourceSha256": "a8587275a4145297701e20048529abe2bdb6f03abfd3867c1a294bb014bc479f",
+      "generatedAt": "2026-11-23T09:31:40Z"
+    }
+  ]
+}

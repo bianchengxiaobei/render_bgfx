@@ -1,0 +1,148 @@
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %4 "main" %147 %150 %154 %158 %161 %176 %180 %183 %186 %190 %193 %196
+               OpSource HLSL 500
+               OpName %4 "main"
+               OpName %54 "UniformBlock"
+               OpMemberName %54 0 "u_model"
+               OpMemberName %54 1 "u_global_viewProj"
+               OpMemberName %54 2 "u_object_lightmapST"
+               OpName %56 ""
+               OpName %147 "a_normal"
+               OpName %150 "a_position"
+               OpName %154 "a_tangent"
+               OpName %158 "a_texcoord0"
+               OpName %161 "a_texcoord1"
+               OpName %176 "@entryPointOutput.gl_Position"
+               OpName %180 "@entryPointOutput.v_bitangent"
+               OpName %183 "@entryPointOutput.v_normal"
+               OpName %186 "@entryPointOutput.v_tangent"
+               OpName %190 "@entryPointOutput.v_texcoord0"
+               OpName %193 "@entryPointOutput.v_texcoord1"
+               OpName %196 "@entryPointOutput.v_worldPos"
+               OpDecorate %53 ArrayStride 64
+               OpDecorate %54 Block
+               OpMemberDecorate %54 0 RowMajor
+               OpMemberDecorate %54 0 MatrixStride 16
+               OpMemberDecorate %54 0 Offset 0
+               OpMemberDecorate %54 1 RowMajor
+               OpMemberDecorate %54 1 MatrixStride 16
+               OpMemberDecorate %54 1 Offset 64
+               OpMemberDecorate %54 2 Offset 128
+               OpDecorate %56 Binding 0
+               OpDecorate %56 DescriptorSet 0
+               OpDecorate %147 Location 0
+               OpDecorate %150 Location 1
+               OpDecorate %154 Location 2
+               OpDecorate %158 Location 3
+               OpDecorate %161 Location 4
+               OpDecorate %176 BuiltIn Position
+               OpDecorate %180 Location 0
+               OpDecorate %183 Location 1
+               OpDecorate %186 Location 2
+               OpDecorate %190 Location 3
+               OpDecorate %193 Location 4
+               OpDecorate %196 Location 5
+          %2 = OpTypeVoid
+          %3 = OpTypeFunction %2
+          %6 = OpTypeFloat 32
+          %7 = OpTypeVector %6 3
+          %9 = OpTypeVector %6 4
+         %11 = OpTypeVector %6 2
+         %24 = OpTypeInt 32 1
+         %25 = OpConstant %24 1
+         %26 = OpConstant %6 0
+         %27 = OpConstant %6 1
+         %30 = OpConstant %24 2
+         %42 = OpConstantComposite %7 %26 %26 %26
+         %50 = OpTypeMatrix %9 4
+         %51 = OpTypeInt 32 0
+         %52 = OpConstant %51 1
+         %53 = OpTypeArray %50 %52
+         %54 = OpTypeStruct %53 %50 %9
+         %55 = OpTypePointer Uniform %54
+         %56 = OpVariable %55 Uniform
+         %57 = OpConstant %24 0
+         %58 = OpTypePointer Uniform %50
+         %89 = OpTypeBool
+         %93 = OpConstant %6 9.99999996e-13
+        %101 = OpTypeVector %89 3
+        %109 = OpConstant %51 3
+        %132 = OpTypePointer Uniform %9
+        %146 = OpTypePointer Input %7
+        %147 = OpVariable %146 Input
+        %150 = OpVariable %146 Input
+        %153 = OpTypePointer Input %9
+        %154 = OpVariable %153 Input
+        %157 = OpTypePointer Input %11
+        %158 = OpVariable %157 Input
+        %161 = OpVariable %157 Input
+        %175 = OpTypePointer Output %9
+        %176 = OpVariable %175 Output
+        %179 = OpTypePointer Output %7
+        %180 = OpVariable %179 Output
+        %183 = OpVariable %179 Output
+        %186 = OpVariable %179 Output
+        %189 = OpTypePointer Output %11
+        %190 = OpVariable %189 Output
+        %193 = OpVariable %189 Output
+        %196 = OpVariable %179 Output
+        %464 = OpTypePointer Input %6
+          %4 = OpFunction %2 None %3
+          %5 = OpLabel
+        %148 = OpLoad %7 %147
+        %151 = OpLoad %7 %150
+        %155 = OpLoad %9 %154
+        %159 = OpLoad %11 %158
+        %162 = OpLoad %11 %161
+        %360 = OpCompositeExtract %6 %151 0
+        %361 = OpCompositeExtract %6 %151 1
+        %362 = OpCompositeExtract %6 %151 2
+        %363 = OpCompositeConstruct %9 %360 %361 %362 %27
+        %364 = OpAccessChain %58 %56 %57 %57
+        %365 = OpLoad %50 %364
+        %366 = OpVectorTimesMatrix %9 %363 %365
+        %368 = OpCompositeExtract %6 %148 0
+        %369 = OpCompositeExtract %6 %148 1
+        %370 = OpCompositeExtract %6 %148 2
+        %371 = OpCompositeConstruct %9 %368 %369 %370 %26
+        %374 = OpVectorTimesMatrix %9 %371 %365
+        %375 = OpVectorShuffle %7 %374 %374 0 1 2
+        %376 = OpExtInst %7 %1 Normalize %375
+        %379 = OpCompositeExtract %6 %155 0
+        %380 = OpCompositeExtract %6 %155 1
+        %381 = OpCompositeExtract %6 %155 2
+        %382 = OpCompositeConstruct %9 %379 %380 %381 %26
+        %385 = OpVectorTimesMatrix %9 %382 %365
+        %386 = OpVectorShuffle %7 %385 %385 0 1 2
+        %389 = OpDot %6 %386 %386
+        %391 = OpFOrdGreaterThan %89 %389 %93
+        %395 = OpExtInst %6 %1 InverseSqrt %389
+        %396 = OpVectorTimesScalar %7 %386 %395
+        %397 = OpCompositeConstruct %101 %391 %391 %391
+        %398 = OpSelect %7 %397 %396 %42
+        %402 = OpExtInst %7 %1 Cross %376 %398
+        %403 = OpAccessChain %464 %154 %109
+        %404 = OpLoad %6 %403
+        %405 = OpVectorTimesScalar %7 %402 %404
+        %407 = OpSelect %7 %397 %405 %42
+        %409 = OpAccessChain %58 %56 %25
+        %410 = OpLoad %50 %409
+        %411 = OpVectorTimesMatrix %9 %366 %410
+        %414 = OpVectorShuffle %7 %366 %366 0 1 2
+        %425 = OpAccessChain %132 %56 %30
+        %426 = OpLoad %9 %425
+        %427 = OpVectorShuffle %11 %426 %426 0 1
+        %428 = OpFMul %11 %162 %427
+        %431 = OpVectorShuffle %11 %426 %426 2 3
+        %432 = OpFAdd %11 %428 %431
+               OpStore %176 %411
+               OpStore %180 %407
+               OpStore %183 %376
+               OpStore %186 %398
+               OpStore %190 %159
+               OpStore %193 %432
+               OpStore %196 %414
+               OpReturn
+               OpFunctionEnd

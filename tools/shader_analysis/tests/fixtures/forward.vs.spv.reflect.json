@@ -1,0 +1,109 @@
+{
+    "entryPoints" : [
+        {
+            "name" : "main",
+            "mode" : "vert"
+        }
+    ],
+    "types" : {
+        "_54" : {
+            "name" : "UniformBlock",
+            "members" : [
+                {
+                    "name" : "u_model",
+                    "type" : "mat4",
+                    "array" : [
+                        1
+                    ],
+                    "array_size_is_literal" : [
+                        true
+                    ],
+                    "offset" : 0,
+                    "array_stride" : 64,
+                    "matrix_stride" : 16,
+                    "row_major" : true
+                },
+                {
+                    "name" : "u_global_viewProj",
+                    "type" : "mat4",
+                    "offset" : 64,
+                    "matrix_stride" : 16,
+                    "row_major" : true
+                },
+                {
+                    "name" : "u_object_lightmapST",
+                    "type" : "vec4",
+                    "offset" : 128
+                }
+            ]
+        }
+    },
+    "inputs" : [
+        {
+            "type" : "vec3",
+            "name" : "a_normal",
+            "location" : 0
+        },
+        {
+            "type" : "vec3",
+            "name" : "a_position",
+            "location" : 1
+        },
+        {
+            "type" : "vec4",
+            "name" : "a_tangent",
+            "location" : 2
+        },
+        {
+            "type" : "vec2",
+            "name" : "a_texcoord0",
+            "location" : 3
+        },
+        {
+            "type" : "vec2",
+            "name" : "a_texcoord1",
+            "location" : 4
+        }
+    ],
+    "outputs" : [
+        {
+            "type" : "vec3",
+            "name" : "@entryPointOutput.v_bitangent",
+            "location" : 0
+        },
+        {
+            "type" : "vec3",
+            "name" : "@entryPointOutput.v_normal",
+            "location" : 1
+        },
+        {
+            "type" : "vec3",
+            "name" : "@entryPointOutput.v_tangent",
+            "location" : 2
+        },
+        {
+            "type" : "vec2",
+            "name" : "@entryPointOutput.v_texcoord0",
+            "location" : 3
+        },
+        {
+            "type" : "vec2",
+            "name" : "@entryPointOutput.v_texcoord1",
+            "location" : 4
+        },
+        {
+            "type" : "vec3",
+            "name" : "@entryPointOutput.v_worldPos",
+            "location" : 5
+        }
+    ],
+    "ubos" : [
+        {
+            "type" : "_54",
+            "name" : "UniformBlock",
+            "block_size" : 144,
+            "set" : 0,
+            "binding" : 0
+        }
+    ]
+}

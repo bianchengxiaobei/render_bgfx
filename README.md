@@ -36,6 +36,7 @@
   - Debug UI、light cluster / shadow atlas / GBuffer / depth / motion vector 调试视图
   - `--screenshot`、`--render-test`、`--gfx-test`、`--asset-test`、`--cluster-stats-readback`
   - IDL 生成 uniform block，shader variant 构建脚本
+  - Shader Analysis：DXBC/SPIR-V 报告分析、diff/CSV/reference 与本地 Web Viewer（[`tools/shader_analysis/README.md`](tools/shader_analysis/README.md)）
 
 ## 当前状态
 

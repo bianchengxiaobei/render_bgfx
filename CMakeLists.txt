@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(HBG_BUILD_TESTS "Build unit tests" ON)
 option(HBG_BUILD_SHADER_TOOLS "Build bgfx shaderc tools" ON)
 option(HBG_BUILD_DAWNBAKE "Build the Dawn GI protocol tool" ON)
+option(HBG_BUILD_SHADER_ANALYSIS "Build the shader analysis tool" ON)
 option(HBG_BUILD_DAWN_GRPC "Build the optional Dawn Agent gRPC client" OFF)
 option(HBG_BUILD_VFX "Build the standalone VFX runtime library" ON)
 option(HBG_ENABLE_DRACO "Enable KHR_draco_mesh_compression decoding" ON)
@@ -271,6 +272,10 @@ set_target_properties(hbg PROPERTIES
 
 if(HBG_BUILD_DAWNBAKE)
     add_subdirectory(tools/dawnbake)
+endif()
+
+if(HBG_BUILD_SHADER_ANALYSIS)
+    add_subdirectory(tools/shader_analysis)
 endif()
 
 if(HBG_BUILD_TESTS)

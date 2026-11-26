@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "KeywordBool",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [
+    {
+      "name": "Mode",
+      "refName": "_MODE",
+      "type": "boolean",
+      "definition": "shaderfeature",
+      "scope": "local",
+      "default": false
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Keyword",
+      "typeVersion": 1,
+      "settings": {
+        "keyword": "_MODE"
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 0.2
+      },
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 0.8
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 3,
+        "slot": 0
+      },
+      "to": {
+        "node": 1,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 0
+      },
+      "to": {
+        "node": 1,
+        "slot": 2
+      }
+    },
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

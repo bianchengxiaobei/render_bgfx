@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "VirtualTextureFallback",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Procedural Virtual Texture",
+      "typeVersion": 1,
+      "settings": {
+        "vtName": "_VT",
+        "layers": 2,
+        "shaderDeclaration": "per material"
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Sample Virtual Texture",
+      "typeVersion": 1,
+      "settings": {
+        "addressMode": "clamp",
+        "lodCalculation": "automatic",
+        "sampleQuality": "high",
+        "enableGlobalMipBias": true,
+        "noFeedback": false
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 101,
+      "type": "BlockAlpha",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 11
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 12
+      },
+      "to": {
+        "node": 101,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

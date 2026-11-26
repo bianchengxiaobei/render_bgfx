@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 0,
+  "name": "OldGraph",
+  "nodes": [
+    { "id": 1, "type": "Constant" }
+  ]
+}

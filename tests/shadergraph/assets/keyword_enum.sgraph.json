@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "KeywordEnum",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [
+    {
+      "name": "Mode",
+      "refName": "_MODE",
+      "type": "enum",
+      "definition": "shaderfeature",
+      "scope": "local",
+      "default": 1,
+      "entries": [
+        {
+          "id": 1,
+          "displayName": "A",
+          "referenceName": "MODE_A"
+        },
+        {
+          "id": 2,
+          "displayName": "B",
+          "referenceName": "MODE_B"
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Keyword",
+      "typeVersion": 1,
+      "settings": {
+        "keyword": "_MODE"
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "TextureDefaults",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [
+    {
+      "name": "White",
+      "refName": "_White",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "white"
+    },
+    {
+      "name": "Black",
+      "refName": "_Black",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "black"
+    },
+    {
+      "name": "Grey",
+      "refName": "_Grey",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "grey"
+    },
+    {
+      "name": "Bump",
+      "refName": "_Bump",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "bump"
+    },
+    {
+      "name": "Red",
+      "refName": "_Red",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "red"
+    }
+  ],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Property",
+      "typeVersion": 1,
+      "settings": {
+        "property": "_Red"
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Sample Texture 2D",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "UV",
+      "typeVersion": 1,
+      "settings": {
+        "channel": 0
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 2
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 0
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "VertexDisplace",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Vector 3",
+      "typeVersion": 1,
+      "settings": {
+        "value": [
+          0.0,
+          0.0,
+          0.1
+        ]
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "BlockPosition",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

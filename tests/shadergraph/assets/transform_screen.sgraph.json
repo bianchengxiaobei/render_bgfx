@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "TransformScreen",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Transform",
+      "typeVersion": 1,
+      "settings": {
+        "from": "screen",
+        "to": "world",
+        "type": "position",
+        "normalize": true
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Transform",
+      "typeVersion": 1,
+      "settings": {
+        "from": "world",
+        "to": "object",
+        "type": "position",
+        "normalize": true
+      },
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Transform",
+      "typeVersion": 1,
+      "settings": {
+        "from": "object",
+        "to": "screen",
+        "type": "position",
+        "normalize": true
+      },
+      "slots": {}
+    },
+    {
+      "id": 4,
+      "type": "BlockPosition",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 1
+      },
+      "to": {
+        "node": 2,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 1
+      },
+      "to": {
+        "node": 3,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 1
+      },
+      "to": {
+        "node": 4,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

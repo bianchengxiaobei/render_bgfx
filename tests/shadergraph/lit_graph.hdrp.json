@@ -1,0 +1,19 @@
+{
+  "materials": {
+    "GraphMat": {
+      "shader": "assets/smoke_lit.sgb",
+      "propertyOverrides": {
+        "_Tint": [
+          0.2,
+          0.8,
+          0.4,
+          1.0
+        ]
+      },
+      "textureOverrides": {
+        "_MainTex": "grid.bmp"
+      },
+      "materialType": "lit"
+    }
+  }
+}

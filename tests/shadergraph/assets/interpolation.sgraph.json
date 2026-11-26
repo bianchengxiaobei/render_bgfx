@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "Interpolation",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 0.0
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 1.0
+      },
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 0.25
+      },
+      "slots": {}
+    },
+    {
+      "id": 4,
+      "type": "Lerp",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 4,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 0
+      },
+      "to": {
+        "node": 4,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 0
+      },
+      "to": {
+        "node": 4,
+        "slot": 2
+      }
+    },
+    {
+      "from": {
+        "node": 4,
+        "slot": 3
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "SceneAccess",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {"id": 1, "type": "Scene Color", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 2, "type": "Scene Depth", "typeVersion": 1, "settings": {"mode": "raw"}, "slots": {}},
+    {"id": 3, "type": "Scene Depth Difference", "typeVersion": 1, "settings": {"mode": "eye"}, "slots": {}},
+    {"id": 4, "type": "Fog", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 100, "type": "BlockBaseColor", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 101, "type": "BlockMetallic", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 102, "type": "BlockSmoothness", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 103, "type": "BlockEmission", "typeVersion": 1, "settings": {}, "slots": {}},
+    {"id": 104, "type": "BlockAlpha", "typeVersion": 1, "settings": {}, "slots": {}}
+  ],
+  "edges": [
+    {"from": {"node": 1, "slot": 1}, "to": {"node": 100, "slot": 0}},
+    {"from": {"node": 2, "slot": 1}, "to": {"node": 101, "slot": 0}},
+    {"from": {"node": 3, "slot": 0}, "to": {"node": 102, "slot": 0}},
+    {"from": {"node": 4, "slot": 0}, "to": {"node": 103, "slot": 0}},
+    {"from": {"node": 4, "slot": 1}, "to": {"node": 104, "slot": 0}}
+  ],
+  "groups": [],
+  "notes": []
+}

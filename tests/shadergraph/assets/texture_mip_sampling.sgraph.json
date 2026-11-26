@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "TextureMipSampling",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [
+    {
+      "name": "Main Tex",
+      "refName": "_MainTex",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "defaultType": "white",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      }
+    }
+  ],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Property",
+      "typeVersion": 1,
+      "settings": {
+        "property": "_MainTex"
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Sample Texture 2D",
+      "typeVersion": 1,
+      "settings": {
+        "mipSamplingMode": "Standard"
+      },
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Sample Texture 2D",
+      "typeVersion": 1,
+      "settings": {
+        "mipSamplingMode": "LOD"
+      },
+      "slots": {
+        "9": {
+          "value": 1.0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "Sample Texture 2D",
+      "typeVersion": 1,
+      "settings": {
+        "mipSamplingMode": "Bias"
+      },
+      "slots": {
+        "8": {
+          "value": 0.5
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "Sample Texture 2D",
+      "typeVersion": 1,
+      "settings": {
+        "mipSamplingMode": "Gradient"
+      },
+      "slots": {
+        "10": {
+          "value": [0.01, 0.0]
+        },
+        "11": {
+          "value": [0.0, 0.01]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "Add",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 7,
+      "type": "Add",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 8,
+      "type": "Add",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 3,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 4,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 5,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 0
+      },
+      "to": {
+        "node": 6,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 0
+      },
+      "to": {
+        "node": 6,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 4,
+        "slot": 0
+      },
+      "to": {
+        "node": 7,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 5,
+        "slot": 0
+      },
+      "to": {
+        "node": 7,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 6,
+        "slot": 2
+      },
+      "to": {
+        "node": 8,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 7,
+        "slot": 2
+      },
+      "to": {
+        "node": 8,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 8,
+        "slot": 2
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

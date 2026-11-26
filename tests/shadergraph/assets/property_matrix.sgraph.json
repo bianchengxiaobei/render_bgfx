@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "PropertyMatrix",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [
+    {
+      "name": "Matrix",
+      "refName": "_Matrix",
+      "type": "matrix4",
+      "default": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Property",
+      "typeVersion": 1,
+      "settings": {
+        "property": "_Matrix"
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Matrix Split",
+      "typeVersion": 1,
+      "settings": {
+        "axis": "row"
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 1
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

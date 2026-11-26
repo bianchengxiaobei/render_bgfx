@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "MathMore",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 4.0
+      },
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Square Root",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Power",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 4,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 2.0
+      },
+      "slots": {}
+    },
+    {
+      "id": 5,
+      "type": "Modulo",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 6,
+      "type": "Float",
+      "typeVersion": 1,
+      "settings": {
+        "value": 1.5
+      },
+      "slots": {}
+    },
+    {
+      "id": 7,
+      "type": "Normalize",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 101,
+      "type": "BlockMetallic",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 1
+      },
+      "to": {
+        "node": 3,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 4,
+        "slot": 0
+      },
+      "to": {
+        "node": 3,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 2
+      },
+      "to": {
+        "node": 5,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 6,
+        "slot": 0
+      },
+      "to": {
+        "node": 5,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 5,
+        "slot": 2
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 1
+      },
+      "to": {
+        "node": 7,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 7,
+        "slot": 1
+      },
+      "to": {
+        "node": 101,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

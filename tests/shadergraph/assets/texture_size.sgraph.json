@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "kind": "graph",
+  "name": "TextureSize",
+  "generatorVersion": "sg-2.0.0",
+  "target": {
+    "id": "lit",
+    "subTarget": "lit",
+    "settings": {
+      "surfaceType": "opaque",
+      "alphaClip": false,
+      "doubleSided": false,
+      "renderQueue": -1,
+      "precision": "inherit",
+      "normalSpace": "tangent"
+    }
+  },
+  "properties": [
+    {
+      "name": "Main Tex",
+      "refName": "_MainTex",
+      "type": "texture2d",
+      "default": "textures/grid.png",
+      "sampler": {
+        "filter": "linear",
+        "wrap": "repeat"
+      },
+      "defaultType": "white"
+    }
+  ],
+  "keywords": [],
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Texture Size",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 2,
+      "type": "Add",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    },
+    {
+      "id": 3,
+      "type": "Property",
+      "typeVersion": 1,
+      "settings": {
+        "property": "_MainTex"
+      },
+      "slots": {}
+    },
+    {
+      "id": 100,
+      "type": "BlockBaseColor",
+      "typeVersion": 1,
+      "settings": {},
+      "slots": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": 1,
+        "slot": 0
+      },
+      "to": {
+        "node": 2,
+        "slot": 0
+      }
+    },
+    {
+      "from": {
+        "node": 1,
+        "slot": 2
+      },
+      "to": {
+        "node": 2,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 3,
+        "slot": 0
+      },
+      "to": {
+        "node": 1,
+        "slot": 1
+      }
+    },
+    {
+      "from": {
+        "node": 2,
+        "slot": 2
+      },
+      "to": {
+        "node": 100,
+        "slot": 0
+      }
+    }
+  ],
+  "groups": [],
+  "notes": []
+}

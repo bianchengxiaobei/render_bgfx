@@ -51,6 +51,41 @@ class DebugUI {
         m_lightListCapacityClamped = capacityClamped;
     }
 
+    void setGpuSkinningStatus(bool requested, bool active, uint32_t meshes, uint32_t vertices,
+                              uint32_t dispatches) {
+        m_gpuSkinningRequested = requested;
+        m_gpuSkinningActive = active;
+        m_gpuSkinningMeshes = meshes;
+        m_gpuSkinningVertices = vertices;
+        m_gpuSkinningDispatches = dispatches;
+    }
+
+    void setDepthPyramidStatus(bool requested, bool active, uint32_t mips) {
+        m_depthPyramidComputeRequested = requested;
+        m_depthPyramidComputeActive = active;
+        m_depthPyramidMips = mips;
+    }
+
+    void setGpuDrivenStatus(bool requested, bool active, bool hiZ, bool forward, bool gbuffer, bool transparent,
+                            bool transparentSorted, bool prepass, bool bindless, uint32_t items,
+                            uint32_t prepassItems, uint32_t batches, uint32_t cullingPasses,
+                            bool indirectCountSupported) {
+        m_gpuDrivenRequested = requested;
+        m_gpuDrivenActive = active;
+        m_gpuDrivenHiZActive = hiZ;
+        m_gpuDrivenForwardActive = forward;
+        m_gpuDrivenGbufferActive = gbuffer;
+        m_gpuDrivenTransparentActive = transparent;
+        m_gpuDrivenTransparentSorted = transparentSorted;
+        m_gpuDrivenPrepassActive = prepass;
+        m_gpuDrivenBindlessActive = bindless;
+        m_gpuDrivenItems = items;
+        m_gpuDrivenPrepassItems = prepassItems;
+        m_gpuDrivenBatches = batches;
+        m_gpuDrivenCullingPasses = cullingPasses;
+        m_gpuDrivenIndirectCountSupported = indirectCountSupported;
+    }
+
     void setClusterStatsStatus(bool pending, bool valid, bool gpu, uint32_t clusters, uint32_t activeClusters,
                                uint32_t overflowClusters, uint32_t overflowLights, uint32_t maxOverflow,
                                uint32_t maxLights) {
@@ -96,6 +131,28 @@ class DebugUI {
     bool m_gpuLightListIndirect = false;
     bool m_gpuShadowCulling = false;
     bool m_gpuShadowIndirect = false;
+    bool m_gpuSkinningRequested = false;
+    bool m_gpuSkinningActive = false;
+    uint32_t m_gpuSkinningMeshes = 0;
+    uint32_t m_gpuSkinningVertices = 0;
+    uint32_t m_gpuSkinningDispatches = 0;
+    bool m_depthPyramidComputeRequested = false;
+    bool m_depthPyramidComputeActive = false;
+    uint32_t m_depthPyramidMips = 0;
+    bool m_gpuDrivenRequested = false;
+    bool m_gpuDrivenActive = false;
+    bool m_gpuDrivenHiZActive = false;
+    bool m_gpuDrivenForwardActive = false;
+    bool m_gpuDrivenGbufferActive = false;
+    bool m_gpuDrivenTransparentActive = false;
+    bool m_gpuDrivenTransparentSorted = false;
+    bool m_gpuDrivenPrepassActive = false;
+    bool m_gpuDrivenBindlessActive = false;
+    uint32_t m_gpuDrivenItems = 0;
+    uint32_t m_gpuDrivenPrepassItems = 0;
+    uint32_t m_gpuDrivenBatches = 0;
+    uint32_t m_gpuDrivenCullingPasses = 0;
+    bool m_gpuDrivenIndirectCountSupported = false;
     bool m_asyncRequested = false;
     bool m_asyncActive = false;
     uint32_t m_gpuLightListPasses = 0;

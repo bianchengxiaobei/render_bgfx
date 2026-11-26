@@ -149,6 +149,7 @@ void Encoder::setVertexBuffer(uint8_t stream, BufferHandle buffer) {
         bgfx::setVertexBuffer(stream, bgfx::VertexBufferHandle{resource->nativeIndex()});
         break;
     case BufferType::DynamicVertex:
+    case BufferType::StorageVertex:
         bgfx::setVertexBuffer(stream, bgfx::DynamicVertexBufferHandle{resource->nativeIndex()});
         break;
     default:
@@ -169,6 +170,7 @@ void Encoder::setVertexBuffer(uint8_t stream, BufferHandle buffer, uint32_t star
         bgfx::setVertexBuffer(stream, bgfx::VertexBufferHandle{resource->nativeIndex()}, startVertex, numVertices);
         break;
     case BufferType::DynamicVertex:
+    case BufferType::StorageVertex:
         bgfx::setVertexBuffer(stream, bgfx::DynamicVertexBufferHandle{resource->nativeIndex()}, startVertex,
                               numVertices);
         break;
@@ -255,6 +257,9 @@ void Encoder::setStorageBuffer(uint8_t stage, BufferHandle buffer, bgfx::Access:
     }
 
     switch (resource->type()) {
+    case BufferType::Index:
+        bgfx::setBuffer(stage, bgfx::IndexBufferHandle{resource->nativeIndex()}, access, offset, size);
+        break;
     case BufferType::Storage:
         bgfx::setBuffer(stage, bgfx::DynamicIndexBufferHandle{resource->nativeIndex()}, access, offset, size);
         break;
@@ -294,6 +299,29 @@ void Encoder::submitIndirect(bgfx::ViewId view, ProgramHandle program, BufferHan
     }
     bgfx::submit(view, programResource->native(), bgfx::IndirectBufferHandle{indirectResource->nativeIndex()}, start,
                  num, depth, flags);
+}
+
+void Encoder::submitIndirectCount(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start,
+                                  BufferHandle count, uint32_t countIndex, uint32_t maxDraws, uint32_t depth,
+                                  uint8_t flags) {
+    const Program* programResource = m_resources.program(program);
+    const Buffer* indirectResource = m_resources.buffer(indirect);
+    const Buffer* countResource = m_resources.buffer(count);
+    if (programResource == nullptr || !programResource->valid()) {
+        HBG_LOGE("Encoder::submitIndirectCount received an invalid program");
+        return;
+    }
+    if (indirectResource == nullptr || !indirectResource->valid() ||
+        indirectResource->type() != BufferType::Indirect) {
+        HBG_LOGE("Encoder::submitIndirectCount received an invalid indirect buffer");
+        return;
+    }
+    if (countResource == nullptr || !countResource->valid() || countResource->type() != BufferType::Index) {
+        HBG_LOGE("Encoder::submitIndirectCount received an invalid count buffer");
+        return;
+    }
+    bgfx::submit(view, programResource->native(), bgfx::IndirectBufferHandle{indirectResource->nativeIndex()}, start,
+                 bgfx::IndexBufferHandle{countResource->nativeIndex()}, countIndex, maxDraws, depth, flags);
 }
 
 void Encoder::dispatch(bgfx::ViewId view, ProgramHandle program, uint32_t numX, uint32_t numY, uint32_t numZ,

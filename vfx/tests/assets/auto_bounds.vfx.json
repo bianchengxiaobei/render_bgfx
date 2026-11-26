@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "AutoBounds",
+  "systems": [
+    {
+      "name": "AutoBounds",
+      "capacity": 64,
+      "space": "local",
+      "bounds": {"mode": "automatic", "padding": [0.25, 0.5, 0.75]},
+      "spawner": {
+        "rate": 0,
+        "bursts": [{"time": 0.0, "count": 64}]
+      },
+      "init": {
+        "blocks": [
+          {"type": "set_position_box", "center": [0, 0, 0], "size": [2, 0, 0]},
+          {"type": "set_velocity_direction", "direction": [0, 0, 0], "speed": 0.0},
+          {"type": "set_color", "color": [1, 1, 1]},
+          {"type": "set_alpha", "alpha": 1.0},
+          {"type": "set_size", "size": 0.2},
+          {"type": "set_scale", "scale": [1.0, 1.0, 4.0]},
+          {"type": "set_lifetime", "lifetime": 5.0}
+        ]
+      },
+      "update": {
+        "blocks": [
+          {"type": "age"},
+          {"type": "reap"}
+        ]
+      },
+      "outputs": [
+        {"type": "quad", "lit": false, "blend": "alpha", "texture": ""}
+      ]
+    }
+  ]
+}

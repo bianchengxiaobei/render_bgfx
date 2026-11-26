@@ -7,5 +7,5 @@ SAMPLER2D(s_depthSource, 0);
 void main()
 {
     const float depth = texture2D(s_depthSource, v_texcoord0).r;
-    gl_FragColor = vec4(depth, depth, 0.0, 1.0);
+    gl_FragColor = vec4(depth, depth, depth, 1.0);
 }

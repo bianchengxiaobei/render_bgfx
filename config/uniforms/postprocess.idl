@@ -12,8 +12,8 @@ block PostProcess {
     vec4 bloomParams;        # effective intensity, threshold linear, enabled, scatter
     vec4 bloomTint;          # normalized bloom tint rgb, unused
     vec4 bloomTexelSize;     # source width, source height, 1/width, 1/height
-    vec4 taaParams;          # history valid, base history weight, motion rejection, unused
-    vec4 taaParams2;         # quality, sharpening, history frame, jitter scale
+    vec4 taaParams;          # history valid, base history weight, normal motion/TAAU velocity rejection, jitter x
+    vec4 taaParams2;         # quality, sharpening, history frame, jitter y (render pixels)
     vec4 taaHistorySize;     # history width, history height, 1/width, 1/height
     vec4 dofParams;          # near focus start, near focus end, far focus start, far focus end
     vec4 dofParams2;         # near max blur pixels, far max blur pixels, CoC resolution scale, high quality

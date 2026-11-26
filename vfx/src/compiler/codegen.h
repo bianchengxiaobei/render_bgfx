@@ -29,6 +29,9 @@ enum class KernelTask : std::uint8_t {
     EventPrefix = 11,
     EventReset = 12,
     EventCopy = 13,
+    BoundsInit = 14,
+    Bounds = 15,
+    SortReset = 16,
 };
 
 enum class BufferKind : std::uint8_t {
@@ -71,6 +74,7 @@ struct KernelProgram {
     KernelTask task = KernelTask::Spawner;
     std::uint32_t program = 0;
     std::array<std::uint32_t, 3> groups{1, 1, 1};
+    SortMode sortMode = SortMode::None;
     ShaderSource shader;
 };
 
@@ -82,6 +86,9 @@ struct OutputProgram {
     BlendMode blend = BlendMode::Alpha;
     bool lit = false;
     bool softParticles = false;
+    bool castShadows = false;
+    bool generateMotionVector = true;
+    std::int32_t sortPriority = 0;
     float softDistance = 0.1f;
     float metallic = 0.0f;
     float roughness = 0.5f;

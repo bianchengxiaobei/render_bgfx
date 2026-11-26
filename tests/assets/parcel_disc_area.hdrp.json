@@ -1,0 +1,15 @@
+{
+  "lights": [
+    {
+      "name": "Area",
+      "type": "area",
+      "shape": "disc",
+      "width": 2.0,
+      "castShadows": true,
+      "falloff": "bakery-physical",
+      "range": 5.0,
+      "barnDoorAngle": 45.0,
+      "barnDoorLength": 3.0
+    }
+  ]
+}

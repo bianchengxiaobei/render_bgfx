@@ -1,0 +1,6 @@
+﻿{
+  "objects": [
+    {"name": "GI", "contributeGI": true},
+    {"name": "Shadow", "contributeGI": false}
+  ]
+}

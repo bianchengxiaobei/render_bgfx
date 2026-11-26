@@ -22,6 +22,7 @@ struct EffectDesc {
     bool playOnAwake = true;
     float playRate = 1.0f;
     std::uint32_t randomSeed = 0;
+    std::uint32_t instanceBatchLimit = 0;
     bool hasBoundsOverride = false;
     Bounds boundsOverride{};
 };
@@ -36,6 +37,9 @@ class Effect {
     virtual void reset() = 0;
     virtual void advanceOneFrame() = 0;
     virtual void setTransform(const Mat4& world) = 0;
+    virtual void setInstanceTransforms(std::span<const Mat4> worlds) = 0;
+    virtual void setCulled(bool culled) = 0;
+    virtual void setInstanceCulled(std::size_t index, bool culled) = 0;
     virtual void setPlayRate(float rate) = 0;
     virtual bool isAlive() const = 0;
 
@@ -52,7 +56,14 @@ class Effect {
     virtual void sendEvent(std::string_view name, std::span<const EventAttribute> attributes = {}) = 0;
 
     virtual Bounds bounds() const = 0;
+    virtual Bounds visibleBounds() const = 0;
+    virtual Bounds instanceBounds(std::size_t index) const = 0;
+    virtual std::size_t instanceCount() const = 0;
+    virtual bool supportsEffectInstancing() const = 0;
     virtual bool isCulled() const = 0;
+    virtual bool isInstanceCulled(std::size_t index) const = 0;
+    virtual std::uint32_t outputBatchCount() const = 0;
+    virtual std::uint32_t outputBatchSize() const = 0;
 };
 
 struct Diagnostics {
@@ -63,6 +74,7 @@ struct Diagnostics {
     std::uint32_t dispatches = 0;
     std::uint32_t sortPasses = 0;
     std::uint32_t eventCount = 0;
+    std::uint32_t shadowDraws = 0;
     float updateMs = 0.0f;
     float simulationMs = 0.0f;
     float outputMs = 0.0f;
@@ -88,10 +100,17 @@ class Runtime {
 
     void update(float deltaSeconds);
     void encodeSimulation(CommandSink& sink, const FrameContext& frame);
+    void beginOutputFrame();
     void encodeOutput(CommandSink& sink, const FrameContext& frame);
+    void encodeOutputEffect(CommandSink& sink, const FrameContext& frame, Effect& effect);
+    void encodeOutputEffectBatch(CommandSink& sink, const FrameContext& frame, Effect& effect,
+                                 std::uint32_t batchIndex);
+    void encodeMotionVectors(CommandSink& sink, const FrameContext& frame);
+    void encodeShadow(CommandSink& sink, const Mat4& shadowViewProjection);
 
     void setErrorCallback(std::function<void(std::string_view)> callback);
     bool hasLitOutputs() const;
+    bool hasShadowOutputs() const;
     Diagnostics diagnostics() const;
 
   private:
@@ -99,6 +118,8 @@ class Runtime {
     void reportError(std::string_view message);
     void refreshDiagnostics();
     void pruneAssets();
+    ProgramHandle motionVectorProgram();
+    ProgramHandle shadowProgram();
 
     Device& m_device;
     ShadingProvider* m_shading = nullptr;
@@ -111,6 +132,10 @@ class Runtime {
     float m_simulationMs = 0.0f;
     float m_outputMs = 0.0f;
     float m_encodeMs = 0.0f;
+    ProgramHandle m_motionVectorProgram{};
+    bool m_motionVectorProgramResolved = false;
+    ProgramHandle m_shadowProgram{};
+    bool m_shadowProgramResolved = false;
 };
 
 } // namespace vfx

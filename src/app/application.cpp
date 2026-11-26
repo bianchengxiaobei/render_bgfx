@@ -3,6 +3,7 @@
 #include "app/asset_test.h"
 #include "app/gfx_test.h"
 #include "app/render_test.h"
+#include "app/sg_spike.h"
 #include "render/vfx/vfx_reference.h"
 #include "render/vfx/vfx_spike.h"
 #include "asset/animation.h"
@@ -16,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #ifndef HBG_VFX_SHADERC_DEFAULT
 #define HBG_VFX_SHADERC_DEFAULT ""
@@ -91,6 +93,39 @@ int Application::run(const AppOptions& options) {
         return 1;
     }
 
+    if (!options.sgEditorPath.empty()) {
+        SgEditorHost::Options hostOptions;
+        hostOptions.documentPath = options.sgEditorPath;
+        hostOptions.root = options.sgRoot.empty() ? std::filesystem::current_path() : options.sgRoot;
+        hostOptions.webRoot = options.sgWebRoot;
+        hostOptions.previewBackend =
+            bgfx::getRendererType() == bgfx::RendererType::Vulkan ? "spirv" : "dxbc";
+        hostOptions.port = static_cast<std::uint16_t>(std::clamp(options.sgPort, 1, 65535));
+        hostOptions.token = options.sgToken;
+        auto host = std::make_unique<SgEditorHost>();
+        std::string hostError;
+        if (!host->start(hostOptions, hostError)) {
+            HBG_LOGE("SG editor host failed to start: {}", hostError);
+            shutdown();
+            return 1;
+        }
+        m_sgEditor = std::move(host);
+        auto previewRenderer = std::make_unique<SgGraphPreviewRenderer>();
+        std::string previewError;
+        if (previewRenderer->init(m_device.resources(), &previewError)) {
+            SgGraphPreviewRenderer* renderer = previewRenderer.get();
+            m_sgEditor->setPreviewCallback(
+                [renderer](const std::vector<std::uint8_t>& sgb, const SgPreviewOptions& preview,
+                           std::vector<std::uint8_t>& jpeg, std::string& error) {
+                    return renderer->render(sgb, preview, jpeg, error);
+                });
+            m_sgPreview = std::move(previewRenderer);
+        } else {
+            HBG_LOGW("SG preview renderer initialization failed: {}", previewError);
+        }
+        HBG_LOGI("SG editor host ready on port {}", m_sgEditor->port());
+    }
+
     if (!options.assetTestPath.empty()) {
         const bool ok = runAssetTest(m_device.resources(), options.assetTestPath);
         shutdown();
@@ -107,6 +142,21 @@ int Application::run(const AppOptions& options) {
     if (options.vfxSpike) {
         const bool ok = runVfxSpike(m_device.resources(), static_cast<uint16_t>(m_window.width()),
                                     static_cast<uint16_t>(m_window.height()));
+        shutdown();
+        return ok ? 0 : 1;
+    }
+
+    if (options.sgSpike || options.sgPreview) {
+        SgSpikeOptions sgOptions;
+        sgOptions.assetPath = options.sgAssetPath;
+        sgOptions.screenshotPath = options.screenshotPath;
+        sgOptions.token = options.sgToken;
+        sgOptions.port = static_cast<uint16_t>(std::clamp(options.sgPort, 1, 65535));
+        sgOptions.frames = static_cast<std::uint32_t>(std::max(options.frames, 0));
+        sgOptions.framesSpecified = options.framesSpecified;
+        sgOptions.preview = options.sgPreview;
+        const bool ok = runSgSpike(m_device.resources(), static_cast<std::uint16_t>(512),
+                                   static_cast<std::uint16_t>(512), sgOptions);
         shutdown();
         return ok ? 0 : 1;
     }
@@ -148,8 +198,8 @@ int Application::run(const AppOptions& options) {
             !options.disableLightCluster, options.cameraOrbit,
             !options.disableShadows, options.clusterStatsReadback, m_pipelineSettings, m_frameSettings,
             m_shadowSettings, m_ssaoSettings, m_ssrSettings, m_ssgiSettings, m_postProcessProfile,
-            m_volumetricFogSettings, options.renderScale, options.skyPath, options.skyIntensity, options.skyRotation,
-            options.resizeTest);
+            m_volumetricFogSettings, options.renderScale, options.dynamicResolutionSettings, options.skyPath,
+            options.skyIntensity, options.skyRotation, options.resizeTest);
         shutdown();
         return ok ? 0 : 1;
     }
@@ -174,11 +224,21 @@ int Application::run(const AppOptions& options) {
         return 1;
     }
     if (m_forwardRenderer.valid()) {
-        if (!options.skyPath.empty() &&
-            !m_forwardRenderer.setSky(options.skyPath, options.skyIntensity, options.skyRotation)) {
-            HBG_LOGW("sky load failed; continuing without an environment");
+        if (!options.skyPath.empty()) {
+            if (!m_forwardRenderer.setSky(options.skyPath, options.skyIntensity, options.skyRotation)) {
+                HBG_LOGW("sky load failed; continuing without an environment");
+            }
+        } else if (m_scene != nullptr && m_scene->sky.enabled &&
+                   m_scene->sky.mode == render::SceneSkyMode::Skybox && !m_scene->sky.texture.empty()) {
+            if (!m_forwardRenderer.setSky(m_scene->sky.texture.string(), m_scene->sky.intensity,
+                                          m_scene->sky.rotationDegrees)) {
+                HBG_LOGW("sidecar skybox load failed; continuing without an environment");
+            }
         }
         m_forwardRenderer.setRenderScale(options.renderScale);
+        m_dynamicResolution.configure(options.dynamicResolutionSettings);
+        m_dynamicResolution.reset(options.renderScale);
+        m_dynamicResolutionScale = options.renderScale;
         m_forwardRenderer.setLightClusterEnabled(!options.disableLightCluster);
         m_forwardRenderer.setPostProcessProfile(m_postProcessProfile);
         m_forwardRenderer.setVolumetricFogSettings(m_volumetricFogSettings);
@@ -197,6 +257,7 @@ int Application::run(const AppOptions& options) {
         settings.wireframe = options.debugWireframe;
         settings.shadows = !options.disableShadows;
         settings.gpuLightList = m_pipelineSettings.supportGpuLightList;
+        settings.gpuDrivenGeometry = m_pipelineSettings.supportGpuDrivenGeometry;
         settings.renderScale = options.renderScale;
         settings.postProcess = m_postProcessProfile.settings;
     } else {
@@ -330,6 +391,19 @@ int Application::run(const AppOptions& options) {
     }
     WindowInput input;
     while (m_window.pollEvents()) {
+        if (m_sgEditor) {
+            m_sgEditor->poll();
+        }
+        if (m_window.shouldClose()) {
+            if (m_vfxEditor.valid() && m_vfxEditor.dirty() && m_debugUi.valid() &&
+                !m_vfxEditor.closeApproved()) {
+                m_window.setShouldClose(false);
+                m_vfxEditor.requestClose();
+            } else {
+                break;
+            }
+        }
+
         if (m_window.takeResize()) {
             const int width = m_window.width();
             const int height = m_window.height();
@@ -355,6 +429,13 @@ int Application::run(const AppOptions& options) {
         frame(input, deltaSeconds, finalFrame, options.screenshotPath);
         ++frameIndex;
 
+        if (const std::optional<float> nextScale = m_dynamicResolution.update(deltaSeconds)) {
+            m_dynamicResolutionScale = *nextScale;
+            HBG_LOGI("dynamic resolution: scale={:.3f} avg_frame_ms={:.3f} target_ms={:.3f} adjustments={}",
+                     m_dynamicResolutionScale, m_dynamicResolution.averageFrameMs(),
+                     m_dynamicResolution.settings().targetFrameMs, m_dynamicResolution.adjustmentCount());
+        }
+
         if (clusterStatsRequested && !clusterStatsReported) {
             const render::ForwardRenderer::FrameDiagnostics diagnostics = m_forwardRenderer.frameDiagnostics();
             if (diagnostics.clusterStatsValid) {
@@ -370,13 +451,18 @@ int Application::run(const AppOptions& options) {
             }
         }
 
-        if (finalFrame) {
+        if (finalFrame || m_vfxEditor.closeApproved()) {
             break;
         }
     }
 
-    if (m_vfxEditor.valid() && m_vfxEditor.dirty()) {
-        HBG_LOGW("VFX editor closed with unsaved graph or layout changes");
+    if (m_vfxEditor.valid() && m_vfxEditor.dirty() && !m_vfxEditor.closeApproved()) {
+        std::string recoveryError;
+        if (m_vfxEditor.saveRecovery(recoveryError)) {
+            HBG_LOGW("VFX editor closed with unsaved changes; recovery snapshot saved");
+        } else {
+            HBG_LOGW("VFX editor closed with unsaved changes; recovery failed: {}", recoveryError);
+        }
     }
     shutdown();
     return 0;
@@ -502,6 +588,13 @@ bool Application::loadSettings(const AppOptions& options) {
 
     if (options.litShaderMode) {
         m_frameSettings.setLitShaderMode(*options.litShaderMode);
+        if (*options.litShaderMode == render::LitShaderMode::Deferred &&
+            m_pipelineSettings.supportedLitShaderMode == render::SupportedLitShaderMode::ForwardOnly) {
+            m_pipelineSettings.supportedLitShaderMode = render::SupportedLitShaderMode::DeferredOnly;
+        } else if (*options.litShaderMode == render::LitShaderMode::Forward &&
+                   m_pipelineSettings.supportedLitShaderMode == render::SupportedLitShaderMode::DeferredOnly) {
+            m_pipelineSettings.supportedLitShaderMode = render::SupportedLitShaderMode::ForwardOnly;
+        }
     }
     if (options.litVariants) {
         m_pipelineSettings.supportLitVariants = *options.litVariants;
@@ -545,6 +638,15 @@ bool Application::loadSettings(const AppOptions& options) {
     } else if (!options.vfxEditorPath.empty()) {
         m_pipelineSettings.supportVFX = true;
     }
+    if (options.vfxInstancing) {
+        m_pipelineSettings.supportVFXInstancing = true;
+    }
+    if (options.vfxTransparentSort) {
+        m_pipelineSettings.supportVFXTransparentSort = true;
+    }
+    if (options.vfxInstanceBatchSize) {
+        m_pipelineSettings.vfxInstanceBatchSize = *options.vfxInstanceBatchSize;
+    }
     if (options.gpuLightList) {
         m_pipelineSettings.supportGpuLightList = *options.gpuLightList;
     }
@@ -553,6 +655,32 @@ bool Application::loadSettings(const AppOptions& options) {
     }
     if (options.gpuLightListIndirect) {
         m_pipelineSettings.supportGpuLightListIndirect = *options.gpuLightListIndirect;
+    }
+    if (options.gpuSkinning) {
+        m_pipelineSettings.supportGpuSkinning = *options.gpuSkinning;
+    }
+    if (options.depthPyramidCompute) {
+        m_pipelineSettings.supportDepthPyramidCompute = *options.depthPyramidCompute;
+    }
+    if (options.gpuDrivenGeometry) {
+        m_pipelineSettings.supportGpuDrivenGeometry = *options.gpuDrivenGeometry;
+    }
+    if (options.transparentBackface) {
+        m_pipelineSettings.supportTransparentBackface = *options.transparentBackface;
+    }
+    if (options.transparentPrepass) {
+        m_pipelineSettings.supportTransparentDepthPrepass = *options.transparentPrepass;
+        m_frameSettings.setEnabled(render::FrameSettingsField::TransparentPrepass, *options.transparentPrepass);
+    }
+    if (options.transparentRefraction) {
+        m_pipelineSettings.supportTransparentRefraction = *options.transparentRefraction;
+        m_frameSettings.setEnabled(render::FrameSettingsField::Refraction, *options.transparentRefraction);
+    }
+    if (options.refractionDepthRejection) {
+        m_pipelineSettings.supportRefractionDepthRejection = *options.refractionDepthRejection;
+    }
+    if (options.refractionRoughness) {
+        m_pipelineSettings.supportRefractionRoughness = *options.refractionRoughness;
     }
     if (options.lightListFeatureFlags) {
         m_pipelineSettings.supportLightListFeatureFlags = *options.lightListFeatureFlags;
@@ -622,6 +750,16 @@ bool Application::loadScene(const std::string& path) {
 }
 
 void Application::shutdown() {
+    if (m_sgEditor) {
+        m_sgEditor->stop();
+        m_sgEditor.reset();
+    }
+    if (m_sgPreview) {
+        if (m_device.isValid()) {
+            m_sgPreview->shutdown(m_device.resources());
+        }
+        m_sgPreview.reset();
+    }
     if (m_device.isValid()) {
         if (m_debugUi.valid()) {
             m_debugUi.shutdown(m_device.resources());
@@ -647,6 +785,19 @@ void Application::frame(const WindowInput& input, double deltaSeconds, bool fina
             diagnostics.asyncGpuLightListRequested, diagnostics.asyncGpuLightListActive,
             diagnostics.lightListCapacityRequested, diagnostics.lightListCapacityEffective,
             diagnostics.lightListStride, diagnostics.lightListTruncated, diagnostics.lightListCapacityClamped);
+        m_debugUi.setGpuSkinningStatus(diagnostics.gpuSkinningRequested, diagnostics.gpuSkinningActive,
+                                      diagnostics.gpuSkinningMeshes, diagnostics.gpuSkinningVertices,
+                                      diagnostics.gpuSkinningDispatches);
+        m_debugUi.setDepthPyramidStatus(diagnostics.depthPyramidComputeRequested,
+                                        diagnostics.depthPyramidComputeActive, diagnostics.depthPyramidMips);
+        m_debugUi.setGpuDrivenStatus(
+            diagnostics.gpuDrivenRequested, diagnostics.gpuDrivenActive, diagnostics.gpuDrivenHiZActive,
+            diagnostics.gpuDrivenForwardActive, diagnostics.gpuDrivenGbufferActive,
+            diagnostics.gpuDrivenTransparentActive, diagnostics.gpuDrivenTransparentSorted,
+            diagnostics.gpuDrivenPrepassActive,
+            diagnostics.gpuDrivenBindlessActive, diagnostics.gpuDrivenItems,
+            diagnostics.gpuDrivenPrepassItems, diagnostics.gpuDrivenBatches,
+            diagnostics.gpuDrivenCullingPasses, diagnostics.gpuDrivenIndirectCountSupported);
         m_debugUi.setClusterStatsStatus(
             diagnostics.clusterStatsReadbackPending, diagnostics.clusterStatsValid, diagnostics.clusterStatsGpu,
             diagnostics.clusterStatsClusters, diagnostics.clusterStatsActiveClusters,
@@ -664,12 +815,20 @@ void Application::frame(const WindowInput& input, double deltaSeconds, bool fina
             m_pipelineSettings.supportGpuLightList = settings.gpuLightList;
             m_forwardRenderer.setGpuLightListEnabled(settings.gpuLightList);
         }
+        if (settings.gpuDrivenGeometry != m_pipelineSettings.supportGpuDrivenGeometry &&
+            m_forwardRenderer.valid()) {
+            m_pipelineSettings.supportGpuDrivenGeometry = settings.gpuDrivenGeometry;
+            m_forwardRenderer.setGpuDrivenGeometryEnabled(settings.gpuDrivenGeometry);
+        }
         m_forwardRenderer.setShadowsEnabled(settings.shadows);
         m_forwardRenderer.setWireframe(settings.wireframe);
         m_forwardRenderer.setRenderScale(settings.renderScale);
         m_forwardRenderer.setDebugDisplayMode(settings.fullscreen);
         m_forwardRenderer.setDebugLightClusterSlice(settings.lightClusterSlice);
         m_forwardRenderer.setPostProcessSettings(settings.postProcess);
+    }
+    if (m_dynamicResolution.settings().enabled && m_forwardRenderer.valid()) {
+        m_forwardRenderer.setRenderScale(m_dynamicResolutionScale);
     }
 
     if (m_scene != nullptr && m_forwardRenderer.valid()) {

@@ -446,6 +446,18 @@ void DebugUI::drawPanel() {
         ImGui::SameLine();
         ImGui::Checkbox("Wireframe", &m_settings.wireframe);
         ImGui::Checkbox("GPU light list", &m_settings.gpuLightList);
+        ImGui::Checkbox("GPU-driven geometry", &m_settings.gpuDrivenGeometry);
+        if (m_gpuDrivenRequested) {
+            ImGui::Text("GPU-driven: %s  Hi-Z=%s forward=%s gbuffer=%s transparent=%s sort=%s prepass=%s "
+                        "bindless=%s items=%u prepass_items=%u batches=%u passes=%u indirect_count=%s",
+                        m_gpuDrivenActive ? "GPU" : "CPU fallback", m_gpuDrivenHiZActive ? "true" : "false",
+                        m_gpuDrivenForwardActive ? "true" : "false", m_gpuDrivenGbufferActive ? "true" : "false",
+                        m_gpuDrivenTransparentActive ? "true" : "false",
+                        m_gpuDrivenTransparentSorted ? "true" : "false",
+                        m_gpuDrivenPrepassActive ? "true" : "false", m_gpuDrivenBindlessActive ? "true" : "false",
+                        m_gpuDrivenItems, m_gpuDrivenPrepassItems, m_gpuDrivenBatches, m_gpuDrivenCullingPasses,
+                        m_gpuDrivenIndirectCountSupported ? "true" : "false");
+        }
         if (m_gpuLightListRequested) {
             ImGui::Text("Light list: %s (%s)  indirect=%s  passes=%u  cpu=%.3f ms",
                         m_gpuLightListActive ? "GPU" : "CPU fallback",
@@ -474,6 +486,19 @@ void DebugUI::drawPanel() {
         }
         ImGui::Text("Shadow cull: %s  indirect=%s", m_gpuShadowCulling ? "GPU" : "CPU",
                     m_gpuShadowIndirect ? "true" : "false");
+        if (m_gpuSkinningRequested) {
+            ImGui::Text("Skinning: %s  meshes=%u verts=%u dispatches=%u",
+                        m_gpuSkinningActive ? "GPU" : "CPU fallback", m_gpuSkinningMeshes,
+                        m_gpuSkinningVertices, m_gpuSkinningDispatches);
+        } else {
+            ImGui::TextUnformatted("Skinning: CPU");
+        }
+        if (m_depthPyramidMips > 0) {
+            ImGui::Text("Depth pyramid: %s  mips=%u",
+                        m_depthPyramidComputeActive ? "compute" : "raster", m_depthPyramidMips);
+        } else {
+            ImGui::TextDisabled("Depth pyramid: inactive");
+        }
         if (m_asyncRequested) {
             ImGui::Text("Async light list: requested=true  active=%s", m_asyncActive ? "true" : "false");
         }
@@ -531,14 +556,34 @@ void DebugUI::drawPanel() {
         if (ImGui::Checkbox("FXAA", &m_settings.postProcess.fxaa.enabled) &&
             m_settings.postProcess.fxaa.enabled) {
             m_settings.postProcess.taa.enabled = false;
+            m_settings.postProcess.taa.upscale = false;
         }
         if (m_settings.postProcess.taa.enabled) {
+            ImGui::Checkbox("TAA upscale", &m_settings.postProcess.taa.upscale);
+            if (m_settings.postProcess.taa.upscale) {
+                const char* injectionNames[4]{};
+                for (std::size_t index = 0;
+                     index < std::min<std::size_t>(render::taaUpsampleInjectionCount(), 4); ++index) {
+                    injectionNames[index] = render::taaUpsampleInjectionName(render::taaUpsampleInjectionAt(index));
+                }
+                int injection = static_cast<int>(m_settings.postProcess.taa.upscaleInjection);
+                if (ImGui::Combo("TAAU injection", &injection, injectionNames,
+                                 static_cast<int>(std::min<std::size_t>(render::taaUpsampleInjectionCount(), 4)))) {
+                    m_settings.postProcess.taa.upscaleInjection = render::taaUpsampleInjectionAt(
+                        static_cast<std::size_t>(std::clamp(injection, 0, 2)));
+                }
+                ImGui::TextDisabled("TAAU sharpen is ignored; AfterPost requires the Uber path");
+            }
             int quality = static_cast<int>(m_settings.postProcess.taa.quality);
             if (ImGui::SliderInt("TAA quality", &quality, 1, 5)) {
                 m_settings.postProcess.taa.quality = static_cast<uint32_t>(quality);
             }
             ImGui::SliderFloat("TAA motion rejection", &m_settings.postProcess.taa.motionVectorRejection, 0.0f, 1.0f,
                                "%.2f");
+            if (m_settings.postProcess.taa.upscale) {
+                ImGui::SliderFloat("TAAU velocity rejection", &m_settings.postProcess.taa.velocityRejection, 0.0f, 1.0f,
+                                   "%.2f");
+            }
             ImGui::SliderFloat("TAA sharpening", &m_settings.postProcess.taa.sharpening, 0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("TAA jitter scale", &m_settings.postProcess.taa.jitterScale, 0.0f, 1.0f, "%.2f");
         }

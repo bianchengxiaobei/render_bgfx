@@ -20,6 +20,8 @@ struct MeshVertex {
     Vec3 previousPosition{};
 };
 
+static_assert(sizeof(MeshVertex) == 84, "GPU skinning shader expects 21 tightly packed floats per vertex");
+
 struct SubMesh {
     uint32_t indexOffset = 0;
     uint32_t indexCount = 0;
@@ -48,6 +50,9 @@ struct SkinVertex {
     uint32_t influenceCount = 0;
 };
 
+static_assert(sizeof(SkinVertex) == 8, "GPU skinning expects two 32-bit words per vertex");
+static_assert(sizeof(SkinInfluence) == 8, "GPU skinning expects one joint word and one weight word per influence");
+
 struct Skin {
     std::string name;
     std::vector<uint32_t> joints;
@@ -71,6 +76,7 @@ struct Mesh {
     bool hasColors = false;
 
     static Bounds computeBounds(const std::vector<MeshVertex>& vertices);
+    Bounds computeSkinnedBounds(const std::vector<Mat4>& jointMatrices) const;
     void recomputeBounds();
     void generateNormals();
     void generateTangents();

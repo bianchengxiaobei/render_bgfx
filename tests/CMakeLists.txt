@@ -10,7 +10,9 @@ add_executable(hbg_tests
     render/test_cookie_atlas.cpp
     render/test_debug_display.cpp
     render/test_decal.cpp
+    render/test_dynamic_resolution.cpp
     render/test_frame_settings.cpp
+    render/test_graph_material.cpp
     render/test_draw_list.cpp
     render/test_environment.cpp
     render/test_light_shadow.cpp
@@ -18,6 +20,7 @@ add_executable(hbg_tests
     render/test_light_list.cpp
     render/test_lightmap.cpp
     render/test_local_fog_volume.cpp
+    render/test_material_texture_array.cpp
     render/test_post_process.cpp
     render/test_reflection_probe.cpp
     render/test_prepass.cpp
@@ -29,6 +32,7 @@ add_executable(hbg_tests
     render/test_ssgi.cpp
     render/test_view_state.cpp
     render/test_volumetric_fog.cpp
+    host/test_sg_editor_host.cpp
 )
 
 target_link_libraries(hbg_tests PRIVATE hbg_app bimg_encode doctest::doctest)
@@ -36,7 +40,12 @@ if(HBG_ENABLE_DRACO)
     target_link_libraries(hbg_tests PRIVATE ${HBG_DRACO_TARGET})
     target_compile_definitions(hbg_tests PRIVATE HBG_HAS_DRACO=1)
 endif()
+if(HBG_ENABLE_BASISU)
+    target_link_libraries(hbg_tests PRIVATE ${HBG_BASISU_TARGET})
+    target_compile_definitions(hbg_tests PRIVATE HBG_HAS_BASISU=1)
+endif()
 target_compile_definitions(hbg_tests PRIVATE HBG_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+target_include_directories(hbg_tests PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 hbg_target_options(hbg_tests)
 
 add_test(NAME hbg_tests COMMAND hbg_tests)
@@ -98,5 +107,13 @@ if(HBG_IDL_PYTHON_AVAILABLE)
                 ${CMAKE_SOURCE_DIR}/tools/idl_gen.py
                 --root ${CMAKE_SOURCE_DIR}
                 --check)
+endif()
+
+if(HBG_PYTHON_EXECUTABLE)
+    add_test(NAME shader_analysis_plan_check
+        COMMAND ${HBG_PYTHON_EXECUTABLE} ${HBG_PYTHON_ARGS}
+                ${CMAKE_SOURCE_DIR}/tools/shader_build.py
+                --root ${CMAKE_SOURCE_DIR}
+                --plan-check ${CMAKE_SOURCE_DIR}/shaders/variants.json)
 endif()
 

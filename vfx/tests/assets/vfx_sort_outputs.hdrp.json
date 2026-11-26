@@ -1,0 +1,5 @@
+{
+  "vfx": [
+    {"name": "SortOutputs", "asset": "sort_outputs.vfxb", "position": [0, 0, 0], "play": true, "playRate": 0.1, "seed": 0}
+  ]
+}

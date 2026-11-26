@@ -48,6 +48,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                    const render::SsgiSettings& ssgiSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
+                   const render::DynamicResolutionSettings& dynamicResolutionSettings,
                    const std::string& skyPath, float skyIntensity, float skyRotation, bool resizeTest) {
     HBG_LOGI("running render test: '{}'", path);
     asset::SceneLoadResult loaded = asset::SceneLoader::load(path);
@@ -78,14 +79,26 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
     renderer.setPostProcessProfile(postProcessProfile);
     renderer.setVolumetricFogSettings(volumetricFogSettings);
     renderer.setRenderScale(renderScale);
+    render::DynamicResolutionController dynamicResolution;
+    dynamicResolution.configure(dynamicResolutionSettings);
+    dynamicResolution.reset(renderScale);
     renderer.setDebugDisplayMode(debugMode);
     renderer.setDebugLightmapMask(debugLightmapMask);
     renderer.setDebugLightClusterSlice(lightClusterSlice);
     renderer.setLightClusterEnabled(lightClusterEnabled);
     renderer.setShadowsEnabled(shadowsEnabled);
-    if (!skyPath.empty() && !renderer.setSky(skyPath, skyIntensity, skyRotation)) {
-        renderer.shutdown(resources);
-        return false;
+    if (!skyPath.empty()) {
+        if (!renderer.setSky(skyPath, skyIntensity, skyRotation)) {
+            renderer.shutdown(resources);
+            return false;
+        }
+    } else if (loaded.scene->sky.enabled && loaded.scene->sky.mode == render::SceneSkyMode::Skybox &&
+               !loaded.scene->sky.texture.empty()) {
+        if (!renderer.setSky(loaded.scene->sky.texture.string(), loaded.scene->sky.intensity,
+                             loaded.scene->sky.rotationDegrees)) {
+            renderer.shutdown(resources);
+            return false;
+        }
     }
 
     if (clusterStatsReadback) {
@@ -103,12 +116,23 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
         if (cameraOrbit) {
             updateOrbitCamera(*loaded.scene, frame, renderWidth, renderHeight);
         }
+        const auto frameStart = std::chrono::steady_clock::now();
         renderer.render(*loaded.scene, renderWidth, renderHeight, sceneTime);
         if (frame + 1 == count && !screenshotPath.empty()) {
             bgfx::requestScreenShot(BGFX_INVALID_HANDLE, screenshotPath.c_str());
         }
         bgfx::frame();
         resources.endFrame();
+        const double frameMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStart).count();
+        if (!resizeTest) {
+            if (const std::optional<float> nextScale = dynamicResolution.update(frameMs / 1000.0)) {
+                renderer.setRenderScale(*nextScale);
+                HBG_LOGI("dynamic resolution: scale={:.3f} avg_frame_ms={:.3f} target_ms={:.3f} adjustments={}",
+                         *nextScale, dynamicResolution.averageFrameMs(),
+                         dynamicResolution.settings().targetFrameMs, dynamicResolution.adjustmentCount());
+            }
+        }
     }
 
     const auto renderEnd = std::chrono::steady_clock::now();
@@ -125,9 +149,31 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                                             static_cast<double>(stats->gpuTimerFreq)
                                       : 0.0;
         const render::ForwardRenderer::FrameDiagnostics diagnostics = renderer.frameDiagnostics();
+        HBG_LOGI("depth pyramid: requested={} active={} mips={}",
+                 diagnostics.depthPyramidComputeRequested ? "true" : "false",
+                 diagnostics.depthPyramidComputeActive ? "true" : "false", diagnostics.depthPyramidMips);
+        HBG_LOGI("gpu skinning: requested={} active={} meshes={} vertices={} dispatches={}",
+                 diagnostics.gpuSkinningRequested ? "true" : "false",
+                 diagnostics.gpuSkinningActive ? "true" : "false", diagnostics.gpuSkinningMeshes,
+                 diagnostics.gpuSkinningVertices, diagnostics.gpuSkinningDispatches);
+        HBG_LOGI("gpu-driven geometry: requested={} active={} hi_z={} forward={} gbuffer={} transparent={} "
+                 "sort={} prepass={} bindless={} items={} prepass_items={} batches={} culling_passes={} "
+                 "indirect_count_cap={}",
+                 diagnostics.gpuDrivenRequested ? "true" : "false",
+                 diagnostics.gpuDrivenActive ? "true" : "false",
+                 diagnostics.gpuDrivenHiZActive ? "true" : "false",
+                 diagnostics.gpuDrivenForwardActive ? "true" : "false",
+                 diagnostics.gpuDrivenGbufferActive ? "true" : "false",
+                 diagnostics.gpuDrivenTransparentActive ? "true" : "false",
+                 diagnostics.gpuDrivenTransparentSorted ? "true" : "false",
+                 diagnostics.gpuDrivenPrepassActive ? "true" : "false",
+                 diagnostics.gpuDrivenBindlessActive ? "true" : "false", diagnostics.gpuDrivenItems,
+                 diagnostics.gpuDrivenPrepassItems, diagnostics.gpuDrivenBatches,
+                 diagnostics.gpuDrivenCullingPasses,
+                 diagnostics.gpuDrivenIndirectCountSupported ? "true" : "false");
         HBG_LOGI("render performance: frames={} avg_frame_ms={:.3f} fps={:.1f} cpu_submit_ms={:.3f} "
                  "gpu_frame_ms={:.3f} draw={} compute={} textures={} triangles={} passes={} deferred={} "
-                 "vfx={} vfx_effects={} vfx_systems={} vfx_particles={} vfx_draws={} vfx_dispatches={} "
+                 "vfx={} vfx_effects={} vfx_systems={} vfx_particles={} vfx_draws={} vfx_shadow_draws={} vfx_dispatches={} "
                  "vfx_sort_passes={} vfx_events={} vfx_ms={:.3f} vfx_update_ms={:.3f} "
                  "vfx_sim_ms={:.3f} vfx_output_ms={:.3f} "
                  "gbuffer_mrt={} stencil={} postprocess={} post_passes={} postprocess_ms={:.3f} post_compute={} "
@@ -152,7 +198,8 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                  stats->numPrims[bgfx::Topology::TriList], diagnostics.passCount,
                  diagnostics.deferred ? "true" : "false",
                  diagnostics.vfxActive ? "true" : "false", diagnostics.vfxEffects, diagnostics.vfxSystems,
-                 diagnostics.vfxParticles, diagnostics.vfxDraws, diagnostics.vfxDispatches,
+                 diagnostics.vfxParticles, diagnostics.vfxDraws, diagnostics.vfxShadowDraws,
+                 diagnostics.vfxDispatches,
                  diagnostics.vfxSortPasses, diagnostics.vfxEvents, diagnostics.vfxMs,
                  diagnostics.vfxUpdateMs, diagnostics.vfxSimulationMs, diagnostics.vfxOutputMs,
                  diagnostics.gbufferTargets,

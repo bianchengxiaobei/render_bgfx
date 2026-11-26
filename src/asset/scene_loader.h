@@ -23,6 +23,8 @@ struct SceneLoadResult {
 class SceneLoader {
   public:
     static SceneLoadResult load(const std::filesystem::path& path, const SceneLoadOptions& options = {});
+    static bool applySidecarToScene(render::RenderScene& scene, const std::filesystem::path& sidecar,
+                                    std::string* error = nullptr);
 };
 
 } // namespace hbg::asset

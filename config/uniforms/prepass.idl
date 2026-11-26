@@ -6,5 +6,5 @@ block Object {
 }
 
 block Prepass {
-    vec4 depthPyramidParams; # xy = source texel size, zw = unused
+    vec4 depthPyramidParams; # xy = source texel size, zw = source pixel size (compute path)
 }

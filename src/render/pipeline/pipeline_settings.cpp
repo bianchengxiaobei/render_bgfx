@@ -195,6 +195,25 @@ bool readLightListCapacity(const Json& document, const char* key, uint32_t& valu
     return true;
 }
 
+bool readVfxInstanceBatchSize(const Json& document, const char* key, uint32_t& value,
+                              std::string& error) {
+    const auto it = document.find(key);
+    if (it == document.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        error = std::string(key) + " must be an integer from 0 to 65535";
+        return false;
+    }
+    const int64_t requested = it->get<int64_t>();
+    if (requested < 0 || requested > 65535) {
+        error = std::string(key) + " must be an integer from 0 to 65535";
+        return false;
+    }
+    value = static_cast<uint32_t>(requested);
+    return true;
+}
+
 const char* litShaderModeName(SupportedLitShaderMode value) {
     switch (value) {
     case SupportedLitShaderMode::ForwardOnly:
@@ -282,6 +301,12 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportGpuLightListBuffers, error);
         } else if (key == "supportGpuLightListIndirect") {
             ok = readBool(document, key.c_str(), settings.supportGpuLightListIndirect, error);
+        } else if (key == "supportGpuSkinning") {
+            ok = readBool(document, key.c_str(), settings.supportGpuSkinning, error);
+        } else if (key == "supportDepthPyramidCompute") {
+            ok = readBool(document, key.c_str(), settings.supportDepthPyramidCompute, error);
+        } else if (key == "supportGpuDrivenGeometry") {
+            ok = readBool(document, key.c_str(), settings.supportGpuDrivenGeometry, error);
         } else if (key == "supportLightListFeatureFlags") {
             ok = readBool(document, key.c_str(), settings.supportLightListFeatureFlags, error);
         } else if (key == "supportLitVariants") {
@@ -334,8 +359,16 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportFXAA, error);
         } else if (key == "supportExposureHistogram") {
             ok = readBool(document, key.c_str(), settings.supportExposureHistogram, error);
+        } else if (key == "supportTransparentBackface") {
+            ok = readBool(document, key.c_str(), settings.supportTransparentBackface, error);
         } else if (key == "supportTransparentDepthPrepass") {
             ok = readBool(document, key.c_str(), settings.supportTransparentDepthPrepass, error);
+        } else if (key == "supportTransparentRefraction") {
+            ok = readBool(document, key.c_str(), settings.supportTransparentRefraction, error);
+        } else if (key == "supportRefractionDepthRejection") {
+            ok = readBool(document, key.c_str(), settings.supportRefractionDepthRejection, error);
+        } else if (key == "supportRefractionRoughness") {
+            ok = readBool(document, key.c_str(), settings.supportRefractionRoughness, error);
         } else if (key == "supportTransparentDepthPostpass") {
             ok = readBool(document, key.c_str(), settings.supportTransparentDepthPostpass, error);
         } else if (key == "supportLowResTransparent") {
@@ -364,6 +397,12 @@ bool parsePipelineSettings(std::string_view text, PipelineSettings& settings, st
             ok = readBool(document, key.c_str(), settings.supportCustomPass, error);
         } else if (key == "supportVFX") {
             ok = readBool(document, key.c_str(), settings.supportVFX, error);
+        } else if (key == "supportVFXInstancing") {
+            ok = readBool(document, key.c_str(), settings.supportVFXInstancing, error);
+        } else if (key == "supportVFXTransparentSort") {
+            ok = readBool(document, key.c_str(), settings.supportVFXTransparentSort, error);
+        } else if (key == "vfxInstanceBatchSize") {
+            ok = readVfxInstanceBatchSize(document, key.c_str(), settings.vfxInstanceBatchSize, error);
         } else if (key == "supportVariableRateShading") {
             ok = readBool(document, key.c_str(), settings.supportVariableRateShading, error);
         } else if (key == "supportVirtualTexturing") {
@@ -419,6 +458,9 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportGpuLightList"] = settings.supportGpuLightList;
     document["supportGpuLightListBuffers"] = settings.supportGpuLightListBuffers;
     document["supportGpuLightListIndirect"] = settings.supportGpuLightListIndirect;
+    document["supportGpuSkinning"] = settings.supportGpuSkinning;
+    document["supportDepthPyramidCompute"] = settings.supportDepthPyramidCompute;
+    document["supportGpuDrivenGeometry"] = settings.supportGpuDrivenGeometry;
     document["supportLightListFeatureFlags"] = settings.supportLightListFeatureFlags;
     document["supportLitVariants"] = settings.supportLitVariants;
     document["supportLitVariantTiles"] = settings.supportLitVariantTiles;
@@ -445,7 +487,11 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportMotionBlur"] = settings.supportMotionBlur;
     document["supportFXAA"] = settings.supportFXAA;
     document["supportExposureHistogram"] = settings.supportExposureHistogram;
+    document["supportTransparentBackface"] = settings.supportTransparentBackface;
     document["supportTransparentDepthPrepass"] = settings.supportTransparentDepthPrepass;
+    document["supportTransparentRefraction"] = settings.supportTransparentRefraction;
+    document["supportRefractionDepthRejection"] = settings.supportRefractionDepthRejection;
+    document["supportRefractionRoughness"] = settings.supportRefractionRoughness;
     document["supportTransparentDepthPostpass"] = settings.supportTransparentDepthPostpass;
     document["supportLowResTransparent"] = settings.supportLowResTransparent;
     document["supportDecals"] = settings.supportDecals;
@@ -460,6 +506,9 @@ std::string pipelineSettingsToJson(const PipelineSettings& settings) {
     document["supportDataDrivenLensFlare"] = settings.supportDataDrivenLensFlare;
     document["supportCustomPass"] = settings.supportCustomPass;
     document["supportVFX"] = settings.supportVFX;
+    document["supportVFXInstancing"] = settings.supportVFXInstancing;
+    document["supportVFXTransparentSort"] = settings.supportVFXTransparentSort;
+    document["vfxInstanceBatchSize"] = settings.vfxInstanceBatchSize;
     document["supportVariableRateShading"] = settings.supportVariableRateShading;
     document["supportVirtualTexturing"] = settings.supportVirtualTexturing;
     document["supportProbeVolume"] = settings.supportProbeVolume;

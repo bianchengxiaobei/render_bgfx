@@ -84,7 +84,17 @@ bool Window::pollEvents() {
     }
 
     glfwPollEvents();
-    return glfwWindowShouldClose(m_window) == GLFW_FALSE;
+    return true;
+}
+
+bool Window::shouldClose() const {
+    return m_window != nullptr && glfwWindowShouldClose(m_window) == GLFW_TRUE;
+}
+
+void Window::setShouldClose(bool shouldClose) {
+    if (m_window != nullptr) {
+        glfwSetWindowShouldClose(m_window, shouldClose ? GLFW_TRUE : GLFW_FALSE);
+    }
 }
 
 void Window::waitEvents(double seconds) {

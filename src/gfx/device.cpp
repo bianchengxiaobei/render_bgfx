@@ -47,6 +47,7 @@ bool Device::init(const DeviceDesc& desc) {
     init.swapChain.height = desc.height;
     init.swapChain.flags = BGFX_SWAP_CHAIN_NONE;
     init.reset = desc.vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE;
+    init.reset |= BGFX_RESET_MAXANISOTROPY;
     init.debug = desc.debug;
     init.profile = desc.profile;
     init.fallback = false;

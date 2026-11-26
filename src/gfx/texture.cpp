@@ -22,6 +22,8 @@ bgfx::TextureFormat::Enum toBgfx(TextureFormat format) {
         return bgfx::TextureFormat::RG16F;
     case TextureFormat::RG32F:
         return bgfx::TextureFormat::RG32F;
+    case TextureFormat::R16F:
+        return bgfx::TextureFormat::R16F;
     case TextureFormat::R8:
         return bgfx::TextureFormat::R8;
     case TextureFormat::RG8:
@@ -79,6 +81,8 @@ const char* textureFormatName(TextureFormat format) {
         return "RG16F";
     case TextureFormat::RG32F:
         return "RG32F";
+    case TextureFormat::R16F:
+        return "R16F";
     case TextureFormat::R8:
         return "R8";
     case TextureFormat::RG8:
@@ -136,12 +140,16 @@ bool Texture::create(const TextureDesc& desc) {
         HBG_LOGE("Texture::create called on an existing texture '{}'", m_desc.name);
         return false;
     }
-    if (desc.width == 0 || desc.height == 0 || desc.layers == 0) {
+    if (desc.width == 0 || desc.height == 0 || desc.layers == 0 || desc.depth == 0) {
         HBG_LOGE("Texture::create requires non-zero dimensions");
         return false;
     }
     if (desc.cubeMap && desc.width != desc.height) {
         HBG_LOGE("Texture::create cube map requires width == height ({}x{})", desc.width, desc.height);
+        return false;
+    }
+    if (desc.cubeMap && desc.is3D) {
+        HBG_LOGE("Texture::create cannot be both cube map and 3D");
         return false;
     }
     if (desc.data != nullptr && desc.dataSize == 0) {
@@ -181,15 +189,17 @@ bool Texture::create(const TextureDesc& desc) {
         memory = bgfx::copy(desc.data, desc.dataSize);
     }
 
-    if (desc.cubeMap) {
+    if (desc.is3D) {
+        m_native = bgfx::createTexture3D(desc.width, desc.height, desc.depth, hasMips, format, flags, memory);
+    } else if (desc.cubeMap) {
         m_native = bgfx::createTextureCube(desc.width, hasMips, desc.layers, format, flags, memory);
     } else {
         m_native = bgfx::createTexture2D(desc.width, desc.height, hasMips, desc.layers, format, flags, memory);
     }
 
     if (!valid()) {
-        HBG_LOGE("failed to create texture '{}' ({}x{}, {}, mips={}, layers={})", desc.name, desc.width, desc.height,
-                 textureFormatName(desc.format), desc.mipCount, desc.layers);
+        HBG_LOGE("failed to create texture '{}' ({}x{}, {}, mips={}, layers={}, depth={})", desc.name, desc.width,
+                 desc.height, textureFormatName(desc.format), desc.mipCount, desc.layers, desc.depth);
         return false;
     }
 
@@ -197,7 +207,8 @@ bool Texture::create(const TextureDesc& desc) {
     m_desc.flags = flags;
     m_desc.data = nullptr;
     m_desc.dataSize = 0;
-    bgfx::calcTextureSize(m_info, desc.width, desc.height, 1, desc.cubeMap, hasMips, desc.layers, format);
+    bgfx::calcTextureSize(m_info, desc.width, desc.height, desc.is3D ? desc.depth : 1, desc.cubeMap, hasMips,
+                          desc.layers, format);
     if (!desc.name.empty()) {
         bgfx::setName(m_native, desc.name.c_str());
     }

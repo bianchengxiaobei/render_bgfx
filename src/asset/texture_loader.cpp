@@ -5,11 +5,17 @@
 #include <bx/allocator.h>
 #include <bx/error.h>
 
+#if defined(HBG_HAS_BASISU) && HBG_HAS_BASISU
+#include <basisu_transcoder.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 
 namespace hbg::asset {
@@ -59,12 +65,128 @@ gfx::TextureFormat toCompressedFormat(bimg::TextureFormat::Enum format) {
     }
 }
 
+uint32_t readUint32LE(const uint8_t* data) {
+    return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8u) |
+           (static_cast<uint32_t>(data[2]) << 16u) | (static_cast<uint32_t>(data[3]) << 24u);
+}
+
+bool isKtx2(const void* data, std::size_t size) {
+    static constexpr uint8_t kIdentifier[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                                0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+    return data != nullptr && size >= 80 && std::memcmp(data, kIdentifier, sizeof(kIdentifier)) == 0;
+}
+
+bool needsBasisuTranscode(const void* data, std::size_t size) {
+    if (!isKtx2(data, size)) {
+        return false;
+    }
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    const uint32_t vkFormat = readUint32LE(bytes + 12);
+    const uint32_t supercompression = readUint32LE(bytes + 44);
+    return supercompression == 1 || supercompression == 2 || (supercompression == 0 && vkFormat == 0);
+}
+
+#if defined(HBG_HAS_BASISU) && HBG_HAS_BASISU
+bool loadBasisuKtx2(const void* data, std::size_t size, ImageAsset& image, std::string* error) {
+    static const bool initialized = [] {
+        basist::basisu_transcoder_init();
+        return true;
+    }();
+    (void)initialized;
+
+    basist::ktx2_transcoder transcoder;
+    if (!transcoder.init(data, static_cast<uint32_t>(size))) {
+        setError(error, "BasisU: failed to parse KTX2 container");
+        return false;
+    }
+
+    const basist::ktx2_header& header = transcoder.get_header();
+    if (header.m_pixel_depth > 1 || transcoder.get_faces() != 1 || transcoder.get_layers() > 1) {
+        setError(error, "BasisU: only single-layer 2D textures are supported");
+        return false;
+    }
+
+    const basist::basis_tex_format format = transcoder.get_format();
+    if (format != basist::basis_tex_format::cETC1S && format != basist::basis_tex_format::cUASTC4x4) {
+        setError(error, "BasisU: UASTC HDR textures are not supported");
+        return false;
+    }
+
+    const bool uastc = format == basist::basis_tex_format::cUASTC4x4;
+    const bool hasAlpha = transcoder.get_has_alpha() != 0;
+    const basist::transcoder_texture_format target =
+        (uastc || hasAlpha) ? basist::transcoder_texture_format::cTFBC7_RGBA
+                            : basist::transcoder_texture_format::cTFBC1_RGB;
+    const uint32_t blockBytes = basist::basis_get_bytes_per_block_or_pixel(target);
+    if (!basist::basis_is_format_supported(target, format)) {
+        setError(error, "BasisU: target BC format is not supported by the transcoder");
+        return false;
+    }
+    if (!transcoder.start_transcoding()) {
+        setError(error, "BasisU: failed to initialize transcoding");
+        return false;
+    }
+
+    const uint32_t levels = transcoder.get_levels();
+    if (levels == 0 || levels > 255) {
+        setError(error, "BasisU: invalid mip level count");
+        return false;
+    }
+
+    image.width = transcoder.get_width();
+    image.height = transcoder.get_height();
+    image.mipCount = static_cast<uint8_t>(levels);
+    image.format = target == basist::transcoder_texture_format::cTFBC7_RGBA ? gfx::TextureFormat::BC7
+                                                                           : gfx::TextureFormat::BC1;
+    image.pixels.clear();
+
+    for (uint32_t level = 0; level < levels; ++level) {
+        basist::ktx2_image_level_info info{};
+        if (!transcoder.get_image_level_info(info, level, 0, 0)) {
+            image.pixels.clear();
+            setError(error, "BasisU: failed to read mip level " + std::to_string(level));
+            return false;
+        }
+        const std::size_t levelSize = static_cast<std::size_t>(info.m_total_blocks) * blockBytes;
+        if (levelSize == 0) {
+            image.pixels.clear();
+            setError(error, "BasisU: empty mip level " + std::to_string(level));
+            return false;
+        }
+        const std::size_t offset = image.pixels.size();
+        image.pixels.resize(offset + levelSize);
+        if (!transcoder.transcode_image_level(level, 0, 0, image.pixels.data() + offset, info.m_total_blocks, target,
+                                              0, info.m_num_blocks_x, 0)) {
+            image.pixels.clear();
+            setError(error, "BasisU: failed to transcode mip level " + std::to_string(level));
+            return false;
+        }
+    }
+
+    if (!image.valid()) {
+        setError(error, "BasisU: transcoded image has no pixels");
+        return false;
+    }
+    return true;
+}
+#endif
+
 } // namespace
 
 bool TextureLoader::loadFromMemory(const void* data, std::size_t size, ImageAsset& image, std::string* error) {
+    image = ImageAsset{};
     if (data == nullptr || size == 0) {
         setError(error, "image data is empty");
         return false;
+    }
+
+    if (needsBasisuTranscode(data, size)) {
+#if defined(HBG_HAS_BASISU) && HBG_HAS_BASISU
+        return loadBasisuKtx2(data, size, image, error);
+#else
+        setError(error, "BasisU KTX2 supercompression support is disabled");
+        return false;
+#endif
     }
 
     bx::DefaultAllocator allocator;
@@ -99,7 +221,7 @@ bool TextureLoader::loadFromMemory(const void* data, std::size_t size, ImageAsse
 
     const bimg::TextureFormat::Enum destination =
         bimg::isFloat(parsed->m_format) ? bimg::TextureFormat::RGBA32F : bimg::TextureFormat::RGBA8;
-    bimg::ImageContainer* converted = bimg::imageConvert(&allocator, destination, *parsed, false);
+    bimg::ImageContainer* converted = bimg::imageConvert(&allocator, destination, *parsed, true);
     bimg::imageFree(parsed);
     if (converted == nullptr) {
         setError(error, "bimg failed to convert image to RGBA");
@@ -108,7 +230,7 @@ bool TextureLoader::loadFromMemory(const void* data, std::size_t size, ImageAsse
 
     image.width = converted->m_width;
     image.height = converted->m_height;
-    image.mipCount = 1;
+    image.mipCount = static_cast<uint8_t>(std::max<uint32_t>(converted->m_numMips, 1));
     image.format = destination == bimg::TextureFormat::RGBA32F ? gfx::TextureFormat::RGBA32F
                                                                : gfx::TextureFormat::RGBA8;
     image.pixels.assign(static_cast<const uint8_t*>(converted->m_data),
@@ -131,6 +253,86 @@ bool TextureLoader::loadFromFile(const std::filesystem::path& path, ImageAsset& 
         return false;
     }
     image.name = path.filename().string();
+    return true;
+}
+
+bool TextureLoader::composeLayered(const std::vector<const ImageAsset*>& layers, LayeredTextureLayout layout,
+                                   ImageAsset& image, std::string* error) {
+    if (layers.empty()) {
+        setError(error, "layered texture requires at least one layer");
+        return false;
+    }
+    if (layout == LayeredTextureLayout::Cubemap && layers.size() != 6) {
+        setError(error, "cubemap texture requires exactly six faces");
+        return false;
+    }
+    if (layers.size() > 65535u) {
+        setError(error, "layered texture has too many images");
+        return false;
+    }
+
+    const ImageAsset* first = layers.front();
+    if (first == nullptr || !first->valid()) {
+        setError(error, "layered texture contains an invalid image");
+        return false;
+    }
+    if (first->mipCount != 1) {
+        setError(error, "layered texture sources must have a single mip");
+        return false;
+    }
+    if (layout == LayeredTextureLayout::Cubemap && first->width != first->height) {
+        setError(error, "cubemap faces must be square");
+        return false;
+    }
+
+    std::size_t totalBytes = 0;
+    for (const ImageAsset* layer : layers) {
+        if (layer == nullptr || !layer->valid()) {
+            setError(error, "layered texture contains an invalid image");
+            return false;
+        }
+        if (layer->width != first->width || layer->height != first->height ||
+            layer->format != first->format) {
+            setError(error, "layered texture images must share size and format");
+            return false;
+        }
+        if (layer->mipCount != 1) {
+            setError(error, "layered texture sources must have a single mip");
+            return false;
+        }
+        if (layer->pixels.size() != first->pixels.size()) {
+            setError(error, "layered texture images must share the same pixel data size");
+            return false;
+        }
+        if (totalBytes > std::numeric_limits<std::size_t>::max() - layer->pixels.size()) {
+            setError(error, "layered texture is too large");
+            return false;
+        }
+        totalBytes += layer->pixels.size();
+    }
+
+    image = ImageAsset{};
+    image.name = "LayeredTexture";
+    image.width = first->width;
+    image.height = first->height;
+    image.mipCount = 1;
+    image.format = first->format;
+    image.pixels.reserve(totalBytes);
+    for (const ImageAsset* layer : layers) {
+        image.pixels.insert(image.pixels.end(), layer->pixels.begin(), layer->pixels.end());
+    }
+    switch (layout) {
+    case LayeredTextureLayout::Texture2DArray:
+        image.layers = static_cast<uint16_t>(layers.size());
+        break;
+    case LayeredTextureLayout::Texture3D:
+        image.depth = static_cast<uint16_t>(layers.size());
+        image.is3D = true;
+        break;
+    case LayeredTextureLayout::Cubemap:
+        image.cubeMap = true;
+        break;
+    }
     return true;
 }
 
@@ -211,6 +413,7 @@ bool TextureLoader::packOrmMask(const ImageAsset* occlusion, const ImageAsset* m
         return static_cast<uint8_t>(std::clamp(low * (1.0f - ty) + high * ty + 0.5f, 0.0f, 255.0f));
     };
 
+    packed = ImageAsset{};
     packed.width = width;
     packed.height = height;
     packed.mipCount = 1;
@@ -279,8 +482,12 @@ gfx::TextureHandle TextureLoader::createTexture(gfx::ResourceManager& resources,
     gfx::TextureDesc desc;
     desc.width = static_cast<uint16_t>(image.width);
     desc.height = static_cast<uint16_t>(image.height);
+    desc.layers = image.layers;
+    desc.depth = image.depth;
     desc.mipCount = image.mipCount;
     desc.format = image.format;
+    desc.cubeMap = image.cubeMap;
+    desc.is3D = image.is3D;
     desc.data = image.pixels.data();
     desc.dataSize = static_cast<uint32_t>(image.pixels.size());
     desc.flags = samplerFlags(sampler) | (srgb ? BGFX_TEXTURE_SRGB : 0);

@@ -327,8 +327,13 @@ TEST_CASE("vfx compiler generates the minimal kernel plan") {
     CHECK(system.kernels[4].shader.source.find("kvpOffset") != std::string::npos);
     CHECK(system.kernels[5].shader.bindings.size() == 3u);
     CHECK(system.kernels[5].shader.source.find("s_vfxRenderKVP") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("u_vfxInstanceParams") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("particleChunks * effectInstances") !=
+          std::string::npos);
     CHECK(system.kernels[6].shader.bindings[0].stage == 12u);
     CHECK(system.kernels[6].shader.bindings[1].stage == 13u);
+    CHECK(system.kernels[6].shader.source.find("s_vfxInstances") != std::string::npos);
+    CHECK(system.kernels[6].shader.source.find("u_vfxInstanceParams") != std::string::npos);
 }
 
 TEST_CASE("vfx compiler generates force and turbulence update code") {
@@ -518,6 +523,7 @@ TEST_CASE("vfx binary asset roundtrips through the reader") {
     CHECK(asset->programs[0].task == 0u);
     CHECK(asset->programs[6].output);
     CHECK(static_cast<int>(asset->programs[6].blend) == static_cast<int>(vfx::BlendMode::Additive));
+    CHECK(asset->programs[6].generateMotionVector);
     for (const vfx::AssetBuffer& buffer : asset->systems[0].buffers) {
         CHECK(buffer.size > 0u);
         CHECK(buffer.stride > 0u);
@@ -528,6 +534,376 @@ TEST_CASE("vfx binary asset roundtrips through the reader") {
     CHECK(second->properties.size() == asset->properties.size());
     CHECK(second->systems.size() == asset->systems.size());
     CHECK(second->programs.size() == asset->programs.size());
+}
+
+TEST_CASE("vfx compiler preserves asset culling flags") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+    REQUIRE(parsed.ok());
+    parsed.graph->cullingFlags = vfx::kCullSimulation | vfx::kCullBoundsUpdate;
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    REQUIRE(compiled.error.empty());
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary = vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    REQUIRE(binary.size() >= kHeaderSize);
+
+    const std::uint32_t sectionCount = readU32(binary, 12);
+    CHECK(sectionCount == 10u);
+    bool foundCulling = false;
+    for (std::uint32_t i = 0; i < sectionCount; ++i) {
+        const std::size_t offset = kHeaderSize + i * 16u;
+        if (readU32(binary, offset) == 12u) {
+            foundCulling = true;
+            const std::uint32_t sectionOffset = readU32(binary, offset + 4u);
+            const std::uint32_t sectionSize = readU32(binary, offset + 8u);
+            CHECK(sectionSize == 4u);
+            CHECK(readU32(binary, sectionOffset) ==
+                  (vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+        }
+    }
+    CHECK(foundCulling);
+
+    std::string parseError;
+    const std::shared_ptr<const vfx::Asset> decoded = vfx::parseAssetBinary(binary, parseError);
+    INFO(parseError);
+    REQUIRE(decoded != nullptr);
+    CHECK(decoded->cullingFlags == (vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+}
+
+TEST_CASE("vfx compiler preserves the output motion vector gate") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/shadow_visual.vfx.json");
+    REQUIRE(parsed.ok());
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].desc->outputs.size() == 1u);
+    CHECK_FALSE(compiled.systems[0].desc->outputs[0].generateMotionVector);
+    REQUIRE(compiled.systems[0].outputs.size() == 1u);
+    CHECK_FALSE(compiled.systems[0].outputs[0].generateMotionVector);
+
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary =
+        vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    bool foundOutput = false;
+    for (const vfx::AssetProgram& program : asset->programs) {
+        if (program.output) {
+            foundOutput = true;
+            CHECK_FALSE(program.generateMotionVector);
+        }
+    }
+    CHECK(foundOutput);
+}
+
+TEST_CASE("vfx compiler preserves output sort priority") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.graph->systems.size() == 1u);
+    REQUIRE(parsed.graph->systems[0].outputs.size() == 1u);
+    parsed.graph->systems[0].outputs[0].sortPriority = -7;
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].outputs.size() == 1u);
+    CHECK(compiled.systems[0].outputs[0].sortPriority == -7);
+
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary = vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    std::size_t outputsOffset = 0;
+    std::uint32_t outputsSize = 0;
+    const std::uint32_t sectionCount = readU32(binary, 12u);
+    for (std::uint32_t i = 0; i < sectionCount; ++i) {
+        const std::size_t entry = kHeaderSize + static_cast<std::size_t>(i) * 16u;
+        if (readU32(binary, entry) == 8u) {
+            outputsOffset = readU32(binary, entry + 4u);
+            outputsSize = readU32(binary, entry + 8u);
+        }
+    }
+    REQUIRE(outputsOffset != 0u);
+    REQUIRE(outputsSize == 4u + 32u);
+    CHECK(readU32(binary, outputsOffset) == 1u);
+    CHECK(static_cast<std::int32_t>(readU32(binary, outputsOffset + 4u + 28u)) == -7);
+
+    std::string parseError;
+    const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, parseError);
+    INFO(parseError);
+    REQUIRE(asset != nullptr);
+    bool foundOutput = false;
+    for (const vfx::AssetProgram& program : asset->programs) {
+        if (program.output) {
+            foundOutput = true;
+            CHECK(program.sortPriority == -7);
+        }
+    }
+    CHECK(foundOutput);
+}
+
+TEST_CASE("vfx compiler preserves per-output sort direction") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.graph->systems.size() == 1u);
+    REQUIRE(parsed.graph->systems[0].outputs.size() == 1u);
+    vfx::SystemDesc& system = parsed.graph->systems[0];
+    system.sort = vfx::SortDesc{vfx::SortMode::Distance, vfx::SortOrder::Descending};
+    system.outputs[0].sort = vfx::SortDesc{vfx::SortMode::Distance, vfx::SortOrder::Ascending};
+    system.outputs[0].sortOrder = vfx::SortOrder::Ascending;
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].outputs.size() == 1u);
+    CHECK(static_cast<int>(compiled.systems[0].outputs[0].sortOrder) ==
+          static_cast<int>(vfx::SortOrder::Ascending));
+    CHECK(compiled.systems[0].outputs[0].vertex.source.find("s_vfxRenderCount") !=
+          std::string::npos);
+    CHECK(compiled.systems[0].outputs[0].vertex.source.find(
+              "drawParticle = renderCount - 1u - drawParticle") != std::string::npos);
+    bool foundCountBinding = false;
+    for (const vfx::detail::KernelBinding& binding :
+         compiled.systems[0].outputs[0].vertex.bindings) {
+        if (binding.stage == 14u &&
+            binding.index == static_cast<std::uint32_t>(vfx::detail::BufferKind::RenderCount)) {
+            foundCountBinding = true;
+        }
+    }
+    CHECK(foundCountBinding);
+
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary = vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    std::size_t outputsOffset = 0;
+    const std::uint32_t sectionCount = readU32(binary, 12u);
+    for (std::uint32_t i = 0; i < sectionCount; ++i) {
+        const std::size_t entry = kHeaderSize + static_cast<std::size_t>(i) * 16u;
+        if (readU32(binary, entry) == 8u) {
+            outputsOffset = readU32(binary, entry + 4u);
+        }
+    }
+    REQUIRE(outputsOffset != 0u);
+    CHECK(static_cast<std::uint8_t>(binary[outputsOffset + 4u + 11u]) ==
+          static_cast<std::uint8_t>(vfx::SortOrder::Ascending));
+
+    std::string parseError;
+    const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, parseError);
+    INFO(parseError);
+    REQUIRE(asset != nullptr);
+    bool foundOutput = false;
+    for (const vfx::AssetProgram& program : asset->programs) {
+        if (program.output) {
+            foundOutput = true;
+            CHECK(static_cast<int>(program.sortOrder) ==
+                  static_cast<int>(vfx::SortOrder::Ascending));
+        }
+    }
+    CHECK(foundOutput);
+}
+
+TEST_CASE("vfx compiler chunks output draws by 2048 particles") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.graph->systems.size() == 1u);
+    REQUIRE(parsed.graph->systems[0].outputs.size() == 1u);
+
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    INFO(compiled.error);
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].outputs.size() == 1u);
+
+    const vfx::detail::OutputProgram& output = compiled.systems[0].outputs[0];
+    CHECK(output.vertex.source.find("gl_InstanceID") != std::string::npos);
+    CHECK(output.vertex.source.find("particleChunk = uint(gl_InstanceID) - instanceIndex * particleChunks") !=
+          std::string::npos);
+    CHECK(output.vertex.source.find("particleChunk * 2048u") != std::string::npos);
+    CHECK(output.vertex.source.find("linearParticle < renderCount && instanceActive") !=
+          std::string::npos);
+    CHECK(output.vertex.source.find("u_vfxInstanceParams") != std::string::npos);
+    CHECK(output.vertex.source.find("u_vfxInstanceParams.w > 0.5") != std::string::npos);
+    CHECK(output.vertex.source.find("rawLoadUint(s_vfxInstances") != std::string::npos);
+    CHECK(output.vertex.source.find("u_vfxInstanceParams.z + 0.5") != std::string::npos);
+    CHECK(output.vertex.source.find("effectInstance * 32u") != std::string::npos);
+
+    bool foundCountBinding = false;
+    for (const vfx::detail::KernelBinding& binding : output.vertex.bindings) {
+        if (binding.stage == 14u &&
+            binding.index == static_cast<std::uint32_t>(vfx::detail::BufferKind::RenderCount)) {
+            foundCountBinding = true;
+        }
+    }
+    CHECK(foundCountBinding);
+
+    bool foundFillIndirect = false;
+    for (const vfx::detail::KernelProgram& kernel : compiled.systems[0].kernels) {
+        if (kernel.task != vfx::detail::KernelTask::FillIndirect) {
+            continue;
+        }
+        foundFillIndirect = true;
+        CHECK(kernel.shader.source.find("particlesPerInstance = 2048u") != std::string::npos);
+        CHECK(kernel.shader.source.find("min(count, particlesPerInstance) * 6u") !=
+              std::string::npos);
+        CHECK(kernel.shader.source.find("/ particlesPerInstance") != std::string::npos);
+    }
+    CHECK(foundFillIndirect);
+}
+
+TEST_CASE("vfx compiler emits extra sort pipelines for per-output criteria") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.graph->systems.size() == 1u);
+    vfx::SystemDesc& system = parsed.graph->systems[0];
+    system.sort = vfx::SortDesc{vfx::SortMode::Distance, vfx::SortOrder::Ascending};
+    system.outputs[0].sort = vfx::SortDesc{vfx::SortMode::Distance, vfx::SortOrder::Ascending};
+    vfx::OutputDesc second = system.outputs[0];
+    second.sort = vfx::SortDesc{vfx::SortMode::YoungestInFront, vfx::SortOrder::Ascending};
+    system.outputs.push_back(second);
+
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    INFO(compiled.error);
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].outputs.size() == 2u);
+    CHECK(static_cast<int>(compiled.systems[0].outputs[0].sortMode) ==
+          static_cast<int>(vfx::SortMode::Distance));
+    CHECK(static_cast<int>(compiled.systems[0].outputs[1].sortMode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+
+    const auto& kernels = compiled.systems[0].kernels;
+    REQUIRE(kernels.size() == 14u);
+    CHECK(kernels[4].task == vfx::detail::KernelTask::OutputUpdate);
+    CHECK(static_cast<int>(kernels[4].sortMode) == static_cast<int>(vfx::SortMode::None));
+    CHECK(kernels[4].shader.source.find("u_vfxSortCameraPos") != std::string::npos);
+    CHECK(kernels[4].shader.source.find("u_global_cameraPos") == std::string::npos);
+    CHECK(kernels[5].task == vfx::detail::KernelTask::SortBitonic);
+    CHECK(kernels[7].task == vfx::detail::KernelTask::SortReset);
+    CHECK(static_cast<int>(kernels[7].sortMode) == static_cast<int>(vfx::SortMode::YoungestInFront));
+    CHECK(kernels[8].task == vfx::detail::KernelTask::OutputUpdate);
+    CHECK(static_cast<int>(kernels[8].sortMode) == static_cast<int>(vfx::SortMode::YoungestInFront));
+    CHECK(kernels[8].shader.source.find("attributes.Load_age()") != std::string::npos);
+    CHECK(kernels[9].task == vfx::detail::KernelTask::SortBitonic);
+    CHECK(static_cast<int>(kernels[9].sortMode) == static_cast<int>(vfx::SortMode::YoungestInFront));
+
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary =
+        vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    std::string parseError;
+    const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, parseError);
+    INFO(parseError);
+    REQUIRE(asset != nullptr);
+    bool sawReset = false;
+    bool sawYoungestUpdate = false;
+    for (const vfx::AssetProgram& program : asset->programs) {
+        if (program.task == static_cast<std::uint8_t>(vfx::detail::KernelTask::SortReset)) {
+            sawReset = true;
+        }
+        if (program.task == static_cast<std::uint8_t>(vfx::detail::KernelTask::OutputUpdate) &&
+            static_cast<int>(program.sortMode) == static_cast<int>(vfx::SortMode::YoungestInFront)) {
+            sawYoungestUpdate = true;
+        }
+    }
+    CHECK(sawReset);
+    CHECK(sawYoungestUpdate);
+}
+
+TEST_CASE("vfx compiler round trips camera depth and youngest sort modes") {
+    for (const vfx::SortMode mode : {vfx::SortMode::CameraDepth, vfx::SortMode::YoungestInFront}) {
+        vfx::ParseResult parsed =
+            vfx::loadGraphFile(sourcePath() / "tests/assets/minimal_unlit.vfx.json");
+        REQUIRE(parsed.ok());
+        REQUIRE(parsed.graph->systems.size() == 1u);
+        REQUIRE(parsed.graph->systems[0].outputs.size() == 1u);
+        parsed.graph->systems[0].sort.mode = mode;
+        parsed.graph->systems[0].sort.order = vfx::SortOrder::Ascending;
+        parsed.graph->systems[0].outputs[0].sort = vfx::SortDesc{mode, vfx::SortOrder::Ascending};
+        vfx::detail::CompiledAsset compiled =
+            vfx::detail::generatePrograms(std::move(parsed.graph));
+        REQUIRE(compiled.error.empty());
+
+        const auto blobs = makeBlobs(compiled);
+        vfx::CompileOptions options;
+        std::string error;
+        const std::vector<std::byte> binary =
+            vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+        REQUIRE(error.empty());
+        std::string parseError;
+        const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, parseError);
+        INFO(parseError);
+        REQUIRE(asset != nullptr);
+        REQUIRE(asset->systems.size() == 1u);
+        CHECK(static_cast<int>(asset->systems[0].sortMode) == static_cast<int>(mode));
+        bool foundOutput = false;
+        for (const vfx::AssetProgram& program : asset->programs) {
+            if (program.output) {
+                foundOutput = true;
+                CHECK(static_cast<int>(program.sortMode) == static_cast<int>(mode));
+            }
+        }
+        CHECK(foundOutput);
+    }
+}
+
+TEST_CASE("vfx compiler emits automatic bounds kernels and preserves the mode") {
+    vfx::ParseResult parsed =
+        vfx::loadGraphFile(sourcePath() / "tests/assets/auto_bounds.vfx.json");
+    REQUIRE(parsed.ok());
+    vfx::detail::CompiledAsset compiled = vfx::detail::generatePrograms(std::move(parsed.graph));
+    REQUIRE(compiled.error.empty());
+    REQUIRE(compiled.systems.size() == 1u);
+    REQUIRE(compiled.systems[0].desc->bounds.mode == vfx::BoundsMode::Automatic);
+    CHECK(compiled.systems[0].desc->bounds.padding.x == doctest::Approx(0.25f));
+    CHECK(compiled.systems[0].desc->bounds.padding.y == doctest::Approx(0.5f));
+    CHECK(compiled.systems[0].desc->bounds.padding.z == doctest::Approx(0.75f));
+    const vfx::detail::CompiledSystem& system = compiled.systems[0];
+    REQUIRE(system.kernels.size() == 10u);
+    CHECK(system.kernels[4].task == vfx::detail::KernelTask::BoundsInit);
+    CHECK(system.kernels[5].task == vfx::detail::KernelTask::Bounds);
+    CHECK(system.kernels[6].task == vfx::detail::KernelTask::OutputUpdate);
+    CHECK(system.kernels[4].shader.source.find("s_vfxBounds[0] = 0xffffffffu") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("atomicMin(s_vfxBounds[0]") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("vfxFloatFlip") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("length(scale.xy)") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("length(scale)") == std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("u_vfxBoundsParams") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("u_vfxBoundsRight") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("u_vfxBoundsUp") != std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("abs(billboardRight) * abs(scale.x)") !=
+          std::string::npos);
+    CHECK(system.kernels[5].shader.source.find("const float angle = rawLoadFloat") !=
+          std::string::npos);
+
+    const auto blobs = makeBlobs(compiled);
+    vfx::CompileOptions options;
+    std::string error;
+    const std::vector<std::byte> binary = vfx::detail::writeAssetBinary(compiled, blobs, options, error);
+    REQUIRE(error.empty());
+    const std::shared_ptr<const vfx::Asset> asset = vfx::parseAssetBinary(binary, error);
+    INFO(error);
+    REQUIRE(asset != nullptr);
+    REQUIRE(asset->systems.size() == 1u);
+    CHECK(asset->systems[0].boundsMode == vfx::BoundsMode::Automatic);
+    CHECK(asset->systems[0].boundsPadding.x == doctest::Approx(0.25f));
+    CHECK(asset->systems[0].boundsPadding.y == doctest::Approx(0.5f));
+    CHECK(asset->systems[0].boundsPadding.z == doctest::Approx(0.75f));
+    CHECK(asset->programs.size() == 9u);
 }
 
 TEST_CASE("vfx compiler bakes LUTs and binds curve texture stages") {
@@ -638,9 +1014,10 @@ TEST_CASE("vfx compiler emits lit output shaders") {
     CHECK(output.fragment.source.find("HBG_SHADOW_AREA_SAMPLER") == std::string::npos);
     REQUIRE(output.fragment.bindings.size() == 1u);
     CHECK(output.fragment.bindings[0].stage == 0u);
-    REQUIRE(output.vertex.bindings.size() == 2u);
+    REQUIRE(output.vertex.bindings.size() == 3u);
     CHECK(output.vertex.bindings[0].stage == 12u);
     CHECK(output.vertex.bindings[1].stage == 13u);
+    CHECK(output.vertex.bindings[2].stage == 14u);
 
     const std::string shaderc = environmentValue("VFX_TEST_SHADERC");
     const std::string bgfxSource = environmentValue("VFX_TEST_BGFX_SOURCE");
@@ -775,6 +1152,40 @@ TEST_CASE("vfx compiler reports unsupported V1 features with paths") {
     REQUIRE(customAsset.error.empty());
     CHECK(customAsset.systems.front().kernels[4].shader.source.find("attributes.Load_sortKey()") !=
           std::string::npos);
+
+    const std::string depth = R"json({
+      "version": 1, "name": "DepthSort", "properties": [],
+      "systems": [{"name": "Main", "capacity": 64,
+        "sort": {"mode": "cameraDepth", "order": "ascending"},
+        "outputs": [{"type": "quad", "sort": "cameraDepth"}]}]
+    })json";
+    vfx::ParseResult depthParsed = vfx::parseGraphJson(depth);
+    REQUIRE(depthParsed.ok());
+    vfx::detail::CompiledAsset depthAsset =
+        vfx::detail::generatePrograms(std::move(depthParsed.graph));
+    REQUIRE(depthAsset.error.empty());
+    const vfx::detail::CompiledSystem& depthSystem = depthAsset.systems.front();
+    CHECK(depthSystem.kernels[4].shader.source.find("u_global_invView") != std::string::npos);
+    CHECK(depthSystem.kernels[4].shader.source.find("cameraForward") != std::string::npos);
+    CHECK(static_cast<int>(depthSystem.outputs.front().sortMode) ==
+          static_cast<int>(vfx::SortMode::CameraDepth));
+
+    const std::string youngest = R"json({
+      "version": 1, "name": "YoungestSort", "properties": [],
+      "systems": [{"name": "Main", "capacity": 64,
+        "sort": {"mode": "youngest", "order": "ascending"},
+        "outputs": [{"type": "quad", "sort": "youngest"}]}]
+    })json";
+    vfx::ParseResult youngestParsed = vfx::parseGraphJson(youngest);
+    REQUIRE(youngestParsed.ok());
+    vfx::detail::CompiledAsset youngestAsset =
+        vfx::detail::generatePrograms(std::move(youngestParsed.graph));
+    REQUIRE(youngestAsset.error.empty());
+    const vfx::detail::CompiledSystem& youngestSystem = youngestAsset.systems.front();
+    CHECK(youngestSystem.kernels[4].shader.source.find("attributes.Load_age()") !=
+          std::string::npos);
+    CHECK(static_cast<int>(youngestSystem.outputs.front().sortMode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
 
     const std::string missingCustom = R"json({
       "version": 1, "name": "MissingCustomSort", "properties": [],

@@ -27,6 +27,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace hbg;
@@ -45,6 +46,64 @@ constexpr uint8_t kDecalPng[] = {
     0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
     0xae, 0x42, 0x60, 0x82,
 };
+
+constexpr char kEtc1sOpaqueKtx2Hex[] =
+    "ab4b5458203230bb0d0a1a0a000000000100000010000000100000000000000000000000010000000500000001000000"
+    "c80000002c000000f40000002400000018010000000000002f010000000000004d020000000000000800000000000000"
+    "00000000000000004a020000000000000300000000000000000000000000000049020000000000000100000000000000"
+    "000000000000000048020000000000000100000000000000000000000000000047020000000000000100000000000000"
+    "00000000000000002c0000000000000002002800a301020003030000000000000000000000003f000000000000000000"
+    "ffffffff1f0000004b545877726974657200426173697320556e6976657273616c20312e3530000017000d0050000000"
+    "320000003500000000000000000000000000000008000000000000000000000000000000000000000300000000000000"
+    "000000000000000000000000010000000000000000000000000000000000000001000000000000000000000000000000"
+    "0000000001000000000000000000000010401c0001000041d8be84868200510008001004622378acf3160d4c00710004"
+    "00008060f351724000a6000000000082203ca51984103591204842e4462a44bd11713cb9e4dbbe8297a65a7bdade770b"
+    "080626070880300c00c02b36bf427de83e011750c8166ed6290a04a4fe9f379cb41707341da1e77e22ffabadaa1a6b7c"
+    "d30c00c144000000000000f25fed0298130000000004c0ac810727e06dc4000040c04a7cb988426984b3090360060000"
+    "000000002940001ee6069a0814f20030c2a1355a01";
+
+constexpr char kUastcAlphaKtx2Hex[] =
+    "ab4b5458203230bb0d0a1a0a000000000100000010000000100000000000000000000000010000000500000002000000"
+    "c80000002c000000f40000002400000000000000000000000000000000000000ac010000000000005200000000000000"
+    "00010000000000006301000000000000490000000000000040000000000000004a010000000000001900000000000000"
+    "100000000000000031010000000000001900000000000000100000000000000018010000000000001900000000000000"
+    "10000000000000002c0000000000000002002800a601020003030000000000000000000000007f030000000000000000"
+    "ffffffff1f0000004b545877726974657200426173697320556e6976657273616c20312e3530000028b52ffd20108100"
+    "009757151870b4f402000000000000000028b52ffd201081000060430a828dfb65ea3233fcfffcfffcff28b52ffd2010"
+    "8100008093ea03046a656202330033ccffccff28b52ffd204001020020e96a4846a8650a1332dcfedcfe1032109039c5"
+    "a020667671cf70cf70cf70cf06b0656282218ac290c1098ff0088ff03091a1c0a0546576d13fd03fd03fd03f28b52ffd"
+    "60000045020004031010193b44c06d8055d951101019bb45c06da057bc01c26d7c569c00c26d5c54d93844ccd9b845cc"
+    "d9b901ced99900ce0900075002380238021c710812805dc02e33f7d43a2f";
+
+uint8_t hexValue(char value) {
+    if (value >= '0' && value <= '9') {
+        return static_cast<uint8_t>(value - '0');
+    }
+    if (value >= 'a' && value <= 'f') {
+        return static_cast<uint8_t>(value - 'a' + 10);
+    }
+    if (value >= 'A' && value <= 'F') {
+        return static_cast<uint8_t>(value - 'A' + 10);
+    }
+    return 0xFFu;
+}
+
+std::vector<uint8_t> decodeHex(std::string_view text) {
+    if ((text.size() & 1u) != 0u) {
+        return {};
+    }
+    std::vector<uint8_t> data;
+    data.reserve(text.size() / 2u);
+    for (std::size_t index = 0; index < text.size(); index += 2u) {
+        const uint8_t high = hexValue(text[index]);
+        const uint8_t low = hexValue(text[index + 1u]);
+        if (high > 0x0Fu || low > 0x0Fu) {
+            return {};
+        }
+        data.push_back(static_cast<uint8_t>((high << 4u) | low));
+    }
+    return data;
+}
 
 void writeFile(const std::filesystem::path& path, const void* data, std::size_t size) {
     std::ofstream file(path, std::ios::binary);
@@ -136,6 +195,86 @@ std::vector<uint8_t> makeKtx2Bc1() {
     }
     bimg::imageFree(image);
     return result;
+}
+
+std::vector<uint8_t> makeKtx2Rgba8Mips() {
+    bx::DefaultAllocator allocator;
+    bx::Error error;
+    bimg::ImageContainer* image =
+        bimg::imageAlloc(&allocator, bimg::TextureFormat::RGBA8, 8, 8, 0, 1, false, true);
+    if (image == nullptr) {
+        return {};
+    }
+
+    for (uint8_t mipLevel = 0; mipLevel < image->m_numMips; ++mipLevel) {
+        bimg::ImageMip mip;
+        if (!bimg::imageGetRawData(*image, 0, mipLevel, image->m_data, image->m_size, mip)) {
+            bimg::imageFree(image);
+            return {};
+        }
+        uint8_t* pixels = const_cast<uint8_t*>(mip.m_data);
+        for (uint32_t y = 0; y < mip.m_height; ++y) {
+            for (uint32_t x = 0; x < mip.m_width; ++x) {
+                const std::size_t offset = (static_cast<std::size_t>(y) * mip.m_width + x) * 4u;
+                pixels[offset + 0] = static_cast<uint8_t>(32u + mipLevel * 32u);
+                pixels[offset + 1] = static_cast<uint8_t>(x * 16u);
+                pixels[offset + 2] = static_cast<uint8_t>(y * 16u);
+                pixels[offset + 3] = 255;
+            }
+        }
+    }
+
+    bx::MemoryBlock block(&allocator);
+    bx::MemoryWriter writer(&block);
+    bimg::imageWriteKtx2(&writer, *image, image->m_data, image->m_size, &error);
+    const auto* data = static_cast<const uint8_t*>(block.more());
+    std::vector<uint8_t> result;
+    if (data != nullptr && block.getSize() > 0) {
+        result.assign(data, data + block.getSize());
+    }
+    bimg::imageFree(image);
+    return result;
+}
+
+std::vector<uint8_t> makeKtx1Rgba8Mips() {
+    std::vector<uint8_t> bytes;
+    const auto appendU32 = [&bytes](uint32_t value) {
+        bytes.push_back(static_cast<uint8_t>(value & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 8u) & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 16u) & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 24u) & 0xFFu));
+    };
+
+    static constexpr uint8_t kIdentifier[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x31,
+                                                0x31, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+    bytes.insert(bytes.end(), kIdentifier, kIdentifier + sizeof(kIdentifier));
+    appendU32(0x04030201u);
+    appendU32(0x1401u);
+    appendU32(1u);
+    appendU32(0x1908u);
+    appendU32(0x8058u);
+    appendU32(0x1908u);
+    appendU32(8u);
+    appendU32(8u);
+    appendU32(0u);
+    appendU32(0u);
+    appendU32(1u);
+    appendU32(4u);
+    appendU32(0u);
+
+    uint32_t size = 8;
+    for (uint32_t mipLevel = 0; mipLevel < 4u; ++mipLevel) {
+        const uint32_t imageSize = size * size * 4u;
+        appendU32(imageSize);
+        for (uint32_t texel = 0; texel < size * size; ++texel) {
+            bytes.push_back(static_cast<uint8_t>(32u + mipLevel * 32u));
+            bytes.push_back(static_cast<uint8_t>(texel & 0xFFu));
+            bytes.push_back(static_cast<uint8_t>((texel >> 8u) & 0xFFu));
+            bytes.push_back(255u);
+        }
+        size = std::max(1u, size / 2u);
+    }
+    return bytes;
 }
 
 std::vector<uint8_t> makeTriangleBuffer() {
@@ -805,9 +944,26 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     writeFile(gltfPath, json.data(), json.size());
 
     const std::string sidecar = R"({
-        "hdrp":{"renderQueue":2451,"maskMap":"separate","features":{"clearCoat":true,"subsurfaceScattering":true},"clearCoat":0.4,"clearCoatRoughness":0.12,"transmission":0.3,"thickness":0.5,"ior":1.4,"iridescence":0.2,"anisotropy":0.6,"anisotropyRotation":0.25,"subsurfaceMask":0.7},
+        "hdrp":{"renderQueue":2451,"maskMap":"separate","transparentBackface":true,"features":{"clearCoat":true,"subsurfaceScattering":true},"clearCoat":0.4,"clearCoatRoughness":0.12,"transmission":0.3,"thickness":0.5,"ior":1.4,"iridescence":0.2,"anisotropy":0.6,"anisotropyRotation":0.25,"subsurfaceMask":0.7},
         "lights":[{
             "name":"LightNode",
+            "instanceId":305419896,
+            "sourceRadius":0.3,
+            "sourceLength":0.4,
+            "lightSourceAngle":12.0,
+            "shadowType":"hard",
+            "barnDoorAngle":40.0,
+            "barnDoorLength":2.5,
+            "falloff":"bakery-physical",
+            "useColorTemperature":true,
+            "colorTemperature":2000.0,
+            "bakeMode":"mixed",
+            "mixedMode":"indirectOnly",
+            "lightingChannel":2,
+            "shadowTranslucency":0.35,
+            "enablePenumbra":true,
+            "penumbraTint":[0.1,0.2,0.3,0.4],
+            "penumbraLuma":0.75,
             "shadow":{
                 "dimmer":0.4,
                 "fadeDistance":42.0,
@@ -876,6 +1032,7 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
     CHECK(material.metallic == doctest::Approx(0.1f));
     CHECK(material.roughness == doctest::Approx(0.7f));
     CHECK(material.doubleSided);
+    CHECK(material.transparentBackface);
     CHECK(material.baseColorTexture.sampler.wrapS == TextureWrap::Repeat);
     CHECK(material.baseColorTexture.sampler.wrapT == TextureWrap::Repeat);
     CHECK(material.baseColorTexture.sampler.minFilter == TextureFilter::Linear);
@@ -899,10 +1056,27 @@ TEST_CASE("glTF loader reads mesh material camera and light") {
 
     REQUIRE(scene.lights.size() == 1);
     CHECK(scene.lights[0].type == render::LightType::Point);
+    CHECK(scene.lights[0].instanceId == 305419896u);
     CHECK(scene.lights[0].intensity == doctest::Approx(5.0f));
     CHECK(scene.lights[0].range == doctest::Approx(10.0f));
+    CHECK(scene.lights[0].sourceRadius == doctest::Approx(0.3f));
+    CHECK(scene.lights[0].sourceLength == doctest::Approx(0.4f));
+    CHECK(scene.lights[0].lightSourceAngle == doctest::Approx(12.0f));
+    CHECK(scene.lights[0].barnDoorAngle == doctest::Approx(40.0f));
+    CHECK(scene.lights[0].barnDoorLength == doctest::Approx(2.5f));
+    CHECK(scene.lights[0].falloffMode == render::LightFalloffMode::BakeryPhysical);
+    CHECK(scene.lights[0].useColorTemperature);
+    CHECK(scene.lights[0].colorTemperature == doctest::Approx(2000.0f));
+    CHECK(scene.lights[0].bakeMode == render::LightBakeMode::Mixed);
+    CHECK(scene.lights[0].mixedMode == render::LightMixedMode::IndirectOnly);
+    CHECK(scene.lights[0].lightingChannel == 2);
     CHECK(scene.lights[0].castShadows);
+    CHECK(scene.lights[0].shadowType == render::LightShadowType::Hard);
     CHECK(scene.lights[0].shadowConfigured);
+    CHECK(scene.lights[0].shadowTranslucency == doctest::Approx(0.35f));
+    CHECK(scene.lights[0].enablePenumbra);
+    CHECK(scene.lights[0].penumbraTint == Vec4(0.1f, 0.2f, 0.3f, 0.4f));
+    CHECK(scene.lights[0].penumbraLuma == doctest::Approx(0.75f));
     CHECK(scene.lights[0].shadow.dimmer == doctest::Approx(0.4f));
     CHECK(scene.lights[0].shadow.fadeDistance == doctest::Approx(42.0f));
     CHECK(scene.lights[0].shadow.nearPlane == doctest::Approx(0.25f));
@@ -1365,6 +1539,10 @@ TEST_CASE("mesh computes deformed bounds") {
     REQUIRE(deformedBounds.valid());
     CHECK(deformedBounds.min.x == doctest::Approx(3.0f));
     CHECK(deformedBounds.max.x == doctest::Approx(5.0f));
+    const Bounds skinnedBounds = mesh.computeSkinnedBounds({translated});
+    REQUIRE(skinnedBounds.valid());
+    CHECK(skinnedBounds.min.x == doctest::Approx(deformedBounds.min.x));
+    CHECK(skinnedBounds.max.x == doctest::Approx(deformedBounds.max.x));
 }
 
 TEST_CASE("glTF loader applies texture sampler wrap and filter") {
@@ -1484,6 +1662,56 @@ TEST_CASE("texture loader resamples and rejects unsupported mask sources") {
     CHECK_FALSE(TextureLoader::packOrmMask(nullptr, &compressed, packed, &error));
     CHECK_FALSE(error.empty());
     CHECK_FALSE(TextureLoader::packOrmMask(nullptr, nullptr, packed, &error));
+}
+
+TEST_CASE("texture loader composes layered 2D array, 3D, and cubemap sources") {
+    const ImageAsset red = makeMaskImage(1, 1, {{255, 0, 0, 255}});
+    const ImageAsset green = makeMaskImage(1, 1, {{0, 255, 0, 255}});
+    const ImageAsset blue = makeMaskImage(1, 1, {{0, 0, 255, 255}});
+
+    ImageAsset array;
+    REQUIRE_MESSAGE(TextureLoader::composeLayered(
+                        {&red, &green}, LayeredTextureLayout::Texture2DArray, array),
+                    "2D array composition failed");
+    CHECK(array.width == 1u);
+    CHECK(array.height == 1u);
+    CHECK(array.layers == 2u);
+    CHECK(array.depth == 1u);
+    CHECK_FALSE(array.is3D);
+    CHECK_FALSE(array.cubeMap);
+    REQUIRE(array.pixels.size() == 8u);
+    CHECK(array.pixels[0] == 255u);
+    CHECK(array.pixels[4] == 0u);
+
+    ImageAsset volume;
+    REQUIRE(TextureLoader::composeLayered({&red, &green, &blue}, LayeredTextureLayout::Texture3D,
+                                          volume));
+    CHECK(volume.layers == 1u);
+    CHECK(volume.depth == 3u);
+    CHECK(volume.is3D);
+    CHECK_FALSE(volume.cubeMap);
+    REQUIRE(volume.pixels.size() == 12u);
+
+    ImageAsset cube;
+    REQUIRE(TextureLoader::composeLayered(
+        {&red, &green, &blue, &red, &green, &blue}, LayeredTextureLayout::Cubemap, cube));
+    CHECK(cube.cubeMap);
+    CHECK_FALSE(cube.is3D);
+    CHECK(cube.layers == 1u);
+    REQUIRE(cube.pixels.size() == 24u);
+
+    std::string error;
+    CHECK_FALSE(TextureLoader::composeLayered({&red, &green}, LayeredTextureLayout::Cubemap, cube,
+                                              &error));
+    CHECK_FALSE(error.empty());
+    const ImageAsset wide = makeMaskImage(2, 1, {{255, 0, 0, 255}, {0, 255, 0, 255}});
+    CHECK_FALSE(TextureLoader::composeLayered({&red, &wide}, LayeredTextureLayout::Texture2DArray,
+                                              array, &error));
+    ImageAsset mip = red;
+    mip.mipCount = 2;
+    mip.pixels.resize(8u);
+    CHECK_FALSE(TextureLoader::composeLayered({&red, &mip}, LayeredTextureLayout::Texture2DArray,
+                                              array, &error));
 }
 
 TEST_CASE("scene sidecar converts a punctual light to an area light") {
@@ -1992,6 +2220,105 @@ TEST_CASE("texture loader preserves KTX2 block-compressed mips") {
     CHECK(image.isCompressed());
     CHECK(image.pixels.size() == 56u);
 }
+
+TEST_CASE("texture loader preserves uncompressed KTX2 mips") {
+    const std::vector<uint8_t> bytes = makeKtx2Rgba8Mips();
+    REQUIRE_FALSE(bytes.empty());
+
+    ImageAsset image;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::loadFromMemory(bytes.data(), bytes.size(), image, &error), error);
+    CHECK(image.width == 8u);
+    CHECK(image.height == 8u);
+    CHECK(image.mipCount == 4u);
+    CHECK(image.format == gfx::TextureFormat::RGBA8);
+    CHECK_FALSE(image.isCompressed());
+    CHECK(image.pixels.size() == 340u);
+}
+
+TEST_CASE("texture loader preserves uncompressed KTX1 mips") {
+    const std::vector<uint8_t> bytes = makeKtx1Rgba8Mips();
+    REQUIRE_FALSE(bytes.empty());
+
+    ImageAsset image;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::loadFromMemory(bytes.data(), bytes.size(), image, &error), error);
+    CHECK(image.width == 8u);
+    CHECK(image.height == 8u);
+    CHECK(image.mipCount == 4u);
+    CHECK(image.format == gfx::TextureFormat::RGBA8);
+    CHECK_FALSE(image.isCompressed());
+    CHECK(image.pixels.size() == 340u);
+}
+
+#if defined(HBG_HAS_BASISU) && HBG_HAS_BASISU
+TEST_CASE("texture loader transcodes BasisU ETC1S KTX2") {
+    const std::vector<uint8_t> bytes = decodeHex(kEtc1sOpaqueKtx2Hex);
+    REQUIRE_FALSE(bytes.empty());
+
+    ImageAsset image;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::loadFromMemory(bytes.data(), bytes.size(), image, &error), error);
+    CHECK(image.width == 16u);
+    CHECK(image.height == 16u);
+    CHECK(image.mipCount == 5u);
+    CHECK(image.format == gfx::TextureFormat::BC1);
+    CHECK(image.isCompressed());
+    CHECK(image.pixels.size() == 184u);
+    CHECK(std::any_of(image.pixels.begin(), image.pixels.end(), [](uint8_t value) { return value != 0; }));
+
+    std::vector<uint8_t> truncated(bytes.begin(), bytes.begin() + 100);
+    ImageAsset rejected;
+    std::string rejectError;
+    CHECK_FALSE(TextureLoader::loadFromMemory(truncated.data(), truncated.size(), rejected, &rejectError));
+    CHECK_FALSE(rejectError.empty());
+}
+
+TEST_CASE("texture loader transcodes BasisU UASTC alpha KTX2") {
+    const std::vector<uint8_t> bytes = decodeHex(kUastcAlphaKtx2Hex);
+    REQUIRE_FALSE(bytes.empty());
+
+    ImageAsset image;
+    std::string error;
+    REQUIRE_MESSAGE(TextureLoader::loadFromMemory(bytes.data(), bytes.size(), image, &error), error);
+    CHECK(image.width == 16u);
+    CHECK(image.height == 16u);
+    CHECK(image.mipCount == 5u);
+    CHECK(image.format == gfx::TextureFormat::BC7);
+    CHECK(image.isCompressed());
+    CHECK(image.pixels.size() == 368u);
+    CHECK(std::any_of(image.pixels.begin(), image.pixels.end(), [](uint8_t value) { return value != 0; }));
+}
+
+TEST_CASE("glTF loader reads BasisU supercompressed KHR_texture_basisu KTX2") {
+    const std::filesystem::path directory = makeFixtureDirectory();
+    const std::filesystem::path bufferPath = directory / "triangle_basisu.bin";
+    const std::filesystem::path imagePath = directory / "basisu.ktx2";
+    const std::filesystem::path gltfPath = directory / "triangle_basisu.gltf";
+
+    const std::vector<uint8_t> buffer = makeTriangleBuffer();
+    writeFile(bufferPath, buffer.data(), buffer.size());
+    const std::vector<uint8_t> ktx2 = decodeHex(kEtc1sOpaqueKtx2Hex);
+    REQUIRE_FALSE(ktx2.empty());
+    writeFile(imagePath, ktx2.data(), ktx2.size());
+
+    std::string json = makeGltf(kPngDataUri, true, true, {}, "basisu.ktx2");
+    const std::size_t uri = json.find("\"uri\":\"triangle.bin\"");
+    REQUIRE(uri != std::string::npos);
+    json.replace(uri, std::string("\"uri\":\"triangle.bin\"").size(), "\"uri\":\"triangle_basisu.bin\"");
+    writeFile(gltfPath, json.data(), json.size());
+
+    const SceneLoadResult result = SceneLoader::load(gltfPath);
+    REQUIRE_MESSAGE(result.ok(), result.error);
+    const render::RenderScene& scene = *result.scene;
+    REQUIRE(scene.images.size() == 1u);
+    CHECK(scene.images[0].format == gfx::TextureFormat::BC1);
+    CHECK(scene.images[0].mipCount == 5u);
+    CHECK(scene.images[0].pixels.size() == 184u);
+    REQUIRE(scene.materials.size() == 1u);
+    CHECK(scene.materials[0].baseColorTexture.imageIndex == 0);
+}
+#endif
 
 TEST_CASE("glTF loader reads KHR_texture_basisu KTX2 textures") {
     const std::filesystem::path directory = makeFixtureDirectory();

@@ -5,6 +5,7 @@ set(HBG_BGFX_SOURCE_DIR "" CACHE PATH "Path to the bgfx source checkout (used fo
 set(HBG_GLFW_DIR "" CACHE PATH "Path to a local GLFW checkout")
 set(HBG_CGLTF_DIR "" CACHE PATH "Path to a local cgltf checkout")
 set(HBG_DRACO_DIR "" CACHE PATH "Path to a local Draco checkout")
+set(HBG_BASISU_DIR "" CACHE PATH "Path to a local Basis Universal checkout")
 set(HBG_MIKKTSPACE_DIR "" CACHE PATH "Path to a local MikkTSpace checkout")
 set(HBG_NLOHMANN_JSON_DIR "" CACHE PATH "Path to a local nlohmann/json checkout")
 set(HBG_XATLAS_DIR "" CACHE PATH "Path to a local xatlas checkout")
@@ -90,6 +91,43 @@ if(HBG_ENABLE_DRACO)
         message(FATAL_ERROR "hbg: Draco target not found; set HBG_DRACO_DIR to a local Draco checkout")
     endif()
     set(HBG_DRACO_TARGET draco::draco)
+endif()
+
+if(HBG_ENABLE_BASISU)
+    if(HBG_BASISU_DIR)
+        set(HBG_BASISU_SOURCE_DIR "${HBG_BASISU_DIR}")
+    else()
+        FetchContent_Declare(
+            basisu
+            GIT_REPOSITORY https://github.com/BinomialLLC/basis_universal.git
+            GIT_TAG v1_50_0
+            GIT_SHALLOW TRUE
+            SOURCE_SUBDIR _hbg_no_cmake_project
+        )
+        FetchContent_MakeAvailable(basisu)
+        set(HBG_BASISU_SOURCE_DIR "${basisu_SOURCE_DIR}")
+    endif()
+    if(NOT EXISTS "${HBG_BASISU_SOURCE_DIR}/transcoder/basisu_transcoder.cpp" OR
+       NOT EXISTS "${HBG_BASISU_SOURCE_DIR}/zstd/zstd.c")
+        message(FATAL_ERROR "hbg: Basis Universal sources not found; set HBG_BASISU_DIR to a local checkout")
+    endif()
+    add_library(hbg_basisu STATIC
+        ${HBG_BASISU_SOURCE_DIR}/transcoder/basisu_transcoder.cpp
+        ${HBG_BASISU_SOURCE_DIR}/zstd/zstd.c
+    )
+    target_include_directories(hbg_basisu PUBLIC ${HBG_BASISU_SOURCE_DIR}/transcoder)
+    target_include_directories(hbg_basisu PRIVATE ${HBG_BASISU_SOURCE_DIR}/zstd)
+    target_compile_definitions(hbg_basisu PRIVATE
+        BASISD_SUPPORT_KTX2=1
+        BASISD_SUPPORT_KTX2_ZSTD=1
+        BASISU_SUPPORT_SSE=0
+    )
+    if(MSVC)
+        target_compile_options(hbg_basisu PRIVATE /w)
+    else()
+        target_compile_options(hbg_basisu PRIVATE -w -fno-strict-aliasing)
+    endif()
+    set(HBG_BASISU_TARGET hbg_basisu)
 endif()
 
 if(HBG_MIKKTSPACE_DIR)

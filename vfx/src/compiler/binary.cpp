@@ -33,6 +33,8 @@ enum SectionId : std::uint32_t {
     kBindings = 7,
     kOutputs = 8,
     kEvents = 9,
+    kBounds = 11,
+    kCulling = 12,
 };
 
 struct Section {
@@ -193,6 +195,7 @@ struct KernelRecord {
     KernelTask task = KernelTask::Spawner;
     ShaderStage stage = ShaderStage::Compute;
     ShaderBackend backend = ShaderBackend::Dxbc;
+    SortMode sortMode = SortMode::None;
     std::array<std::uint32_t, 3> groups{1, 1, 1};
     std::uint32_t bindingStart = 0;
     std::uint32_t bindingCount = 0;
@@ -415,6 +418,7 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
             record.task = kernel.task;
             record.stage = blob.stage;
             record.backend = blob.backend;
+            record.sortMode = kernel.sortMode;
             record.groups = kernel.groups;
             record.bindingStart = bindingStart;
             record.bindingCount = count;
@@ -448,7 +452,7 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.task));
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.stage));
         appendU8(kernelsSection, static_cast<std::uint8_t>(record.backend));
-        appendU8(kernelsSection, 0u);
+        appendU8(kernelsSection, static_cast<std::uint8_t>(record.sortMode));
         appendU32(kernelsSection, record.groups[0]);
         appendU32(kernelsSection, record.groups[1]);
         appendU32(kernelsSection, record.groups[2]);
@@ -486,10 +490,11 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
             appendU32(outputsSection, output.textureProperty);
             appendU32(outputsSection, output.textureProperty != kInvalidIndex ? 1u : 0u);
             appendU8(outputsSection, output.softParticles ? 1u : 0u);
+            appendU8(outputsSection, output.castShadows ? 1u : 0u);
+            appendU8(outputsSection, output.generateMotionVector ? 0u : 1u);
             appendU8(outputsSection, 0u);
-            appendU16(outputsSection, 0u);
             appendU32(outputsSection, std::bit_cast<std::uint32_t>(output.softDistance));
-            appendU32(outputsSection, 0u);
+            appendU32(outputsSection, std::bit_cast<std::uint32_t>(output.sortPriority));
         }
     }
 
@@ -516,10 +521,36 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
         appendU32(systemsData, static_cast<std::uint32_t>(systemBursts[systemIndex].size()));
         appendU32(systemsData, static_cast<std::uint32_t>(firstKernel));
         appendU32(systemsData, static_cast<std::uint32_t>(system.kernels.size()));
-        appendU32(systemsData, 0u);
+        appendU8(systemsData, static_cast<std::uint8_t>(desc.bounds.mode));
+        appendU8(systemsData, 0u);
+        appendU8(systemsData, 0u);
+        appendU8(systemsData, 0u);
         firstKernel += system.kernels.size();
     }
     systemsData.insert(systemsData.end(), burstData.begin(), burstData.end());
+
+    std::vector<std::byte> boundsData;
+    const bool hasBoundsPadding =
+        std::any_of(asset.systems.begin(), asset.systems.end(), [](const CompiledSystem& system) {
+            const Vec3& padding = system.desc->bounds.padding;
+            return system.desc->bounds.mode == BoundsMode::Automatic &&
+                   (padding.x != 0.0f || padding.y != 0.0f || padding.z != 0.0f);
+        });
+    if (hasBoundsPadding) {
+        appendU32(boundsData, static_cast<std::uint32_t>(asset.systems.size()));
+        for (const CompiledSystem& system : asset.systems) {
+            const Vec3& padding = system.desc->bounds.padding;
+            appendU32(boundsData, std::bit_cast<std::uint32_t>(padding.x));
+            appendU32(boundsData, std::bit_cast<std::uint32_t>(padding.y));
+            appendU32(boundsData, std::bit_cast<std::uint32_t>(padding.z));
+        }
+    }
+
+    std::vector<std::byte> cullingData;
+    const std::uint32_t cullingFlags = asset.graph != nullptr ? asset.graph->cullingFlags : 0u;
+    if (cullingFlags != 0u) {
+        appendU32(cullingData, cullingFlags);
+    }
 
     std::vector<std::byte> eventsData;
     appendU32(eventsData, static_cast<std::uint32_t>(asset.eventLinks.size()));
@@ -562,6 +593,12 @@ std::vector<std::byte> writeAssetBinary(const CompiledAsset& asset,
     sections.push_back(Section{kBindings, 4, std::move(bindingsSection)});
     sections.push_back(Section{kOutputs, 4, std::move(outputsSection)});
     sections.push_back(Section{kEvents, 4, std::move(eventsData)});
+    if (hasBoundsPadding) {
+        sections.push_back(Section{kBounds, 4, std::move(boundsData)});
+    }
+    if (cullingFlags != 0u) {
+        sections.push_back(Section{kCulling, 4, std::move(cullingData)});
+    }
 
     std::vector<std::byte> table;
     table.reserve(sections.size() * 16u);

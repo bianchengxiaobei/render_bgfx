@@ -118,6 +118,10 @@ const char* toString(SortMode mode) noexcept {
         return "distance";
     case SortMode::Custom:
         return "custom";
+    case SortMode::CameraDepth:
+        return "cameraDepth";
+    case SortMode::YoungestInFront:
+        return "youngest";
     }
     return "unknown";
 }

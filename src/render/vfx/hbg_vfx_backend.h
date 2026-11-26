@@ -11,6 +11,7 @@
 #include <bgfx/bgfx.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -36,6 +37,11 @@ class HbgVfxBackend final : public ::vfx::Device, public ::vfx::CommandSink, pub
     ::vfx::BufferHandle createBuffer(const ::vfx::BufferDesc& desc) override;
     void destroyBuffer(::vfx::BufferHandle handle) override;
     bool updateBuffer(::vfx::BufferHandle handle, std::span<const std::byte> data, std::uint32_t offset = 0) override;
+
+    ::vfx::ReadbackHandle readBufferAsync(::vfx::BufferHandle handle, std::uint32_t size) override;
+    bool readbackReady(::vfx::ReadbackHandle handle) const override;
+    bool copyReadback(::vfx::ReadbackHandle handle, std::span<std::byte> data) const override;
+    void releaseReadback(::vfx::ReadbackHandle handle) override;
 
     ::vfx::TextureHandle createTexture(const ::vfx::TextureDesc& desc) override;
     ::vfx::TextureHandle importTexture(gfx::TextureHandle handle);
@@ -114,6 +120,11 @@ class HbgVfxBackend final : public ::vfx::Device, public ::vfx::CommandSink, pub
         bool owned = true;
     };
 
+    struct ReadbackEntry {
+        std::vector<std::byte> data;
+        bool released = false;
+    };
+
     gfx::BufferHandle ensureDummyVertexBuffer();
     void destroyAll();
 
@@ -128,8 +139,10 @@ class HbgVfxBackend final : public ::vfx::Device, public ::vfx::CommandSink, pub
     std::vector<ProgramEntry> m_programs;
     std::vector<UniformEntry> m_uniforms;
     std::vector<SamplerEntry> m_samplers;
+    std::vector<std::unique_ptr<ReadbackEntry>> m_readbacks;
     std::unordered_map<std::string, ::vfx::UniformHandle> m_uniformsByName;
     std::unordered_map<std::string, ::vfx::SamplerHandle> m_samplersByName;
+    std::unordered_map<std::string, ::vfx::ProgramHandle> m_resolvedPrograms;
     std::uint32_t m_lightingBindCount = 0;
 };
 

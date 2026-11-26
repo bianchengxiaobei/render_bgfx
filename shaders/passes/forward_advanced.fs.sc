@@ -8,6 +8,7 @@ $input v_texcoord0, v_texcoord1, v_worldPos, v_normal, v_tangent, v_bitangent
 #include "material/surface_data_advanced.sc"
 #include "lighting/contact_shadow.sc"
 #include "lighting/light_loop.sc"
+#include "lighting/refraction.sc"
 
 void main()
 {
@@ -20,7 +21,8 @@ void main()
     surfaceData = hbgApplyAdvancedMaterial(surfaceData, v_tangent, v_bitangent, normalWS);
     surfaceData.lightLayerMask = u_object_lightLayerMask.x;
 
-    const vec2 contactShadowData = hbgSampleContactShadow(gl_FragCoord.xy * u_global_screenSize.zw);
+    const vec2 screenUV = gl_FragCoord.xy * u_global_screenSize.zw;
+    const vec2 contactShadowData = hbgSampleContactShadow(screenUV);
     surfaceData.contactShadowMask = contactShadowData.x;
     surfaceData.contactShadowFade = contactShadowData.y;
 
@@ -34,5 +36,11 @@ void main()
     const float shadowVisibility = hbgSampleDirectionalShadow(v_worldPos, surfaceData.normalWS);
     vec3 color = hbgEvaluateLightLoop(surfaceData, viewWS, v_worldPos, shadowVisibility) +
                  surfaceData.emissive;
+    color = hbgApplyScreenSpaceRefraction(color, v_worldPos, viewWS, surfaceData.normalWS, screenUV,
+                                          surfaceData.transmissionMask,
+                                          max(surfaceData.thickness, 0.0),
+                                          max(surfaceData.ior, 1.0),
+                                          hbgRefractionFeature(u_material_advanced2.z),
+                                          surfaceData.perceptualRoughness);
     gl_FragColor = vec4(max(color, vec3(0.0, 0.0, 0.0)), surfaceData.alpha);
 }

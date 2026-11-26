@@ -35,7 +35,13 @@ struct ParseResult {
     bool ok() const noexcept { return graph != nullptr && errors.empty(); }
 };
 
-ParseResult parseGraphJson(std::string_view json, std::string_view sourceName = {});
+enum class GraphParseMode : std::uint8_t {
+    FlattenSubgraphs,
+    PreserveSubgraphs,
+};
+
+ParseResult parseGraphJson(std::string_view json, std::string_view sourceName = {},
+                           GraphParseMode mode = GraphParseMode::FlattenSubgraphs);
 ParseResult loadGraphFile(const std::filesystem::path& path);
 std::uint64_t graphHash(const Graph& graph) noexcept;
 std::string formatParseError(const ParseError& error);

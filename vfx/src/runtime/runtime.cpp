@@ -45,6 +45,9 @@ constexpr std::uint8_t kTaskSortMerge = 10;
 constexpr std::uint8_t kTaskEventPrefix = 11;
 constexpr std::uint8_t kTaskEventReset = 12;
 constexpr std::uint8_t kTaskEventCopy = 13;
+constexpr std::uint8_t kTaskFillIndirect = 5;
+constexpr std::uint8_t kTaskOutputUpdate = 4;
+constexpr std::uint8_t kTaskSortReset = 16;
 constexpr std::uint32_t kSortChunkSize = 4096u;
 
 std::uint32_t burstOccurrences(const AssetBurst& burst, double time) noexcept {
@@ -63,6 +66,11 @@ std::uint32_t burstOccurrences(const AssetBurst& burst, double time) noexcept {
         occurrences = std::min(occurrences, burst.repeat);
     }
     return occurrences;
+}
+
+float decodeFloat(std::uint32_t value) {
+    const std::uint32_t mask = ((value >> 31u) - 1u) | 0x80000000u;
+    return std::bit_cast<float>(value ^ mask);
 }
 
 Mat4 inverseMatrix(const Mat4& matrix) {
@@ -286,15 +294,52 @@ struct BufferRuntime {
     std::uint32_t stride = 0;
 };
 
+struct BatchIndirectRuntime {
+    std::vector<BufferRuntime> buffers;
+    std::uint32_t serial = 0;
+};
+
+struct SortOutputRuntime {
+    SortMode mode = SortMode::None;
+    BufferRuntime indirection;
+    BufferRuntime kvp;
+    BufferRuntime renderCount;
+    BufferRuntime indirect;
+    BatchIndirectRuntime activeIndirect;
+    std::uint32_t validGeneration = 0;
+};
+
+struct SortBufferSet {
+    BufferHandle indirection{};
+    BufferHandle kvp{};
+    BufferHandle renderCount{};
+    BufferHandle indirect{};
+};
+
 struct SystemRuntime {
     std::vector<BufferRuntime> buffers;
+    std::vector<SortOutputRuntime> sortOutputs;
     std::vector<std::uint32_t> kernels;
     std::vector<std::uint32_t> outputs;
     std::vector<std::uint32_t> burstFired;
+    BatchIndirectRuntime activeIndirect;
+    BatchIndirectRuntime shadowIndirect;
+    std::uint32_t fillIndirectProgram = kInvalidIndex;
     double time = 0.0;
     double spawnAccumulator = 0.0;
     std::uint32_t spawnCount = 0;
     std::uint32_t aliveEstimate = 0;
+    Bounds gpuBounds{};
+    bool gpuBoundsValid = false;
+    std::array<std::uint32_t, 6> boundsReadback{};
+    ReadbackHandle boundsReadbackHandle{};
+    bool boundsReadbackPending = false;
+};
+
+struct OutputRuntimeRef {
+    std::uint32_t system = 0;
+    std::uint32_t programIndex = 0;
+    std::int32_t sortPriority = 0;
 };
 
 struct CpuEventRecord {
@@ -311,6 +356,14 @@ struct LutRuntime {
 } // namespace
 
 class EffectImpl final : public Effect {
+    struct InstanceRuntime {
+        Mat4 world = Mat4::identity();
+        Mat4 previousWorld = Mat4::identity();
+        bool transformHistoryValid = false;
+        bool culled = false;
+        Bounds bounds{};
+    };
+
   public:
     EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& asset, const EffectDesc& desc,
                std::string& error);
@@ -322,6 +375,9 @@ class EffectImpl final : public Effect {
     void reset() override;
     void advanceOneFrame() override;
     void setTransform(const Mat4& world) override;
+    void setInstanceTransforms(std::span<const Mat4> worlds) override;
+    void setCulled(bool culled) override;
+    void setInstanceCulled(std::size_t index, bool culled) override;
     void setPlayRate(float rate) override;
     bool isAlive() const override;
 
@@ -339,11 +395,32 @@ class EffectImpl final : public Effect {
     void uploadCpuEvents();
 
     Bounds bounds() const override;
+    Bounds visibleBounds() const override;
+    Bounds instanceBounds(std::size_t index) const override;
+    std::size_t instanceCount() const override;
+    bool supportsEffectInstancing() const override;
     bool isCulled() const override;
+    bool isInstanceCulled(std::size_t index) const override;
+    std::uint32_t outputBatchCount() const override;
+    std::uint32_t outputBatchSize() const override;
 
     void update(float deltaSeconds);
     void encodeSimulation(CommandSink& sink, const FrameContext& frame);
     void encodeOutput(CommandSink& sink, const FrameContext& frame);
+    void encodeOutputBatch(CommandSink& sink, const FrameContext& frame, std::uint32_t batchIndex);
+    void encodeMotionVectors(CommandSink& sink, const FrameContext& frame);
+    void encodeShadow(CommandSink& sink, const Mat4& shadowViewProjection);
+    void refreshDrawInstancing();
+    void ensureInstanceTransformBuffer();
+    void uploadInstanceTransforms();
+    void uploadInstanceActiveList();
+    void bindInstanceTransforms(CommandSink& sink, BufferHandle fallback);
+    void setInstanceDrawParams(CommandSink& sink, std::uint32_t totalCount, std::uint32_t activeCount,
+                               std::uint32_t activeBase, bool activeIndirection);
+    std::vector<BufferHandle> prepareActiveIndirect(CommandSink& sink, std::uint32_t systemIndex,
+                                                    SortMode sortMode, const SortBufferSet& buffers);
+    std::vector<BufferHandle> prepareShadowIndirect(CommandSink& sink, std::uint32_t systemIndex,
+                                                    const SortBufferSet& buffers);
     std::uint32_t aliveEstimate() const { return m_aliveEstimate; }
     std::uint32_t systemCount() const { return static_cast<std::uint32_t>(m_systems.size()); }
     const Asset* assetPtr() const noexcept { return m_asset.get(); }
@@ -355,13 +432,23 @@ class EffectImpl final : public Effect {
     void createResources(std::string& error);
     void releaseResources();
     void refreshBounds();
+    void refreshVisibleBounds();
+    void pollAutomaticBounds();
     void resetCpuState();
     void setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate,
-                     const FrameContext& frame);
-    void bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program);
+                     const FrameContext& frame, SortMode sortMode, bool useSortUniforms);
+    void encodeOutputDraws(CommandSink& sink, const FrameContext& frame, const InstanceRuntime& instance,
+                           bool batch, std::uint32_t firstBatch, std::uint32_t batchCount);
+    void bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program,
+                           const SortBufferSet* overrides = nullptr);
     void bindKernelTextures(CommandSink& sink, const AssetProgram& program);
-    void dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, std::uint32_t programIndex);
-    void bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program);
+    void dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, std::uint32_t programIndex,
+                        const SortBufferSet* overrides = nullptr);
+    void ensureOutputSort(CommandSink& sink, std::uint32_t systemIndex, SortMode sortMode,
+                          const FrameContext& frame);
+    SortBufferSet outputBuffers(std::uint32_t systemIndex, SortMode sortMode) const;
+    void bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex, const AssetProgram& program,
+                           const SortBufferSet& buffers);
     void bindOutputTexture(CommandSink& sink, const FrameContext& frame, const AssetProgram& program);
     void createLutTextures(std::string& error);
     void updateLutTexture(LutRuntime& lut);
@@ -372,8 +459,29 @@ class EffectImpl final : public Effect {
     Device& m_device;
     std::shared_ptr<const Asset> m_asset;
     Mat4 m_transform = Mat4::identity();
+    std::vector<InstanceRuntime> m_instances;
+    BufferHandle m_instanceTransforms{};
+    std::uint32_t m_instanceTransformCapacity = 0;
+    std::uint32_t m_batchInstanceCount = 1;
+    std::uint32_t m_outputInstanceCount = 1;
+    std::uint32_t m_outputBatchSize = 1;
+    std::uint32_t m_outputBatchCount = 1;
+    std::uint32_t m_shadowBatchSize = 1;
+    std::uint32_t m_shadowBatchCount = 1;
+    std::uint32_t m_activeInstanceBase = 0;
+    std::vector<std::uint32_t> m_activeInstances;
+    bool m_outputBatch = false;
+    bool m_activeIndirection = false;
+    bool m_activeArgsRequired = false;
+    bool m_shadowArgsRequired = false;
+    std::uint32_t m_activeArgsSerial = 1;
+    std::uint32_t m_shadowArgsSerial = 1;
+    bool m_activeInstancesDirty = false;
+    bool m_transformSetThisFrame = false;
+    bool m_supportsEffectInstancing = false;
     float m_playRate = 1.0f;
     std::uint32_t m_randomSeed = 0;
+    std::uint32_t m_instanceBatchLimit = 0;
     bool m_playing = false;
     bool m_paused = false;
     bool m_stopped = true;
@@ -383,6 +491,7 @@ class EffectImpl final : public Effect {
     bool m_hasBoundsOverride = false;
     Bounds m_boundsOverride{};
     Bounds m_bounds{};
+    Bounds m_visibleBounds{};
     float m_time = 0.0f;
     float m_deltaTime = 0.0f;
     std::uint32_t m_nextParticleId = 0;
@@ -390,6 +499,11 @@ class EffectImpl final : public Effect {
 
     std::vector<SystemRuntime> m_systems;
     std::vector<ProgramHandle> m_programs;
+    std::vector<OutputRuntimeRef> m_outputOrder;
+    std::uint32_t m_sortGeneration = 1;
+    std::vector<bool> m_hasPerOutputSort;
+    FrameContext m_lastFrame;
+    bool m_lastFrameValid = false;
     std::vector<UniformHandle> m_propertyUniforms;
     std::vector<std::array<float, 4>> m_propertyValues;
     std::vector<TextureHandle> m_propertyTextures;
@@ -400,12 +514,23 @@ class EffectImpl final : public Effect {
     UniformHandle m_paramsUniform{};
     UniformHandle m_idsUniform{};
     UniformHandle m_worldUniform{};
+    UniformHandle m_boundsParamsUniform{};
+    UniformHandle m_boundsRightUniform{};
+    UniformHandle m_boundsUpUniform{};
+    UniformHandle m_instanceParamsUniform{};
     UniformHandle m_invViewUniform{};
     UniformHandle m_viewUniform{};
     UniformHandle m_viewProjUniform{};
     UniformHandle m_invViewProjUniform{};
     UniformHandle m_cameraPosUniform{};
+    UniformHandle m_sortWorldUniform{};
+    UniformHandle m_sortCameraPosUniform{};
+    UniformHandle m_sortInvViewUniform{};
     UniformHandle m_softParamsUniform{};
+    UniformHandle m_motionParamsUniform{};
+    UniformHandle m_prevWorldUniform{};
+    UniformHandle m_shadowViewProjUniform{};
+    UniformHandle m_shadowParamsUniform{};
     SamplerHandle m_mainSampler{};
     SamplerHandle m_sceneDepthSampler{};
     BufferHandle m_eventBuffer{};
@@ -424,11 +549,32 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
                        std::string& error)
     : m_runtime(runtime), m_device(runtime.m_device), m_asset(asset), m_transform(desc.transform),
       m_playRate(std::max(0.0f, desc.playRate)), m_randomSeed(desc.randomSeed),
-      m_playing(desc.playOnAwake), m_stopped(!desc.playOnAwake), m_hasBoundsOverride(desc.hasBoundsOverride),
+      m_instanceBatchLimit(desc.instanceBatchLimit), m_playing(desc.playOnAwake),
+      m_stopped(!desc.playOnAwake), m_hasBoundsOverride(desc.hasBoundsOverride),
       m_boundsOverride(desc.boundsOverride) {
     if (m_asset == nullptr) {
         error = "effect asset is null";
         return;
+    }
+    InstanceRuntime instance;
+    instance.world = desc.transform;
+    instance.previousWorld = desc.transform;
+    m_instances.push_back(instance);
+    m_supportsEffectInstancing = true;
+    for (const AssetSystem& system : m_asset->systems) {
+        if (system.space != SystemSpace::Local) {
+            m_supportsEffectInstancing = false;
+            break;
+        }
+    }
+    if (m_supportsEffectInstancing) {
+        for (const AssetProgram& program : m_asset->programs) {
+            if (program.output && program.sortMode != SortMode::None &&
+                program.sortMode != SortMode::YoungestInFront) {
+                m_supportsEffectInstancing = false;
+                break;
+            }
+        }
     }
     createResources(error);
     m_propertyValues.resize(m_asset->properties.size());
@@ -461,11 +607,18 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
     m_paramsUniform = m_device.findUniform("u_vfx_params", UniformType::Vec4);
     m_idsUniform = m_device.findUniform("u_vfx_ids", UniformType::Vec4);
     m_worldUniform = m_device.findUniform("u_vfx_world", UniformType::Mat4);
+    m_boundsParamsUniform = m_device.findUniform("u_vfxBoundsParams", UniformType::Vec4);
+    m_boundsRightUniform = m_device.findUniform("u_vfxBoundsRight", UniformType::Vec4);
+    m_boundsUpUniform = m_device.findUniform("u_vfxBoundsUp", UniformType::Vec4);
+    m_instanceParamsUniform = m_device.findUniform("u_vfxInstanceParams", UniformType::Vec4);
     m_invViewUniform = m_device.findUniform("u_global_invView", UniformType::Mat4);
     m_viewUniform = m_device.findUniform("u_global_view", UniformType::Mat4);
     m_viewProjUniform = m_device.findUniform("u_global_viewProj", UniformType::Mat4);
     m_invViewProjUniform = m_device.findUniform("u_global_invViewProj", UniformType::Mat4);
     m_cameraPosUniform = m_device.findUniform("u_global_cameraPos", UniformType::Vec4);
+    m_sortWorldUniform = m_device.findUniform("u_vfxSortWorld", UniformType::Mat4);
+    m_sortCameraPosUniform = m_device.findUniform("u_vfxSortCameraPos", UniformType::Vec4);
+    m_sortInvViewUniform = m_device.findUniform("u_vfxSortInvView", UniformType::Mat4);
     m_softParamsUniform = m_device.findUniform("u_vfxSoftParams", UniformType::Vec4);
     m_mainSampler = m_device.findSampler("s_vfxMain");
     m_sceneDepthSampler = m_device.findSampler("s_vfxSceneDepth");
@@ -473,7 +626,9 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
         (!m_paramsUniform.valid() || !m_idsUniform.valid() || !m_worldUniform.valid() ||
          !m_invViewUniform.valid() || !m_viewUniform.valid() || !m_viewProjUniform.valid() ||
          !m_invViewProjUniform.valid() || !m_cameraPosUniform.valid() ||
-         !m_softParamsUniform.valid() || !m_mainSampler.valid() || !m_sceneDepthSampler.valid())) {
+         !m_sortWorldUniform.valid() || !m_sortCameraPosUniform.valid() ||
+         !m_sortInvViewUniform.valid() || !m_softParamsUniform.valid() ||
+         !m_mainSampler.valid() || !m_sceneDepthSampler.valid())) {
         error = "failed to create VFX runtime uniforms/sampler";
     }
     if (error.empty()) {
@@ -496,7 +651,14 @@ EffectImpl::EffectImpl(Runtime& runtime, const std::shared_ptr<const Asset>& ass
     m_needsReset = true;
 }
 
-EffectImpl::~EffectImpl() { releaseResources(); }
+EffectImpl::~EffectImpl() {
+    for (SystemRuntime& system : m_systems) {
+        if (system.boundsReadbackPending) {
+            m_device.releaseReadback(system.boundsReadbackHandle);
+        }
+    }
+    releaseResources();
+}
 
 bool EffectImpl::validateDeviceLimits(std::string& error) const {
     const Limits limits = m_device.limits();
@@ -558,6 +720,7 @@ void EffectImpl::createResources(std::string& error) {
     }
     m_systems.resize(m_asset->systems.size());
     m_programs.resize(m_asset->programs.size());
+    m_hasPerOutputSort.assign(m_asset->systems.size(), false);
     const std::size_t currentBackend = backendIndex(m_device.backend());
     for (std::size_t systemIndex = 0; systemIndex < m_asset->systems.size(); ++systemIndex) {
         const AssetSystem& assetSystem = m_asset->systems[systemIndex];
@@ -566,7 +729,8 @@ void EffectImpl::createResources(std::string& error) {
         for (const AssetBuffer& assetBuffer : assetSystem.buffers) {
             BufferUsage usage = BufferUsage::Storage;
             if (assetBuffer.kind == kAttributesBuffer || assetBuffer.kind == kIndirectionBuffer ||
-                assetBuffer.kind == kRenderKVPBuffer || assetBuffer.kind == kSortScratchBuffer) {
+                assetBuffer.kind == kRenderCountBuffer || assetBuffer.kind == kRenderKVPBuffer ||
+                assetBuffer.kind == kSortScratchBuffer) {
                 usage = BufferUsage::StorageVertex;
             } else if (assetBuffer.kind == kIndirectBuffer) {
                 usage = BufferUsage::Indirect;
@@ -658,8 +822,77 @@ void EffectImpl::createResources(std::string& error) {
             m_systems[assetProgram.system].outputs.push_back(static_cast<std::uint32_t>(programIndex));
         } else {
             m_systems[assetProgram.system].kernels.push_back(static_cast<std::uint32_t>(programIndex));
+            if (assetProgram.task == kTaskFillIndirect) {
+                m_systems[assetProgram.system].fillIndirectProgram = static_cast<std::uint32_t>(programIndex);
+            }
+            if (assetProgram.sortMode != SortMode::None) {
+                m_hasPerOutputSort[assetProgram.system] = true;
+            }
         }
     }
+    for (std::size_t systemIndex = 0; systemIndex < m_asset->systems.size(); ++systemIndex) {
+        const AssetSystem& assetSystem = m_asset->systems[systemIndex];
+        SystemRuntime& system = m_systems[systemIndex];
+        const BufferRuntime& indirectionTemplate = system.buffers[kIndirectionBuffer];
+        const BufferRuntime& kvpTemplate = system.buffers[kRenderKVPBuffer];
+        const BufferRuntime& countTemplate = system.buffers[kRenderCountBuffer];
+        const BufferRuntime& indirectTemplate = system.buffers[kIndirectBuffer];
+        if (!indirectionTemplate.handle.valid() || !kvpTemplate.handle.valid() ||
+            !countTemplate.handle.valid() || !indirectTemplate.handle.valid()) {
+            continue;
+        }
+        for (const AssetProgram& assetProgram : m_asset->programs) {
+            if (assetProgram.output || assetProgram.system != systemIndex ||
+                assetProgram.sortMode == SortMode::None ||
+                assetProgram.sortMode == assetSystem.sortMode) {
+                continue;
+            }
+            const auto existing = std::find_if(
+                system.sortOutputs.begin(), system.sortOutputs.end(),
+                [&](const SortOutputRuntime& list) { return list.mode == assetProgram.sortMode; });
+            if (existing != system.sortOutputs.end()) {
+                continue;
+            }
+            const std::string listName =
+                "vfx." + assetSystem.name + ".sorted." + toString(assetProgram.sortMode);
+            SortOutputRuntime list;
+            list.mode = assetProgram.sortMode;
+            const auto createListBuffer = [&](BufferRuntime& buffer, BufferUsage usage,
+                                              const BufferRuntime& templateBuffer,
+                                              std::string_view suffix) {
+                const std::string bufferName = listName + std::string(suffix);
+                BufferDesc desc;
+                desc.usage = usage;
+                desc.size = templateBuffer.size;
+                desc.stride = templateBuffer.stride;
+                desc.name = bufferName;
+                buffer.size = templateBuffer.size;
+                buffer.stride = templateBuffer.stride;
+                buffer.handle = m_device.createBuffer(desc);
+                if (!buffer.handle.valid() && error.empty()) {
+                    error = "failed to create VFX sorted output buffer '" + bufferName + "'";
+                }
+            };
+            createListBuffer(list.indirection, BufferUsage::StorageVertex, indirectionTemplate, "");
+            createListBuffer(list.kvp, BufferUsage::StorageVertex, kvpTemplate, ".kvp");
+            createListBuffer(list.renderCount, BufferUsage::StorageVertex, countTemplate, ".count");
+            createListBuffer(list.indirect, BufferUsage::Indirect, indirectTemplate, ".indirect");
+            system.sortOutputs.push_back(std::move(list));
+        }
+    }
+    m_outputOrder.clear();
+    for (std::size_t programIndex = 0; programIndex < m_asset->programs.size(); ++programIndex) {
+        const AssetProgram& program = m_asset->programs[programIndex];
+        if (!program.output) {
+            continue;
+        }
+        m_outputOrder.push_back(OutputRuntimeRef{program.system, static_cast<std::uint32_t>(programIndex),
+                                                 program.sortPriority});
+    }
+    std::stable_sort(m_outputOrder.begin(), m_outputOrder.end(),
+                     [](const OutputRuntimeRef& lhs, const OutputRuntimeRef& rhs) {
+                         return lhs.sortPriority < rhs.sortPriority;
+                     });
 }
 
 void EffectImpl::releaseResources() {
@@ -674,6 +907,32 @@ void EffectImpl::releaseResources() {
             if (buffer.handle.valid()) {
                 m_device.destroyBuffer(buffer.handle);
                 buffer.handle = {};
+            }
+        }
+        for (BufferRuntime& buffer : system.activeIndirect.buffers) {
+            if (buffer.handle.valid()) {
+                m_device.destroyBuffer(buffer.handle);
+                buffer.handle = {};
+            }
+        }
+        for (BufferRuntime& buffer : system.shadowIndirect.buffers) {
+            if (buffer.handle.valid()) {
+                m_device.destroyBuffer(buffer.handle);
+                buffer.handle = {};
+            }
+        }
+        for (SortOutputRuntime& list : system.sortOutputs) {
+            for (BufferRuntime& buffer : list.activeIndirect.buffers) {
+                if (buffer.handle.valid()) {
+                    m_device.destroyBuffer(buffer.handle);
+                    buffer.handle = {};
+                }
+            }
+            for (BufferRuntime* buffer : {&list.indirection, &list.kvp, &list.renderCount, &list.indirect}) {
+                if (buffer->handle.valid()) {
+                    m_device.destroyBuffer(buffer->handle);
+                    buffer->handle = {};
+                }
             }
         }
     }
@@ -696,6 +955,12 @@ void EffectImpl::releaseResources() {
         m_device.destroyBuffer(m_cpuEventBuffer);
         m_cpuEventBuffer = {};
     }
+    if (m_instanceTransforms.valid()) {
+        m_device.destroyBuffer(m_instanceTransforms);
+        m_instanceTransforms = {};
+    }
+    m_instanceTransformCapacity = 0;
+    m_batchInstanceCount = 1;
 }
 
 void EffectImpl::play() {
@@ -734,6 +999,22 @@ void EffectImpl::reset() {
     m_aliveEstimate = 0;
     m_stepPending = false;
     m_stepFrame = false;
+    for (InstanceRuntime& instance : m_instances) {
+        instance.previousWorld = instance.world;
+        instance.transformHistoryValid = false;
+    }
+    m_transformSetThisFrame = false;
+    for (SystemRuntime& system : m_systems) {
+        if (system.boundsReadbackPending) {
+            m_device.releaseReadback(system.boundsReadbackHandle);
+            system.boundsReadbackHandle = {};
+            system.boundsReadbackPending = false;
+        }
+        system.gpuBoundsValid = false;
+    }
+    refreshBounds();
+    refreshDrawInstancing();
+    uploadInstanceTransforms();
     m_needsReset = true;
 }
 
@@ -764,11 +1045,65 @@ void EffectImpl::resetCpuState() {
     std::fill(m_cpuEventTotal.begin(), m_cpuEventTotal.end(), 0u);
     std::fill(m_cpuEventDropped.begin(), m_cpuEventDropped.end(), 0u);
     std::fill(m_cpuEventData.begin(), m_cpuEventData.end(), std::byte{0});
+    for (SystemRuntime& system : m_systems) {
+        for (SortOutputRuntime& list : system.sortOutputs) {
+            list.validGeneration = 0u;
+        }
+    }
+    m_sortGeneration = 1u;
+    m_lastFrameValid = false;
 }
 
 void EffectImpl::setTransform(const Mat4& world) {
-    m_transform = world;
+    setInstanceTransforms(std::span<const Mat4>(&world, 1));
+}
+
+void EffectImpl::setInstanceTransforms(std::span<const Mat4> worlds) {
+    if (worlds.empty()) {
+        return;
+    }
+    if (worlds.size() > 1u && !m_supportsEffectInstancing) {
+        report("VFX effect instancing requires local-space systems and non-camera-dependent outputs");
+        return;
+    }
+    if (worlds.size() != m_instances.size()) {
+        const std::size_t previousSize = m_instances.size();
+        m_instances.resize(worlds.size());
+        for (std::size_t i = previousSize; i < m_instances.size(); ++i) {
+            m_instances[i].world = worlds[i];
+            m_instances[i].previousWorld = worlds[i];
+            m_instances[i].transformHistoryValid = false;
+        }
+    }
+    for (std::size_t i = 0; i < worlds.size(); ++i) {
+        InstanceRuntime& instance = m_instances[i];
+        if (!m_transformSetThisFrame) {
+            instance.previousWorld = instance.transformHistoryValid ? instance.world : worlds[i];
+            instance.transformHistoryValid = true;
+        }
+        instance.world = worlds[i];
+    }
+    m_transformSetThisFrame = true;
+    m_transform = m_instances.front().world;
     refreshBounds();
+    refreshDrawInstancing();
+    uploadInstanceTransforms();
+}
+
+void EffectImpl::setCulled(bool culled) {
+    for (InstanceRuntime& instance : m_instances) {
+        instance.culled = culled;
+    }
+    refreshVisibleBounds();
+    refreshDrawInstancing();
+}
+
+void EffectImpl::setInstanceCulled(std::size_t index, bool culled) {
+    if (index < m_instances.size()) {
+        m_instances[index].culled = culled;
+        refreshVisibleBounds();
+        refreshDrawInstancing();
+    }
 }
 
 void EffectImpl::setPlayRate(float rate) {
@@ -930,40 +1265,492 @@ Bounds EffectImpl::bounds() const {
     return m_hasBoundsOverride ? m_boundsOverride : m_bounds;
 }
 
-bool EffectImpl::isCulled() const { return false; }
+Bounds EffectImpl::visibleBounds() const {
+    return m_visibleBounds;
+}
+
+Bounds EffectImpl::instanceBounds(std::size_t index) const {
+    if (m_hasBoundsOverride) {
+        return m_boundsOverride;
+    }
+    return index < m_instances.size() ? m_instances[index].bounds : Bounds{};
+}
+
+std::size_t EffectImpl::instanceCount() const { return m_instances.size(); }
+
+bool EffectImpl::supportsEffectInstancing() const { return m_supportsEffectInstancing; }
+
+bool EffectImpl::isCulled() const {
+    if (m_instances.empty()) {
+        return true;
+    }
+    return std::all_of(m_instances.begin(), m_instances.end(),
+                       [](const InstanceRuntime& instance) { return instance.culled; });
+}
+
+bool EffectImpl::isInstanceCulled(std::size_t index) const {
+    return index >= m_instances.size() || m_instances[index].culled;
+}
+
+std::uint32_t EffectImpl::outputBatchCount() const {
+    return m_outputBatch ? m_outputBatchCount : 1u;
+}
+
+std::uint32_t EffectImpl::outputBatchSize() const { return m_outputBatchSize; }
 
 void EffectImpl::refreshBounds() {
     Bounds bounds{};
     bool hasBounds = false;
-    for (std::size_t i = 0; i < m_asset->systems.size(); ++i) {
-        Bounds systemBounds = m_asset->systems[i].bounds;
-        if (m_asset->systems[i].space == SystemSpace::Local) {
-            const Vec3 min = systemBounds.min;
-            const Vec3 max = systemBounds.max;
-            const std::array<Vec3, 8> corners = {
-                Vec3{min.x, min.y, min.z}, Vec3{max.x, min.y, min.z}, Vec3{min.x, max.y, min.z},
-                Vec3{max.x, max.y, min.z}, Vec3{min.x, min.y, max.z}, Vec3{max.x, min.y, max.z},
-                Vec3{min.x, max.y, max.z}, Vec3{max.x, max.y, max.z}};
-            Vec3 transformedMin = transformPoint(m_transform, corners[0]);
-            Vec3 transformedMax = transformedMin;
-            for (const Vec3& corner : corners) {
-                const Vec3 transformed = transformPoint(m_transform, corner);
-                transformedMin = minVec3(transformedMin, transformed);
-                transformedMax = maxVec3(transformedMax, transformed);
+    for (InstanceRuntime& instance : m_instances) {
+        Bounds instanceBounds{};
+        bool hasInstanceBounds = false;
+        for (std::size_t i = 0; i < m_asset->systems.size(); ++i) {
+            const AssetSystem& assetSystem = m_asset->systems[i];
+            Bounds systemBounds = assetSystem.bounds;
+            if (assetSystem.boundsMode == BoundsMode::Automatic && i < m_systems.size() &&
+                m_systems[i].gpuBoundsValid) {
+                systemBounds = m_systems[i].gpuBounds;
             }
-            systemBounds = Bounds{transformedMin, transformedMax, true};
+            if (assetSystem.boundsMode == BoundsMode::Automatic) {
+                const Vec3 padding = assetSystem.boundsPadding;
+                systemBounds = Bounds{Vec3{systemBounds.min.x - padding.x, systemBounds.min.y - padding.y,
+                                           systemBounds.min.z - padding.z},
+                                      Vec3{systemBounds.max.x + padding.x, systemBounds.max.y + padding.y,
+                                           systemBounds.max.z + padding.z},
+                                      systemBounds.valid};
+            }
+            if (assetSystem.space == SystemSpace::Local) {
+                const Vec3 min = systemBounds.min;
+                const Vec3 max = systemBounds.max;
+                const std::array<Vec3, 8> corners = {
+                    Vec3{min.x, min.y, min.z}, Vec3{max.x, min.y, min.z}, Vec3{min.x, max.y, min.z},
+                    Vec3{max.x, max.y, min.z}, Vec3{min.x, min.y, max.z}, Vec3{max.x, min.y, max.z},
+                    Vec3{min.x, max.y, max.z}, Vec3{max.x, max.y, max.z}};
+                Vec3 transformedMin = transformPoint(instance.world, corners[0]);
+                Vec3 transformedMax = transformedMin;
+                for (const Vec3& corner : corners) {
+                    const Vec3 transformed = transformPoint(instance.world, corner);
+                    transformedMin = minVec3(transformedMin, transformed);
+                    transformedMax = maxVec3(transformedMax, transformed);
+                }
+                systemBounds = Bounds{transformedMin, transformedMax, true};
+            }
+            if (!hasInstanceBounds) {
+                instanceBounds = systemBounds;
+                hasInstanceBounds = true;
+            } else {
+                instanceBounds = Bounds{minVec3(instanceBounds.min, systemBounds.min),
+                                         maxVec3(instanceBounds.max, systemBounds.max), true};
+            }
         }
+        instance.bounds = instanceBounds;
         if (!hasBounds) {
-            bounds = systemBounds;
+            bounds = instanceBounds;
             hasBounds = true;
         } else {
-            bounds = Bounds{minVec3(bounds.min, systemBounds.min), maxVec3(bounds.max, systemBounds.max), true};
+            bounds = Bounds{minVec3(bounds.min, instanceBounds.min), maxVec3(bounds.max, instanceBounds.max),
+                            true};
         }
     }
     m_bounds = bounds;
+    refreshVisibleBounds();
+}
+
+void EffectImpl::refreshVisibleBounds() {
+    Bounds bounds{};
+    bool hasBounds = false;
+    for (std::size_t i = 0; i < m_instances.size(); ++i) {
+        if (m_instances[i].culled) {
+            continue;
+        }
+        const Bounds instanceBounds = this->instanceBounds(i);
+        if (!instanceBounds.valid) {
+            continue;
+        }
+        if (!hasBounds) {
+            bounds = instanceBounds;
+            hasBounds = true;
+        } else {
+            bounds = Bounds{minVec3(bounds.min, instanceBounds.min),
+                            maxVec3(bounds.max, instanceBounds.max), true};
+        }
+    }
+    m_visibleBounds = hasBounds ? bounds : Bounds{};
+}
+
+void EffectImpl::ensureInstanceTransformBuffer() {
+    const std::uint32_t count =
+        static_cast<std::uint32_t>(std::max<std::size_t>(m_instances.size(), 1u));
+    if (count <= 1u) {
+        if (m_instanceTransforms.valid()) {
+            m_device.destroyBuffer(m_instanceTransforms);
+            m_instanceTransforms = {};
+        }
+        m_instanceTransformCapacity = count;
+        m_activeInstanceBase = 0u;
+        m_activeInstances.clear();
+        m_activeInstancesDirty = false;
+        return;
+    }
+    if (m_instanceTransforms.valid() && m_instanceTransformCapacity == count) {
+        return;
+    }
+    if (m_instanceTransforms.valid()) {
+        m_device.destroyBuffer(m_instanceTransforms);
+        m_instanceTransforms = {};
+    }
+    const std::uint32_t activeSlots = (count + 31u) / 32u;
+    const std::uint32_t totalSlots = count + activeSlots;
+    const std::vector<float> initial(totalSlots * 32u, 0.0f);
+    BufferDesc desc;
+    desc.usage = BufferUsage::StorageVertex;
+    desc.size = totalSlots * 32u * static_cast<std::uint32_t>(sizeof(float));
+    desc.stride = 32u * static_cast<std::uint32_t>(sizeof(float));
+    desc.initialData = initial.data();
+    desc.name = "vfx.instance.transforms";
+    m_instanceTransforms = m_device.createBuffer(desc);
+    m_instanceTransformCapacity = count;
+    m_activeInstanceBase = count * 32u;
+    if (!m_instanceTransforms.valid()) {
+        report("failed to create VFX instance transform buffer");
+    }
+}
+
+void EffectImpl::uploadInstanceTransforms() {
+    if (!m_instanceTransforms.valid() || m_instances.size() <= 1u) {
+        return;
+    }
+    const std::uint32_t count = static_cast<std::uint32_t>(m_instances.size());
+    const std::uint32_t activeSlots = (count + 31u) / 32u;
+    std::vector<std::uint32_t> data((count + activeSlots) * 32u, 0u);
+    for (std::size_t i = 0; i < m_instances.size(); ++i) {
+        std::memcpy(data.data() + i * 32u, m_instances[i].world.data(), 16u * sizeof(float));
+        std::memcpy(data.data() + i * 32u + 16u, m_instances[i].previousWorld.data(),
+                    16u * sizeof(float));
+    }
+    for (std::size_t i = 0; i < m_activeInstances.size() && i < count; ++i) {
+        data[m_activeInstanceBase + i] = m_activeInstances[i];
+    }
+    if (!m_device.updateBuffer(m_instanceTransforms, std::as_bytes(std::span(data.data(), data.size())))) {
+        report("failed to upload VFX instance transform buffer");
+        return;
+    }
+    m_activeInstancesDirty = false;
+}
+
+void EffectImpl::uploadInstanceActiveList() {
+    if (!m_instanceTransforms.valid() || !m_activeIndirection || !m_activeInstancesDirty ||
+        m_activeInstances.empty()) {
+        return;
+    }
+    if (!m_device.updateBuffer(
+            m_instanceTransforms,
+            std::as_bytes(std::span(m_activeInstances.data(), m_activeInstances.size())),
+            m_activeInstanceBase * static_cast<std::uint32_t>(sizeof(std::uint32_t)))) {
+        report("failed to upload VFX active instance list");
+        return;
+    }
+    m_activeInstancesDirty = false;
+}
+
+void EffectImpl::refreshDrawInstancing() {
+    ensureInstanceTransformBuffer();
+    m_activeInstances.clear();
+    for (std::size_t i = 0; i < m_instances.size(); ++i) {
+        if (!m_instances[i].culled) {
+            m_activeInstances.push_back(static_cast<std::uint32_t>(i));
+        }
+    }
+    const bool instancing = m_supportsEffectInstancing && m_instances.size() > 1u &&
+                            m_instanceTransforms.valid();
+    m_batchInstanceCount = instancing ? static_cast<std::uint32_t>(m_instances.size()) : 1u;
+    m_outputBatch = instancing && m_activeInstances.size() > 1u;
+    m_outputInstanceCount =
+        m_outputBatch ? static_cast<std::uint32_t>(m_activeInstances.size()) : 1u;
+    m_outputBatchSize = 1u;
+    m_outputBatchCount = 1u;
+    if (m_outputBatch) {
+        const std::uint32_t limit = m_instanceBatchLimit == 0u
+                                        ? m_outputInstanceCount
+                                        : std::min(m_instanceBatchLimit, m_outputInstanceCount);
+        m_outputBatchSize = std::max(limit, 1u);
+        m_outputBatchCount =
+            (m_outputInstanceCount + m_outputBatchSize - 1u) / m_outputBatchSize;
+    }
+    const bool split = m_outputBatchCount > 1u;
+    m_activeIndirection = m_outputBatch && (m_activeInstances.size() < m_instances.size() || split);
+    m_activeArgsRequired = instancing && !m_activeInstances.empty() &&
+                           (m_activeInstances.size() < m_instances.size() || split);
+    ++m_activeArgsSerial;
+    if (m_activeArgsSerial == 0u) {
+        m_activeArgsSerial = 1u;
+    }
+    m_shadowBatchSize = 1u;
+    m_shadowBatchCount = 1u;
+    m_shadowArgsRequired = false;
+    if (instancing && m_instanceBatchLimit != 0u &&
+        m_instances.size() > static_cast<std::size_t>(m_instanceBatchLimit)) {
+        m_shadowBatchSize = m_instanceBatchLimit;
+        m_shadowBatchCount =
+            (static_cast<std::uint32_t>(m_instances.size()) + m_shadowBatchSize - 1u) /
+            m_shadowBatchSize;
+        m_shadowArgsRequired = m_shadowBatchCount > 1u;
+    }
+    ++m_shadowArgsSerial;
+    if (m_shadowArgsSerial == 0u) {
+        m_shadowArgsSerial = 1u;
+    }
+    m_activeInstancesDirty = true;
+}
+
+void EffectImpl::bindInstanceTransforms(CommandSink& sink, BufferHandle fallback) {
+    if (m_instanceTransforms.valid()) {
+        sink.setStorageBuffer(15, m_instanceTransforms, Access::Read);
+    } else if (fallback.valid()) {
+        sink.setStorageBuffer(15, fallback, Access::Read);
+    }
+}
+
+void EffectImpl::setInstanceDrawParams(CommandSink& sink, std::uint32_t totalCount,
+                                       std::uint32_t activeCount, std::uint32_t activeBase,
+                                       bool activeIndirection) {
+    if (m_instanceParamsUniform.valid()) {
+        const Vec4 params{static_cast<float>(totalCount), static_cast<float>(activeCount),
+                          static_cast<float>(activeBase), activeIndirection ? 1.0f : 0.0f};
+        sink.setUniform(m_instanceParamsUniform, &params);
+    }
+}
+
+std::vector<BufferHandle> EffectImpl::prepareActiveIndirect(CommandSink& sink,
+                                                            std::uint32_t systemIndex,
+                                                            SortMode sortMode,
+                                                            const SortBufferSet& buffers) {
+    if (!m_activeArgsRequired || systemIndex >= m_systems.size()) {
+        return {};
+    }
+    SystemRuntime& system = m_systems[systemIndex];
+    const AssetSystem& assetSystem = m_asset->systems[systemIndex];
+    BatchIndirectRuntime* active = nullptr;
+    BufferRuntime* source = nullptr;
+    std::string name;
+    if (sortMode == assetSystem.sortMode) {
+        active = &system.activeIndirect;
+        source = &system.buffers[kIndirectBuffer];
+        name = "vfx." + assetSystem.name + ".active.indirect";
+    } else {
+        for (SortOutputRuntime& list : system.sortOutputs) {
+            if (list.mode != sortMode) {
+                continue;
+            }
+            active = &list.activeIndirect;
+            source = &list.indirect;
+            name = "vfx." + assetSystem.name + ".sorted." + toString(sortMode) + ".active.indirect";
+            break;
+        }
+    }
+    if (active == nullptr || source == nullptr || !source->handle.valid() ||
+        system.fillIndirectProgram == kInvalidIndex) {
+        return {};
+    }
+    const std::uint32_t batchCount = std::max(m_outputBatchCount, 1u);
+    if (active->buffers.size() < batchCount) {
+        active->buffers.resize(batchCount);
+    }
+    const auto handlesValid = [&]() {
+        for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+            if (!active->buffers[batchIndex].handle.valid()) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (active->serial == m_activeArgsSerial && handlesValid()) {
+        std::vector<BufferHandle> handles;
+        handles.reserve(batchCount);
+        for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+            handles.push_back(active->buffers[batchIndex].handle);
+        }
+        return handles;
+    }
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        BufferRuntime& batch = active->buffers[batchIndex];
+        if (batch.handle.valid()) {
+            continue;
+        }
+        BufferDesc desc;
+        desc.usage = BufferUsage::Indirect;
+        desc.size = source->size;
+        desc.stride = source->stride;
+        const std::string batchName =
+            batchIndex == 0u ? name : name + "." + std::to_string(batchIndex);
+        desc.name = batchName;
+        batch.size = source->size;
+        batch.stride = source->stride;
+        batch.handle = m_device.createBuffer(desc);
+        if (!batch.handle.valid()) {
+            report("failed to create VFX active indirect buffer");
+            return {};
+        }
+    }
+    active->serial = 0;
+    const std::uint32_t activeCount = static_cast<std::uint32_t>(m_activeInstances.size());
+    sink.beginPass({"VFX " + assetSystem.name + " Active Indirect", true, false, false});
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        const std::uint32_t batchOffset = batchIndex * m_outputBatchSize;
+        if (batchOffset >= activeCount) {
+            break;
+        }
+        const std::uint32_t batchInstances =
+            std::min(m_outputBatchSize, activeCount - batchOffset);
+        setInstanceDrawParams(sink, batchInstances, batchInstances, m_activeInstanceBase, false);
+        SortBufferSet activeBuffers = buffers;
+        activeBuffers.indirect = active->buffers[batchIndex].handle;
+        dispatchKernel(sink, systemIndex, system.fillIndirectProgram, &activeBuffers);
+    }
+    sink.endPass();
+    active->serial = m_activeArgsSerial;
+    std::vector<BufferHandle> handles;
+    handles.reserve(batchCount);
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        handles.push_back(active->buffers[batchIndex].handle);
+    }
+    return handles;
+}
+
+std::vector<BufferHandle> EffectImpl::prepareShadowIndirect(CommandSink& sink,
+                                                            std::uint32_t systemIndex,
+                                                            const SortBufferSet& buffers) {
+    if (!m_shadowArgsRequired || systemIndex >= m_systems.size()) {
+        return {};
+    }
+    SystemRuntime& system = m_systems[systemIndex];
+    const AssetSystem& assetSystem = m_asset->systems[systemIndex];
+    BufferRuntime* source = &system.buffers[kIndirectBuffer];
+    if (!source->handle.valid() || system.fillIndirectProgram == kInvalidIndex) {
+        return {};
+    }
+    const std::uint32_t batchCount = std::max(m_shadowBatchCount, 1u);
+    BatchIndirectRuntime* indirect = &system.shadowIndirect;
+    if (indirect->buffers.size() < batchCount) {
+        indirect->buffers.resize(batchCount);
+    }
+    const auto handlesValid = [&]() {
+        for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+            if (!indirect->buffers[batchIndex].handle.valid()) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (indirect->serial == m_shadowArgsSerial && handlesValid()) {
+        std::vector<BufferHandle> handles;
+        handles.reserve(batchCount);
+        for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+            handles.push_back(indirect->buffers[batchIndex].handle);
+        }
+        return handles;
+    }
+    const std::string baseName = "vfx." + assetSystem.name + ".shadow.indirect";
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        BufferRuntime& batch = indirect->buffers[batchIndex];
+        if (batch.handle.valid()) {
+            continue;
+        }
+        BufferDesc desc;
+        desc.usage = BufferUsage::Indirect;
+        desc.size = source->size;
+        desc.stride = source->stride;
+        const std::string batchName =
+            batchIndex == 0u ? baseName : baseName + "." + std::to_string(batchIndex);
+        desc.name = batchName;
+        batch.size = source->size;
+        batch.stride = source->stride;
+        batch.handle = m_device.createBuffer(desc);
+        if (!batch.handle.valid()) {
+            report("failed to create VFX shadow indirect buffer");
+            return {};
+        }
+    }
+    indirect->serial = 0;
+    const std::uint32_t totalInstances = static_cast<std::uint32_t>(m_instances.size());
+    sink.beginPass({"VFX " + assetSystem.name + " Shadow Indirect", true, false, false});
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        const std::uint32_t batchOffset = batchIndex * m_shadowBatchSize;
+        if (batchOffset >= totalInstances) {
+            break;
+        }
+        const std::uint32_t batchInstances =
+            std::min(m_shadowBatchSize, totalInstances - batchOffset);
+        setInstanceDrawParams(sink, batchInstances, batchInstances, 0u, false);
+        SortBufferSet activeBuffers = buffers;
+        activeBuffers.indirect = indirect->buffers[batchIndex].handle;
+        dispatchKernel(sink, systemIndex, system.fillIndirectProgram, &activeBuffers);
+    }
+    sink.endPass();
+    indirect->serial = m_shadowArgsSerial;
+    std::vector<BufferHandle> handles;
+    handles.reserve(batchCount);
+    for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        handles.push_back(indirect->buffers[batchIndex].handle);
+    }
+    return handles;
+}
+
+void EffectImpl::pollAutomaticBounds() {
+    bool changed = false;
+    for (std::size_t i = 0; i < m_asset->systems.size() && i < m_systems.size(); ++i) {
+        const AssetSystem& assetSystem = m_asset->systems[i];
+        if (assetSystem.boundsMode != BoundsMode::Automatic) {
+            continue;
+        }
+        SystemRuntime& system = m_systems[i];
+        if (system.boundsReadbackPending) {
+            if (!m_device.readbackReady(system.boundsReadbackHandle)) {
+                continue;
+            }
+            if (m_device.copyReadback(system.boundsReadbackHandle,
+                                      std::as_writable_bytes(std::span(system.boundsReadback)))) {
+                const std::uint32_t minWord = system.boundsReadback[0];
+                const std::uint32_t maxWord = system.boundsReadback[3];
+                if (minWord <= maxWord) {
+                    system.gpuBounds = Bounds{
+                        Vec3{decodeFloat(system.boundsReadback[0]), decodeFloat(system.boundsReadback[1]),
+                             decodeFloat(system.boundsReadback[2])},
+                        Vec3{decodeFloat(system.boundsReadback[3]), decodeFloat(system.boundsReadback[4]),
+                             decodeFloat(system.boundsReadback[5])},
+                        true};
+                    system.gpuBoundsValid = true;
+                } else {
+                    system.gpuBoundsValid = false;
+                }
+                changed = true;
+            }
+            m_device.releaseReadback(system.boundsReadbackHandle);
+            system.boundsReadbackHandle = {};
+            system.boundsReadbackPending = false;
+        }
+        if (system.boundsReadbackPending) {
+            continue;
+        }
+        if (kBoundsBuffer < system.buffers.size() && system.buffers[kBoundsBuffer].handle.valid() &&
+            system.buffers[kBoundsBuffer].size >= sizeof(system.boundsReadback)) {
+            system.boundsReadbackHandle = m_device.readBufferAsync(
+                system.buffers[kBoundsBuffer].handle, static_cast<std::uint32_t>(sizeof(system.boundsReadback)));
+            system.boundsReadbackPending = system.boundsReadbackHandle.valid();
+        }
+    }
+    if (changed) {
+        refreshBounds();
+    }
 }
 
 void EffectImpl::update(float deltaSeconds) {
+    m_transformSetThisFrame = false;
+    pollAutomaticBounds();
+    if (isCulled() && (m_asset->cullingFlags & kCullSimulation) != 0u) {
+        m_deltaTime = 0.0f;
+        return;
+    }
     if (!m_playing) {
         m_deltaTime = 0.0f;
         return;
@@ -1010,7 +1797,7 @@ void EffectImpl::update(float deltaSeconds) {
 }
 
 void EffectImpl::setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool simulate,
-                             const FrameContext& frame) {
+                             const FrameContext& frame, SortMode sortMode, bool useSortUniforms) {
     const SystemRuntime& system = m_systems[systemIndex];
     const AssetSystem& assetSystem = m_asset->systems[systemIndex];
     const Vec4 params{static_cast<float>(system.time), simulate ? m_deltaTime : 0.0f,
@@ -1019,13 +1806,34 @@ void EffectImpl::setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool 
     sink.setUniform(m_paramsUniform, &params);
     const Vec4 ids{static_cast<float>(m_nextParticleId), static_cast<float>(systemIndex), 0.0f, 0.0f};
     sink.setUniform(m_idsUniform, &ids);
-    if (assetSystem.sortMode == SortMode::Distance) {
+    if (assetSystem.boundsMode == BoundsMode::Automatic && m_boundsParamsUniform.valid() &&
+        m_boundsRightUniform.valid() && m_boundsUpUniform.valid()) {
+        const Vec4 boundsParams{1.0f, 0.0f, 0.0f, 0.0f};
+        const Vec4 boundsRight{frame.cameraRight.x, frame.cameraRight.y, frame.cameraRight.z, 0.0f};
+        const Vec4 boundsUp{frame.cameraUp.x, frame.cameraUp.y, frame.cameraUp.z, 0.0f};
+        sink.setUniform(m_boundsParamsUniform, &boundsParams);
+        sink.setUniform(m_boundsRightUniform, &boundsRight);
+        sink.setUniform(m_boundsUpUniform, &boundsUp);
+    }
+    setInstanceDrawParams(sink, m_batchInstanceCount, m_batchInstanceCount, m_activeInstanceBase,
+                          false);
+    if (sortMode == SortMode::Distance || sortMode == SortMode::CameraDepth) {
         const Mat4 world =
             assetSystem.space == SystemSpace::Local ? m_transform : Mat4::identity();
         const Vec4 cameraPosition{frame.cameraPosition.x, frame.cameraPosition.y,
                                   frame.cameraPosition.z, 1.0f};
-        sink.setUniform(m_worldUniform, &world);
-        sink.setUniform(m_cameraPosUniform, &cameraPosition);
+        const UniformHandle worldUniform =
+            useSortUniforms ? m_sortWorldUniform : m_worldUniform;
+        const UniformHandle cameraPosUniform =
+            useSortUniforms ? m_sortCameraPosUniform : m_cameraPosUniform;
+        sink.setUniform(worldUniform, &world);
+        sink.setUniform(cameraPosUniform, &cameraPosition);
+        if (sortMode == SortMode::CameraDepth) {
+            const Mat4 invView = inverseMatrix(frame.view);
+            const UniformHandle invViewUniform =
+                useSortUniforms ? m_sortInvViewUniform : m_invViewUniform;
+            sink.setUniform(invViewUniform, &invView);
+        }
     }
     for (std::size_t i = 0; i < m_propertyUniforms.size(); ++i) {
         if (!m_propertyUniforms[i].valid()) {
@@ -1037,7 +1845,7 @@ void EffectImpl::setUniforms(CommandSink& sink, std::uint32_t systemIndex, bool 
 }
 
 void EffectImpl::bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex,
-                                   const AssetProgram& program) {
+                                   const AssetProgram& program, const SortBufferSet* overrides) {
     const SystemRuntime& system = m_systems[systemIndex];
     for (const AssetBinding& binding : program.bindings) {
         if (binding.kind == AssetBindingKind::Texture) {
@@ -1059,11 +1867,27 @@ void EffectImpl::bindKernelBuffers(CommandSink& sink, std::uint32_t systemIndex,
             sink.setStorageBuffer(binding.stage, m_cpuEventBuffer, binding.access);
             continue;
         }
-        if (binding.index >= system.buffers.size() || !system.buffers[binding.index].handle.valid()) {
+        if (binding.index >= system.buffers.size()) {
             report("VFX kernel references an unavailable buffer");
             continue;
         }
-        sink.setStorageBuffer(binding.stage, system.buffers[binding.index].handle, binding.access);
+        BufferHandle buffer = system.buffers[binding.index].handle;
+        if (overrides != nullptr) {
+            if (binding.index == kIndirectionBuffer && overrides->indirection.valid()) {
+                buffer = overrides->indirection;
+            } else if (binding.index == kRenderKVPBuffer && overrides->kvp.valid()) {
+                buffer = overrides->kvp;
+            } else if (binding.index == kRenderCountBuffer && overrides->renderCount.valid()) {
+                buffer = overrides->renderCount;
+            } else if (binding.index == kIndirectBuffer && overrides->indirect.valid()) {
+                buffer = overrides->indirect;
+            }
+        }
+        if (!buffer.valid()) {
+            report("VFX kernel references an unavailable buffer");
+            continue;
+        }
+        sink.setStorageBuffer(binding.stage, buffer, binding.access);
     }
 }
 
@@ -1091,9 +1915,10 @@ void EffectImpl::bindKernelTextures(CommandSink& sink, const AssetProgram& progr
     }
 }
 
-void EffectImpl::dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, std::uint32_t programIndex) {
+void EffectImpl::dispatchKernel(CommandSink& sink, std::uint32_t systemIndex,
+                                std::uint32_t programIndex, const SortBufferSet* overrides) {
     const AssetProgram& program = m_asset->programs[programIndex];
-    bindKernelBuffers(sink, systemIndex, program);
+    bindKernelBuffers(sink, systemIndex, program, overrides);
     bindKernelTextures(sink, program);
     const ProgramHandle handle = m_programs[programIndex];
     if (!handle.valid()) {
@@ -1106,6 +1931,99 @@ void EffectImpl::dispatchKernel(CommandSink& sink, std::uint32_t systemIndex, st
         program.task == kTaskSortMerge) {
         ++m_runtime.m_diagnostics.sortPasses;
     }
+}
+
+SortBufferSet EffectImpl::outputBuffers(std::uint32_t systemIndex, SortMode sortMode) const {
+    SortBufferSet buffers;
+    if (systemIndex >= m_systems.size()) {
+        return buffers;
+    }
+    const SystemRuntime& system = m_systems[systemIndex];
+    buffers.indirection = system.buffers[kIndirectionBuffer].handle;
+    buffers.kvp = system.buffers[kRenderKVPBuffer].handle;
+    buffers.renderCount = system.buffers[kRenderCountBuffer].handle;
+    buffers.indirect = system.buffers[kIndirectBuffer].handle;
+    if (sortMode != m_asset->systems[systemIndex].sortMode) {
+        for (const SortOutputRuntime& list : system.sortOutputs) {
+            if (list.mode == sortMode && list.indirection.handle.valid()) {
+                buffers.indirection = list.indirection.handle;
+                buffers.kvp = list.kvp.handle;
+                buffers.renderCount = list.renderCount.handle;
+                buffers.indirect = list.indirect.handle;
+                break;
+            }
+        }
+    }
+    return buffers;
+}
+
+void EffectImpl::ensureOutputSort(CommandSink& sink, std::uint32_t systemIndex, SortMode sortMode,
+                                  const FrameContext& frame) {
+    if (sortMode == SortMode::None || systemIndex >= m_systems.size()) {
+        return;
+    }
+    const AssetSystem& assetSystem = m_asset->systems[systemIndex];
+    if (assetSystem.sortMode == SortMode::None) {
+        return;
+    }
+    if (sortMode == assetSystem.sortMode) {
+        return;
+    }
+
+    SystemRuntime& system = m_systems[systemIndex];
+    SortOutputRuntime* list = nullptr;
+    for (SortOutputRuntime& candidate : system.sortOutputs) {
+        if (candidate.mode == sortMode) {
+            list = &candidate;
+            break;
+        }
+    }
+    if (list == nullptr || !list->indirection.handle.valid() || !list->kvp.handle.valid() ||
+        !list->renderCount.handle.valid() || !list->indirect.handle.valid() ||
+        list->validGeneration == m_sortGeneration) {
+        return;
+    }
+
+    const SortBufferSet buffers = outputBuffers(systemIndex, sortMode);
+    bool hasPipeline = false;
+    sink.beginPass({"VFX " + assetSystem.name + " Output Sort", true, false, false});
+    setUniforms(sink, systemIndex, false, frame, sortMode,
+                m_hasPerOutputSort[systemIndex]);
+    for (const std::uint32_t programIndex : system.kernels) {
+        const AssetProgram& program = m_asset->programs[programIndex];
+        if (program.sortMode != sortMode) {
+            continue;
+        }
+        if (program.task == static_cast<std::uint8_t>(kTaskSortPrepass)) {
+            hasPipeline = true;
+            const std::uint32_t chunks = (assetSystem.capacity + kSortChunkSize - 1u) / kSortChunkSize;
+            for (std::uint32_t chunk = 0u; chunk < chunks; ++chunk) {
+                const Vec4 ids{static_cast<float>(m_nextParticleId), static_cast<float>(systemIndex),
+                               static_cast<float>(chunk), 0.0f};
+                sink.setUniform(m_idsUniform, &ids);
+                dispatchKernel(sink, systemIndex, programIndex, &buffers);
+            }
+            continue;
+        }
+        if (program.task == static_cast<std::uint8_t>(kTaskSortReset) ||
+            program.task == static_cast<std::uint8_t>(kTaskOutputUpdate) ||
+            program.task == static_cast<std::uint8_t>(kTaskSortBitonic) ||
+            program.task == static_cast<std::uint8_t>(kTaskSortMerge)) {
+            hasPipeline = true;
+            dispatchKernel(sink, systemIndex, programIndex, &buffers);
+        }
+    }
+    if (hasPipeline) {
+        for (const std::uint32_t programIndex : system.kernels) {
+            const AssetProgram& program = m_asset->programs[programIndex];
+            if (program.task == static_cast<std::uint8_t>(kTaskFillIndirect)) {
+                dispatchKernel(sink, systemIndex, programIndex, &buffers);
+                break;
+            }
+        }
+        list->validGeneration = m_sortGeneration;
+    }
+    sink.endPass();
 }
 
 void EffectImpl::uploadCpuEvents() {
@@ -1156,9 +2074,19 @@ void EffectImpl::uploadCpuEvents() {
 }
 
 void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
+    m_lastFrame = frame;
+    m_lastFrameValid = true;
+    refreshDrawInstancing();
+    if (isCulled() && (m_asset->cullingFlags & kCullSimulation) != 0u) {
+        return;
+    }
     const bool stepFrame = m_stepFrame;
     if (!m_needsReset && (!m_playing || (m_paused && !stepFrame))) {
         return;
+    }
+    ++m_sortGeneration;
+    if (m_sortGeneration == 0u) {
+        m_sortGeneration = 1u;
     }
     const bool simulate = m_playing && (!m_paused || stepFrame);
     if (m_needsReset) {
@@ -1196,9 +2124,18 @@ void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext& frame) 
         SystemRuntime& system = m_systems[systemIndex];
         const std::string passName = "VFX " + m_asset->systems[systemIndex].name + " Simulation";
         sink.beginPass({passName, true, false, false});
-        setUniforms(sink, static_cast<std::uint32_t>(systemIndex), simulate, frame);
+        setUniforms(sink, static_cast<std::uint32_t>(systemIndex), simulate, frame,
+                    m_asset->systems[systemIndex].sortMode,
+                    m_hasPerOutputSort[systemIndex]);
+        const SortMode systemSortMode = m_asset->systems[systemIndex].sortMode;
         for (const std::uint32_t programIndex : system.kernels) {
             const AssetProgram& program = m_asset->programs[programIndex];
+            if (program.task == static_cast<std::uint8_t>(kTaskSortReset)) {
+                continue;
+            }
+            if (program.sortMode != SortMode::None && program.sortMode != systemSortMode) {
+                continue;
+            }
             if (program.task == static_cast<std::uint8_t>(kTaskDeadListInit) && !m_needsReset) {
                 continue;
             }
@@ -1263,17 +2200,27 @@ void EffectImpl::encodeSimulation(CommandSink& sink, const FrameContext& frame) 
         }
     }
 }void EffectImpl::bindOutputBuffers(CommandSink& sink, std::uint32_t systemIndex,
-                                   const AssetProgram& program) {
+                                   const AssetProgram& program, const SortBufferSet& buffers) {
     const SystemRuntime& system = m_systems[systemIndex];
     for (const AssetBinding& binding : program.vertexBindings) {
         if (binding.kind == AssetBindingKind::Texture) {
             continue;
         }
-        if (binding.index >= system.buffers.size() || !system.buffers[binding.index].handle.valid()) {
+        if (binding.index >= system.buffers.size()) {
             report("VFX output references an unavailable vertex buffer");
             continue;
         }
-        sink.setStorageBuffer(binding.stage, system.buffers[binding.index].handle, binding.access);
+        BufferHandle buffer = system.buffers[binding.index].handle;
+        if (binding.index == kIndirectionBuffer && buffers.indirection.valid()) {
+            buffer = buffers.indirection;
+        } else if (binding.index == kRenderCountBuffer && buffers.renderCount.valid()) {
+            buffer = buffers.renderCount;
+        }
+        if (!buffer.valid()) {
+            report("VFX output references an unavailable vertex buffer");
+            continue;
+        }
+        sink.setStorageBuffer(binding.stage, buffer, binding.access);
     }
 }
 
@@ -1300,21 +2247,46 @@ void EffectImpl::bindOutputTexture(CommandSink& sink, const FrameContext& frame,
     }
 }
 
-void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
-    if (!m_playing || m_needsReset) {
-        return;
-    }
+void EffectImpl::encodeOutputDraws(CommandSink& sink, const FrameContext& frame,
+                                   const InstanceRuntime& instance, bool batch,
+                                   std::uint32_t firstBatch, std::uint32_t batchCount) {
     const Mat4 invView = inverseMatrix(frame.view);
     const Vec4 cameraPosition{frame.cameraPosition.x, frame.cameraPosition.y, frame.cameraPosition.z, 1.0f};
-    for (std::size_t systemIndex = 0; systemIndex < m_systems.size(); ++systemIndex) {
+    const std::uint32_t requiredBatches = batch ? m_outputBatchCount : 1u;
+    for (const OutputRuntimeRef& output : m_outputOrder) {
+        const std::uint32_t systemIndex = output.system;
+        const std::uint32_t programIndex = output.programIndex;
+        if (systemIndex >= m_systems.size() || programIndex >= m_asset->programs.size()) {
+            continue;
+        }
         const SystemRuntime& system = m_systems[systemIndex];
-        const Mat4 world = m_asset->systems[systemIndex].space == SystemSpace::Local ? m_transform
-                                                                                     : Mat4::identity();
-        for (const std::uint32_t programIndex : system.outputs) {
-            const AssetProgram& program = m_asset->programs[programIndex];
-            const std::string passName = "VFX " + m_asset->systems[systemIndex].name + " Output";
+        const AssetProgram& program = m_asset->programs[programIndex];
+        const SortBufferSet buffers = outputBuffers(systemIndex, program.sortMode);
+        ensureOutputSort(sink, systemIndex, program.sortMode, frame);
+        const std::vector<BufferHandle> activeIndirect =
+            prepareActiveIndirect(sink, systemIndex, program.sortMode, buffers);
+        if (m_activeArgsRequired && activeIndirect.size() != requiredBatches) {
+            report("VFX active indirect args are unavailable for an instance batch");
+            continue;
+        }
+        const Mat4 world = m_asset->systems[systemIndex].space == SystemSpace::Local
+                               ? instance.world
+                               : Mat4::identity();
+        const std::string passName = "VFX " + m_asset->systems[systemIndex].name + " Output";
+        for (std::uint32_t localBatch = 0; localBatch < batchCount; ++localBatch) {
+            const std::uint32_t batchIndex = firstBatch + localBatch;
+            if (batch && (batchIndex >= m_outputBatchCount ||
+                          batchIndex * m_outputBatchSize >= m_outputInstanceCount)) {
+                continue;
+            }
+            const std::uint32_t batchOffset = batch ? batchIndex * m_outputBatchSize : 0u;
+            const std::uint32_t localInstances =
+                batch ? std::min(m_outputBatchSize, m_outputInstanceCount - batchOffset) : 1u;
+            const std::uint32_t activeBase = m_activeInstanceBase + batchOffset;
             sink.beginPass({passName, false, program.softParticles, false});
             sink.setUniform(m_worldUniform, &world);
+            setInstanceDrawParams(sink, batch ? m_batchInstanceCount : 1u, localInstances,
+                                  activeBase, batch && m_activeIndirection);
             if (program.softParticles) {
                 const float width = std::max(frame.screenSize.x, 1.0f);
                 const float height = std::max(frame.screenSize.y, 1.0f);
@@ -1341,7 +2313,8 @@ void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
                     sink.setUniform(m_invViewProjUniform, &invViewProj);
                 }
             }
-            bindOutputBuffers(sink, static_cast<std::uint32_t>(systemIndex), program);
+            bindOutputBuffers(sink, systemIndex, program, buffers);
+            bindInstanceTransforms(sink, system.buffers[kAttributesBuffer].handle);
             bindOutputTexture(sink, frame, program);
             DrawState state;
             state.depthTest = true;
@@ -1350,9 +2323,11 @@ void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
             state.blend = program.blend;
             state.depthFunc = CompareFunc::LessEqual;
             sink.setState(state);
+            const BufferHandle indirect =
+                activeIndirect.empty() ? buffers.indirect : activeIndirect[batchIndex];
             if (programIndex < m_programs.size() && m_programs[programIndex].valid() &&
-                system.buffers[kIndirectBuffer].handle.valid()) {
-                sink.drawIndirect(m_programs[programIndex], system.buffers[kIndirectBuffer].handle, 0, 1);
+                indirect.valid()) {
+                sink.drawIndirect(m_programs[programIndex], indirect, 0, 1);
                 ++m_runtime.m_diagnostics.draws;
             }
             sink.endPass();
@@ -1360,6 +2335,253 @@ void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
     }
 }
 
+void EffectImpl::encodeOutput(CommandSink& sink, const FrameContext& frame) {
+    if (isCulled() || !m_playing || m_needsReset || m_instances.empty()) {
+        return;
+    }
+    uploadInstanceActiveList();
+    const bool batch = m_outputBatch;
+    const std::size_t drawCount = batch ? 1u : m_instances.size();
+    for (std::size_t draw = 0; draw < drawCount; ++draw) {
+        const InstanceRuntime& instance = m_instances[batch ? 0u : draw];
+        if (!batch && instance.culled) {
+            continue;
+        }
+        encodeOutputDraws(sink, frame, instance, batch, 0u, batch ? m_outputBatchCount : 1u);
+    }
+}
+
+void EffectImpl::encodeOutputBatch(CommandSink& sink, const FrameContext& frame,
+                                   std::uint32_t batchIndex) {
+    if (isCulled() || !m_playing || m_needsReset || m_instances.empty()) {
+        return;
+    }
+    if (!m_outputBatch || m_outputBatchCount <= 1u) {
+        if (batchIndex == 0u) {
+            encodeOutput(sink, frame);
+        }
+        return;
+    }
+    if (batchIndex >= m_outputBatchCount) {
+        return;
+    }
+    uploadInstanceActiveList();
+    encodeOutputDraws(sink, frame, m_instances.front(), true, batchIndex, 1u);
+}
+
+void EffectImpl::encodeMotionVectors(CommandSink& sink, const FrameContext& frame) {
+    if (isCulled() || !m_playing || m_needsReset) {
+        return;
+    }
+    uploadInstanceActiveList();
+    const ProgramHandle program = m_runtime.motionVectorProgram();
+    if (!program.valid()) {
+        return;
+    }
+    if (!m_motionParamsUniform.valid()) {
+        m_motionParamsUniform = m_device.findUniform("u_vfxMotionParams", UniformType::Vec4);
+    }
+    if (!m_motionParamsUniform.valid()) {
+        return;
+    }
+    if (!m_prevWorldUniform.valid()) {
+        m_prevWorldUniform = m_device.findUniform("u_vfx_prevWorld", UniformType::Mat4);
+    }
+    if (!m_prevWorldUniform.valid()) {
+        return;
+    }
+
+    const bool batch = m_outputBatch;
+    const std::size_t drawCount = batch ? 1u : m_instances.size();
+    for (std::size_t draw = 0; draw < drawCount; ++draw) {
+        const InstanceRuntime& instance = m_instances[batch ? 0u : draw];
+        if (!batch && instance.culled) {
+            continue;
+        }
+        for (const OutputRuntimeRef& outputRef : m_outputOrder) {
+            const std::uint32_t systemIndex = outputRef.system;
+            const std::uint32_t programIndex = outputRef.programIndex;
+            if (systemIndex >= m_systems.size() || programIndex >= m_asset->programs.size()) {
+                continue;
+            }
+            const SystemRuntime& system = m_systems[systemIndex];
+            const AssetProgram& output = m_asset->programs[programIndex];
+            if (!output.generateMotionVector) {
+                continue;
+            }
+            const SortBufferSet buffers = outputBuffers(systemIndex, output.sortMode);
+            if (!system.buffers[kAttributesBuffer].handle.valid() ||
+                !buffers.indirection.valid() || !buffers.indirect.valid() ||
+                !buffers.renderCount.valid()) {
+                continue;
+            }
+            ensureOutputSort(sink, systemIndex, output.sortMode, frame);
+            const std::vector<BufferHandle> activeIndirect =
+                prepareActiveIndirect(sink, systemIndex, output.sortMode, buffers);
+            const std::uint32_t batchCount = batch ? m_outputBatchCount : 1u;
+            if (m_activeArgsRequired && activeIndirect.size() != batchCount) {
+                report("VFX active indirect args are unavailable for an instance batch");
+                continue;
+            }
+            const bool localSpace = m_asset->systems[systemIndex].space == SystemSpace::Local;
+            const Mat4 world = localSpace ? instance.world : Mat4::identity();
+            const Mat4 previousWorld = localSpace ? instance.previousWorld : Mat4::identity();
+            const float strideWords = static_cast<float>(system.buffers[kAttributesBuffer].stride / 4u);
+            const bool reverseSort =
+                m_asset->systems[systemIndex].sortMode != SortMode::None &&
+                output.sortOrder != m_asset->systems[systemIndex].sortOrder;
+            const std::string passName =
+                "VFX " + m_asset->systems[systemIndex].name + " Motion Vectors";
+            for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+                const std::uint32_t batchOffset = batch ? batchIndex * m_outputBatchSize : 0u;
+                if (batch && batchOffset >= m_outputInstanceCount) {
+                    continue;
+                }
+                const std::uint32_t localInstances =
+                    batch ? std::min(m_outputBatchSize, m_outputInstanceCount - batchOffset) : 1u;
+                const std::uint32_t activeBase = m_activeInstanceBase + batchOffset;
+                sink.beginPass({passName, false, false, false});
+                sink.setUniform(m_worldUniform, &world);
+                sink.setUniform(m_prevWorldUniform, &previousWorld);
+                setInstanceDrawParams(sink, batch ? m_batchInstanceCount : 1u, localInstances,
+                                      activeBase, batch && m_activeIndirection);
+                const Vec4 motionParams{0.001f, output.blend != BlendMode::Opaque ? 1.0f : 0.0f,
+                                        reverseSort ? 1.0f : 0.0f, strideWords};
+                sink.setUniform(m_motionParamsUniform, &motionParams.x);
+                sink.setStorageBuffer(12, system.buffers[kAttributesBuffer].handle, Access::Read);
+                sink.setStorageBuffer(13, buffers.indirection, Access::Read);
+                sink.setStorageBuffer(14, buffers.renderCount, Access::Read);
+                bindInstanceTransforms(sink, system.buffers[kAttributesBuffer].handle);
+
+                TextureHandle texture = m_whiteTexture;
+                if (output.textureProperty != kInvalidIndex &&
+                    output.textureProperty < m_propertyTextures.size() &&
+                    m_propertyTextures[output.textureProperty].valid()) {
+                    texture = m_propertyTextures[output.textureProperty];
+                }
+                sink.setTexture(0, m_mainSampler, texture);
+
+                DrawState state;
+                state.depthTest = true;
+                state.depthWrite = false;
+                state.cullBackFace = false;
+                state.blend = BlendMode::Opaque;
+                state.depthFunc = CompareFunc::LessEqual;
+                sink.setState(state);
+                const BufferHandle indirect =
+                    activeIndirect.empty() ? buffers.indirect : activeIndirect[batchIndex];
+                sink.drawIndirect(program, indirect, 0, 1);
+                ++m_runtime.m_diagnostics.draws;
+                sink.endPass();
+            }
+        }
+    }
+}
+void EffectImpl::encodeShadow(CommandSink& sink, const Mat4& shadowViewProjection) {
+    if (!m_playing || m_needsReset) {
+        return;
+    }
+    const ProgramHandle program = m_runtime.shadowProgram();
+    if (!program.valid()) {
+        return;
+    }
+    if (!m_shadowViewProjUniform.valid()) {
+        m_shadowViewProjUniform = m_device.findUniform("u_vfxShadowViewProj", UniformType::Mat4);
+    }
+    if (!m_shadowParamsUniform.valid()) {
+        m_shadowParamsUniform = m_device.findUniform("u_vfxShadowParams", UniformType::Vec4);
+    }
+    if (!m_shadowViewProjUniform.valid() || !m_shadowParamsUniform.valid()) {
+        return;
+    }
+
+    const bool batch = m_batchInstanceCount > 1u;
+    const bool split = m_shadowArgsRequired;
+    const std::uint32_t batchCount = split ? m_shadowBatchCount : 1u;
+    const std::uint32_t totalInstances = static_cast<std::uint32_t>(m_instances.size());
+    const std::size_t drawCount = batch ? 1u : m_instances.size();
+    for (std::size_t draw = 0; draw < drawCount; ++draw) {
+        const InstanceRuntime& instance = m_instances[batch ? 0u : draw];
+        for (const OutputRuntimeRef& outputRef : m_outputOrder) {
+            const std::uint32_t systemIndex = outputRef.system;
+            const std::uint32_t programIndex = outputRef.programIndex;
+            if (systemIndex >= m_systems.size() || programIndex >= m_asset->programs.size()) {
+                continue;
+            }
+            const SystemRuntime& system = m_systems[systemIndex];
+            const AssetProgram& output = m_asset->programs[programIndex];
+            if (!output.castShadows) {
+                continue;
+            }
+            const SortBufferSet buffers = outputBuffers(systemIndex, output.sortMode);
+            if (!system.buffers[kAttributesBuffer].handle.valid() ||
+                !buffers.indirection.valid() || !buffers.indirect.valid() ||
+                !buffers.renderCount.valid()) {
+                continue;
+            }
+            if (m_lastFrameValid) {
+                ensureOutputSort(sink, systemIndex, output.sortMode, m_lastFrame);
+            }
+            const std::vector<BufferHandle> shadowIndirect =
+                prepareShadowIndirect(sink, systemIndex, buffers);
+            if (split && shadowIndirect.size() != batchCount) {
+                report("VFX shadow indirect args are unavailable for an instance batch");
+                continue;
+            }
+            const Mat4 world = m_asset->systems[systemIndex].space == SystemSpace::Local
+                                   ? instance.world
+                                   : Mat4::identity();
+            const float strideWords = static_cast<float>(system.buffers[kAttributesBuffer].stride / 4u);
+            const bool reverseSort =
+                m_asset->systems[systemIndex].sortMode != SortMode::None &&
+                output.sortOrder != m_asset->systems[systemIndex].sortOrder;
+            const std::string passName =
+                "VFX " + m_asset->systems[systemIndex].name + " Shadow";
+            for (std::uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+                const std::uint32_t batchOffset = split ? batchIndex * m_shadowBatchSize : 0u;
+                if (split && batchOffset >= totalInstances) {
+                    break;
+                }
+                const std::uint32_t localInstances =
+                    split ? std::min(m_shadowBatchSize, totalInstances - batchOffset)
+                          : (batch ? totalInstances : 1u);
+                sink.beginPass({passName, false, false, false});
+                sink.setUniform(m_worldUniform, &world);
+                sink.setUniform(m_shadowViewProjUniform, shadowViewProjection.data());
+                setInstanceDrawParams(sink, batch ? totalInstances : 1u, localInstances, batchOffset,
+                                      false);
+                const Vec4 shadowParams{0.001f, output.blend != BlendMode::Opaque ? 1.0f : 0.0f,
+                                        strideWords, reverseSort ? 1.0f : 0.0f};
+                sink.setUniform(m_shadowParamsUniform, &shadowParams.x);
+                sink.setStorageBuffer(12, system.buffers[kAttributesBuffer].handle, Access::Read);
+                sink.setStorageBuffer(13, buffers.indirection, Access::Read);
+                sink.setStorageBuffer(14, buffers.renderCount, Access::Read);
+                bindInstanceTransforms(sink, system.buffers[kAttributesBuffer].handle);
+
+                TextureHandle texture = m_whiteTexture;
+                if (output.textureProperty != kInvalidIndex &&
+                    output.textureProperty < m_propertyTextures.size() &&
+                    m_propertyTextures[output.textureProperty].valid()) {
+                    texture = m_propertyTextures[output.textureProperty];
+                }
+                sink.setTexture(0, m_mainSampler, texture);
+
+                DrawState state;
+                state.depthTest = true;
+                state.depthWrite = true;
+                state.cullBackFace = false;
+                state.blend = BlendMode::Opaque;
+                state.depthFunc = CompareFunc::LessEqual;
+                sink.setState(state);
+                const BufferHandle indirect =
+                    shadowIndirect.empty() ? buffers.indirect : shadowIndirect[batchIndex];
+                sink.drawIndirect(program, indirect, 0, 1);
+                ++m_runtime.m_diagnostics.shadowDraws;
+                sink.endPass();
+            }
+        }
+    }
+}
 void EffectImpl::createLutTextures(std::string& error) {
     const auto create = [&](LutRuntime& lut, std::string_view name, std::string_view samplerName) {
         if (lut.properties.empty() || !error.empty()) {
@@ -1580,6 +2802,7 @@ void Runtime::update(float deltaSeconds) {
     m_outputMs = 0.0f;
     m_diagnostics.simulationMs = 0.0f;
     m_diagnostics.outputMs = 0.0f;
+    m_diagnostics.shadowDraws = 0;
     const auto start = std::chrono::steady_clock::now();
     for (const std::unique_ptr<Effect>& effect : m_effects) {
         auto* impl = dynamic_cast<EffectImpl*>(effect.get());
@@ -1612,6 +2835,7 @@ void Runtime::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
     m_diagnostics.draws = 0;
     m_diagnostics.sortPasses = 0;
     m_diagnostics.eventCount = 0;
+    m_diagnostics.shadowDraws = 0;
     for (const std::unique_ptr<Effect>& effect : m_effects) {
         auto* impl = dynamic_cast<EffectImpl*>(effect.get());
         if (impl != nullptr) {
@@ -1626,9 +2850,18 @@ void Runtime::encodeSimulation(CommandSink& sink, const FrameContext& frame) {
     m_diagnostics.totalMs = m_updateMs + m_encodeMs;
 }
 
+void Runtime::beginOutputFrame() {
+    m_diagnostics.draws = 0;
+    m_outputMs = 0.0f;
+    m_encodeMs = m_simulationMs;
+    m_diagnostics.outputMs = 0.0f;
+    m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
+}
+
 void Runtime::encodeOutput(CommandSink& sink, const FrameContext& frame) {
     const auto start = std::chrono::steady_clock::now();
-    m_diagnostics.draws = 0;
+    beginOutputFrame();
     for (const std::unique_ptr<Effect>& effect : m_effects) {
         auto* impl = dynamic_cast<EffectImpl*>(effect.get());
         if (impl != nullptr) {
@@ -1643,6 +2876,82 @@ void Runtime::encodeOutput(CommandSink& sink, const FrameContext& frame) {
     m_diagnostics.totalMs = m_updateMs + m_encodeMs;
 }
 
+void Runtime::encodeOutputEffect(CommandSink& sink, const FrameContext& frame, Effect& effect) {
+    const auto start = std::chrono::steady_clock::now();
+    auto* impl = dynamic_cast<EffectImpl*>(&effect);
+    if (impl != nullptr) {
+        impl->encodeOutput(sink, frame);
+    }
+    const auto end = std::chrono::steady_clock::now();
+    m_outputMs += std::chrono::duration<float, std::milli>(end - start).count();
+    m_encodeMs = m_simulationMs + m_outputMs;
+    m_diagnostics.outputMs = m_outputMs;
+    m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
+}
+
+void Runtime::encodeOutputEffectBatch(CommandSink& sink, const FrameContext& frame, Effect& effect,
+                                      std::uint32_t batchIndex) {
+    const auto start = std::chrono::steady_clock::now();
+    auto* impl = dynamic_cast<EffectImpl*>(&effect);
+    if (impl != nullptr) {
+        impl->encodeOutputBatch(sink, frame, batchIndex);
+    }
+    const auto end = std::chrono::steady_clock::now();
+    m_outputMs += std::chrono::duration<float, std::milli>(end - start).count();
+    m_encodeMs = m_simulationMs + m_outputMs;
+    m_diagnostics.outputMs = m_outputMs;
+    m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
+}
+
+void Runtime::encodeMotionVectors(CommandSink& sink, const FrameContext& frame) {
+    const auto start = std::chrono::steady_clock::now();
+    for (const std::unique_ptr<Effect>& effect : m_effects) {
+        auto* impl = dynamic_cast<EffectImpl*>(effect.get());
+        if (impl != nullptr) {
+            impl->encodeMotionVectors(sink, frame);
+        }
+    }
+    const auto end = std::chrono::steady_clock::now();
+    m_outputMs += std::chrono::duration<float, std::milli>(end - start).count();
+    m_encodeMs = m_simulationMs + m_outputMs;
+    m_diagnostics.outputMs = m_outputMs;
+    m_diagnostics.encodeMs = m_encodeMs;
+    m_diagnostics.totalMs = m_updateMs + m_encodeMs;
+}
+
+void Runtime::encodeShadow(CommandSink& sink, const Mat4& shadowViewProjection) {
+    for (const std::unique_ptr<Effect>& effect : m_effects) {
+        auto* impl = dynamic_cast<EffectImpl*>(effect.get());
+        if (impl != nullptr) {
+            impl->encodeShadow(sink, shadowViewProjection);
+        }
+    }
+}
+
+ProgramHandle Runtime::motionVectorProgram() {
+    if (!m_motionVectorProgramResolved) {
+        m_motionVectorProgramResolved = true;
+        if (m_shading != nullptr) {
+            m_motionVectorProgram =
+                m_shading->resolveProgram(RenderOutputDesc{"vfx.motionVectors", false}, m_device.backend());
+        }
+    }
+    return m_motionVectorProgram;
+}
+
+ProgramHandle Runtime::shadowProgram() {
+    if (!m_shadowProgramResolved) {
+        m_shadowProgramResolved = true;
+        if (m_shading != nullptr) {
+            m_shadowProgram =
+                m_shading->resolveProgram(RenderOutputDesc{"vfx.shadow", false}, m_device.backend());
+        }
+    }
+    return m_shadowProgram;
+}
+
 void Runtime::setErrorCallback(std::function<void(std::string_view)> callback) {
     m_errorCallback = std::move(callback);
 }
@@ -1654,6 +2963,20 @@ bool Runtime::hasLitOutputs() const {
         }
         for (const AssetProgram& program : asset->programs) {
             if (program.output && program.lit) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool Runtime::hasShadowOutputs() const {
+    for (const std::shared_ptr<const Asset>& asset : m_assets) {
+        if (asset == nullptr) {
+            continue;
+        }
+        for (const AssetProgram& program : asset->programs) {
+            if (program.output && program.castShadows) {
                 return true;
             }
         }

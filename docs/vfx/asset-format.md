@@ -77,7 +77,7 @@
 | `angle` | float | 0 | V1 billboard 旋转 |
 | `scale` | float3 | 1 | |
 | `targetPosition` | float3 | 0 | 预留 |
-| `oldPosition` | float3 | 0 | 碰撞/插值预留 |
+| `oldPosition` | float3 | 0 | 上一帧 position；init/update codegen 维护，V3.0 motion vectors 使用 |
 
 - Unity 的 `angleX/Y/Z`、`axisX/Y/Z`、`pivotX/Y/Z` 在 V1.1 后按需加入；V1 billboard 只用 `angle`。
 - 自定义属性放在顶层 `attributes` 数组：`{"name":"user0","type":"float4","default":[0,0,0,0]}`，最多 8 个，名称不得与内置冲突。V1 的 layout 固定包含全部内置属性 + 已声明自定义属性（按此表顺序/JSON 顺序）；后续按 block 读写集合收窄。
@@ -109,8 +109,8 @@
 |---|---|
 | `capacity` | 1..1048576；编译期按 64 对齐（内部 capacity 可能大于请求值） |
 | `space` | `world` / `local`（local 使用 effect transform） |
-| `bounds.mode` | V1 只支持 `manual`；`center`/`extents` 必填；缺省 `bounds` 为 center `[0,0,0]`、extents `[1,1,1]` |
-| `sort.mode` | `none` / `distance` / `custom`；`order` = `ascending` / `descending`。V1.2.2 `distance` 的 key 为相机空间平方距离；`custom` 读取系统声明的 scalar `sortKey` 属性 |
+| `bounds.mode` | `manual`（缺省）或 `automatic`；manual 时 `center`/`extents` 必填，automatic 可省略 center/extents。V3.5 起 `bounds.padding` 可选，仅 automatic 生效（由 GPU alive 粒子计算后加 padding） |
+| `sort.mode` | `none` / `distance` / `custom` / `cameraDepth` / `youngest`；`order` = `ascending` / `descending`。V1.2.2 `distance` 的 key 为相机空间平方距离；`custom` 读取系统声明的 scalar `sortKey` 属性；V3.8 `cameraDepth` 为相机前向距离，`youngest` 为 `age` |
 | `spawner.rate` | 每秒粒子数；可为 0 |
 | `spawner.bursts` | 单次（无 period）或周期（有 period/repeat）；`time` 为首次触发时间，`repeat` 为总次数上限（0=无限） |
 | `init.blocks` / `update.blocks` | 块列表（见 §6） |
@@ -127,9 +127,13 @@
   "texture": "MainTex",
   "softParticles": true,
   "softDistance": 1.0,
+  "castShadows": false,
+  "generateMotionVector": true,
+  "sortPriority": 0,
   "metallic": "Metallic",
   "roughness": 0.5,
-  "sort": "distance"
+  "sort": "distance",
+  "sortOrder": "ascending"
 }
 ```
 
@@ -141,22 +145,32 @@
 | `texture` | property 名称；缺省使用白色纹理 |
 | `softParticles` | V1.4.2；需要 scene depth；透明 blend；缺省 false |
 | `softDistance` | V1.4.2；>0（最小 0.001），缺省 0.1；与粒子 eye depth 的 fade 距离 |
+| `castShadows` | V3.1；进入该 output 的 shadow caster pass；缺省 false；透明/加性输出按纹理 alpha 裁剪，opaque 输出不裁剪 |
+| `generateMotionVector` | V3.2；是否写场景 motion-vector buffer；缺省 true 以兼容 V3.0，显式 false 跳过 MV draw |
+| `sortPriority` | V3.7；output 提交顺序，int32，越小越先；缺省 0，priority 相同保持声明顺序 |
 | `metallic` | V1.4.1；0..1 常量或 float property 名；缺省 0 |
 | `roughness` | V1.4.1；0..1 常量或 float property 名；缺省 0.5 |
-| `sort` | 必须与 `system.sort.mode` 一致；V1.2.2 所有 output 共享 system 排序/indirection，`none` 仅用于 system 未排序 |
+| `sort` | system 排序开启时必需；V1.2.2 所有 output 默认共享 system 排序/indirection，V3.10 起可写与 system 不同的 criterion（`distance`/`custom`/`cameraDepth`/`youngest`）；`none` 仅用于 system 未排序 |
+| `sortOrder` | V3.9；可选 `ascending` / `descending`，覆盖该 output 的绘制方向；缺省继承 `system.sort.order`；仅 system 排序开启时有效 |
 
 - V1.4.1 lit output：FS 填充 `SurfaceData`，调用 `hbgSampleDirectionalShadow`/`hbgEvaluateLightLoop`；metallic/roughness 支持常量或 float property，property 通过 `u_vfxProp_*` 在运行时上传。VFX lit 使用全局 light-list fallback，point/area shadow sampler 不启用（12/13 保留给 attribute/indirection）。
 - V1.4.2 soft output：FS 在 stage 4 采样 `s_vfxSceneDepth`，用 `u_vfxSoftParams`（x=distance，yz=1/viewport）和 `u_global_view`/`u_global_invViewProj` 线性化 scene/particle depth；`fade=smoothstep(saturate((sceneZ-selfZ)/softDistance))`。输出 pass 显式 `readTexture(depth)`，depth attachment 使用 read-only flag。无 depth 时绑定白色 fallback。
 - 输出材质/纹理由适配层绑定，不写入 `.vfxb`。
+- V3.1 `castShadows` 缺省 false；只控制 shadow caster pass，不改变 color output；透明/加性 output 在 shadow FS 中按 `s_vfxMain` alpha < 0.001 裁剪，opaque output 不裁剪。
+- V3.2 `generateMotionVector` 缺省 true；只控制固定 `vfx.motionVectors` pass，不改变 color/shadow output。
 
-### 5.1 排序语义（V1.2.2）
+### 5.1 排序语义（V1.2.2 / V3.8 / V3.9 / V3.10）
 
 - `distance`：key = `dot(worldPosition - cameraPosition, worldPosition - cameraPosition)`；`ascending` 近到远，`descending` 远到近。
+- `cameraDepth`（V3.8）：key = `dot(worldPosition - cameraPosition, cameraForward)`；`ascending` 由近到远，与 Unity `VFX_DEPTH_SORT_KEY` 一致。
+- `youngest`（V3.8）：key = `age`；`ascending` 最年轻优先，对应 Unity `VFX_YOUNGEST_SORT_KEY`。
 - `custom`：key = scalar `sortKey` 属性；没有该属性时编译失败。
 - key 相等时始终按 `particleIndex` 升序（tie-break），与 `Sort.compute` 一致。
 - `capacity <= 4096`：一次 bitonic dispatch 排序并直接写 indirection。
 - `capacity > 4096`：4096 个 KVP 为一块，逐块 bitonic pre-pass 写 `sortScratch`，再 merge 到最终 indirection；每块单独 dispatch，避免大容量 LDS 并发超限。
 - V1.2.2 所有 output 共享 system 排序；`output.sort` 只用于校验，不能覆盖 system 排序。
+- V3.9 `output.sortOrder` 可覆盖单个 output 的绘制方向；system key/indirection 仍共享，反向 output 从 indirection 尾部读取，相等 key 的 tie 顺序也随之反向。
+- V3.10 `output.sort` 可选择与 system 不同的 criterion；runtime 在 output/MV/shadow draw 前按需串行重排共享 KVP/indirection，相同 criterion 的连续 draw 复用列表。v1 不是并发独立 sorted list；system criterion 是缺省和基础 list。
 
 ### 5.2 GPU 事件（V1.2.3）
 
@@ -400,7 +414,7 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 4 | 2 | version = 6 |
 | 6 | 2 | headerSize = 64 |
 | 8 | 4 | flags（bit0=little-endian；bit1 保留 debug） |
-| 12 | 4 | sectionCount = 9 |
+| 12 | 4 | sectionCount = 9，最多 11（可选 BOUNDS id 11、CULLING id 12） |
 | 16 | 8 | contentHash（FNV-1a 64，覆盖 offset 64 之后全部字节） |
 | 24 | 4 | compilerVersion = 0x00010000 |
 | 28 | 4 | assetNameOffset（STRINGS 段偏移；0 = 空名） |
@@ -424,6 +438,8 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 8 | OUTPUTS | `u32 count` + 32B/条 |
 | 9 | EVENTS | `u32 count` + `u32 bufferSize` + link 记录；见 §10 |
 | 10 | DEBUG | 保留；V1.0b.5 不生成 |
+| 11 | BOUNDS | V3.5 可选；`u32 count` + `count * 3*f32` padding；无 padding 资产不生成 |
+| 12 | CULLING | V3.6 可选；`u32 flags`；无 culling 资产不生成 |
 
 #### PROPERTIES（32B/条）
 
@@ -447,7 +463,7 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 4 | `requestedCapacity:u32` |
 | 8 | `capacity:u32`（64 对齐后的实际值） |
 | 12 | `space:u8` |
-| 13 | `sortMode:u8` |
+| 13 | `sortMode:u8`（0=none, 1=distance, 2=custom, 3=cameraDepth, 4=youngest） |
 | 14 | `sortOrder:u8` |
 | 15 | `outputCount:u8` |
 | 16 | `boundsCenter:3*f32` |
@@ -457,7 +473,8 @@ V1 的 output 不写 block；使用 §5 的 output 配置。后续允许 output 
 | 48 | `burstCount:u32` |
 | 52 | `firstKernel:u32`（全局 KERNELS 记录起点） |
 | 56 | `kernelCount:u32` |
-| 60 | `reserved:u32` |
+| 60 | `boundsMode:u8`（0=manual，1=automatic；旧资产为 0） |
+| 61 | `reserved:3*u8` |
 
 Burst 16B：`{ time:f32, count:u32, period:f32, repeat:u32 }`；无周期/重复时为 0。
 
@@ -484,7 +501,7 @@ V1.0b.5 每 system 固定 7 条；V1.2.1 为 8 条；V1.2.2 起固定 **9** 条�
 | 4 | `task:u8` |
 | 5 | `stage:u8` |
 | 6 | `backend:u8` |
-| 7 | `reserved:u8` |
+| 7 | `sortModeTag:u8`（V3.10；extra sort pipeline 的 criterion，0/旧资产 = 基础 pipeline） |
 | 8 | `threadGroupX/Y/Z:3*u32` |
 | 20 | `bindingStart:u32`（BINDINGS 条目索引） |
 | 24 | `bindingCount:u32` |
@@ -495,7 +512,7 @@ V1.0b.5 每 system 固定 7 条；V1.2.1 为 8 条；V1.2.2 起固定 **9** 条�
 
 记录之后是 4B 对齐的 shader blob。每个 logical shader 每个 backend 一条记录；output VS/FS 共享 `program`，compute kernel 的 `program` 唯一。event prefix/reset 为 global program，`system=0xffffffff`。
 
-- `task`：`0=spawner`、`1=deadListInit`、`2=init`、`3=update`、`4=outputUpdate`、`5=fillIndirect`、`6=outputVertex`、`7=outputFragment`、`8=sortBitonicFinal`、`9=sortPrePass`、`10=sortMerge`、`11=eventPrefix`、`12=eventReset`、`13=eventCpuUpload`。
+- `task`：`0=spawner`、`1=deadListInit`、`2=init`、`3=update`、`4=outputUpdate`、`5=fillIndirect`、`6=outputVertex`、`7=outputFragment`、`8=sortBitonicFinal`、`9=sortPrePass`、`10=sortMerge`、`11=eventPrefix`、`12=eventReset`、`13=eventCpuUpload`、`14=boundsInit`、`15=bounds`、`16=sortReset`（V3.10 extra pipeline 专用）。
 - `stage`：`0=vertex`、`1=fragment`、`2=compute`。
 - `backend`：`0=dxbc`、`1=spirv`。
 
@@ -528,14 +545,18 @@ V1.0b.5 每 system 固定 7 条；V1.2.1 为 8 条；V1.2.2 起固定 **9** 条�
 | 4 | `program:u32` |
 | 8 | `blend:u8` |
 | 9 | `lit:u8` |
-| 10 | `sortMode:u8` |
-| 11 | `sortOrder:u8` |
+| 10 | `sortMode:u8`（effective output criterion；0=none, 1=distance, 2=custom, 3=cameraDepth, 4=youngest；V3.10 可不同于 system） |
+| 11 | `sortOrder:u8`（effective output order；V3.9 可由 JSON `sortOrder` 覆盖 system order） |
 | 12 | `textureProperty:u32`（无则 `0xffffffff`） |
 | 16 | `flags:u32`（bit0=有 texture property） |
 | 20 | `softParticles:u8` |
-| 21 | `reserved:u8[3]` |
+| 21 | `castShadows:u8`（V3.1；旧资产为 0） |
+| 22 | `motionVectorDisabled:u8`（V3.2；0/旧资产=生成，1=跳过） |
+| 23 | `reserved:u8` |
 | 24 | `softDistance:f32` |
-| 28 | `reserved:u32` |
+| 28 | `sortPriority:i32`（V3.7；旧资产为 0） |
+
+- V3.1 复用原 `reserved` byte 21，`.vfxb` v6 的 section/record 大小不变；旧资产该字节为 0，即不投影。只有带 `castShadows:true` 的 output 需要重烘焙。V3.2 用原 reserved byte 22 表示 motion-vector disabled（0/旧资产=启用，1=禁用），更新 `generateMotionVector:false` 的资产需重烘焙。V3.9 的 `sortOrder` 覆盖写入既有 OUTPUTS 偏移 11 的 effective order；旧资产该字节仍等于 system order，字节不变；只有显式覆盖的 output 需要重烘焙。V3.10 的 per-output criterion 只在 output 与 system criterion 不同时追加 KERNELS 记录：`SortReset` task 16 + 额外 `OutputUpdate`/sort pipeline，并把 criterion 写入 KERNELS offset 7；不新增 BUFFERS/section、不改变 version 6。共享 KVP/indirection，runtime 在 draw 前串行重排。含 extra pipeline 的资产旧 runtime 因 task 16 拒绝加载；无 extra criterion 的既有资产字节不变。
 
 ### 10.3 Shader blob
 
@@ -558,16 +579,43 @@ V1.0b.5 每 system 固定 7 条；V1.2.1 为 8 条；V1.2.2 起固定 **9** 条�
 - 不兼容修改 → version+1；旧 runtime 明确拒绝。
 - `capacity` 实际值可能因 64 对齐而增大；资产记录 requested/actual 两值，运行时用 actual。
 - V1.0b.6 reader 在 `vfx/src/runtime/runtime_asset.cpp` 校验 magic/version/header size/flags/contentHash/section 范围/双后端完整性；`.vfxb` 不依赖 compiler target 加载。V1.0b.8 起 header offset 28 的 `assetNameOffset` 指回 STRINGS 段，reader 回填 `Asset::name`；0 表示空名，兼容旧资产。
-- output VS/FS 的 binding 记录同样来自 KERNELS；runtime 用 VS 的 12/13 buffer 绑定和 FS 的 sampler 绑定。无 texture property 时绑定 1×1 白纹理。
+- V3.4 使用 SYSTEMS 偏移 60 的 reserved 首字节存 `boundsMode`（0=manual，1=automatic）；旧资产该字节为 0，无需重烘焙。record 大小仍为 64B，`.vfxb` version 仍为 6。
+- V3.5 的 padding 使用可选 `BOUNDS` section（id 11）；只有至少一个 automatic system 的 padding 非零时才写入。缺 section 时 padding 全 0，旧 runtime 忽略该 section，`.vfxb` version 仍为 6。新增 `bounds.padding` 的资产需重烘焙；已有零 padding 资产字节不变。
+- V3.6 的 culling flags 使用可选 `CULLING` section（id 12，`u32 flags`）；只有非零 flags 时写入。缺 section 时 flags=0（always simulate），旧 runtime 忽略该 section，`.vfxb` version 仍为 6；新增非零 `culling` 的资产需重烘焙。V3.7 的 `sortPriority` 写入 OUTPUTS 偏移 28，旧资产/旧二进制为 0；非零 priority 需要重烘焙，但不改变 record 大小或 `.vfxb` version 6。V3.8 的 `cameraDepth`/`youngest` 只新增 SYSTEMS/OUTPUTS `sortMode` 枚举值 3/4，不改变 record 大小或 version；旧值 0/1/2 和旧资产字节不变，但旧 runtime 会拒绝新枚举值。V3.9 的 per-output `sortOrder` 复用 OUTPUTS 偏移 11，旧资产仍写 system order，record/version 不变；显式覆盖的资产需要重烘焙。V3.10 的 per-output criterion 复用 OUTPUTS offset 10，并仅在 criterion 不同时追加 sort pipeline（KERNELS offset 7 tag、`SortReset` task 16）；既有资产不追加记录，字节不变。V3.11 的 output draw instancing 不改变 v6 section/record，只改 `fill_indirect` 参数与 output/MV/shadow shader（`numInstances=ceil(count/2048)`，VS 用 `gl_InstanceID * 2048` 映射）；所有 checked-in `.vfxb` 因 shader blob 变化已重烘焙。
+- output VS/FS 的 binding 记录同样来自 KERNELS；runtime 用 VS 的 12/13 buffer 绑定和 FS 的 sampler 绑定。V3.9 反序 output 的 VS 绑定 stage 14 `RenderCount`；V3.11 起所有 output/MV/shadow VS 固定绑定 stage 14 做 partial-instance guard；无 texture property 时绑定 1×1 白纹理。
 - runtime 对 Curve/Gradient 默认 LUT 按类型创建 RGBA16F 纹理（`256 × N`，N=该类型 property 数）；`setCurve`/`setGradient` 通过 `Device::updateTexture` 重传整张类型纹理。V1.1.4 起 compute shader 在 stage 9/10 采样 LUT；raster FS 仍只绑定 stage 0 main texture。
+
+### 10.6 BOUNDS（可选；V3.5）
+
+| 偏移 | 字段 |
+|---|---|
+| 0 | `count:u32`（必须等于 SYSTEMS 的 system 数） |
+| 4 + i*12 | `padding.x:f32`, `padding.y:f32`, `padding.z:f32`（system i） |
+
+- 只有至少一个 automatic system 的 `bounds.padding` 非零时写入；无 BOUNDS section 的旧资产 padding 全 0。
+- 每个分量必须 finite；Unity `boundsPadding` 范围允许负值，因此不限制符号。负值可能缩小甚至反转 AABB，调用方自行保证有效。
+- padding 只对 `bounds.mode == "automatic"` 生效；manual bounds 不使用 padding（对齐 Unity `VFXBasicInitialize` 的 CPU mapper）。
+- `BOUNDS` section id 11、alignment 4；不改变 SYSTEMS 64B record 和 `.vfxb` v6 header。
+
+### 10.7 CULLING（可选；V3.6）
+
+| 偏移 | 字段 |
+|---|---|
+| 0 | `flags:u32`（bit0=`CullSimulation`，bit1=`CullBoundsUpdate`） |
+
+- JSON 顶层 `"culling"` 支持 `"none"`（0）、`"simulation"`（1）、`"visible"`（3）；默认 `"none"`。
+- 只有 flags 非零时写入；无 CULLING section 的旧资产 flags=0，保持 always simulate。
+- automatic bounds 与 culling 不兼容（Unity 在 automatic 模式强制 `CullNone`）；JSON/reader 拒绝，editor 切换到 automatic 时清空 `culling`。
+- `CULLING` section id 12、alignment 4；不改变 SYSTEMS/OUTPUTS record 和 `.vfxb` v6 header。
 
 ## 11. 校验规则（摘要）
 
 - `capacity >= 1` 且 ≤ 1048576；64 对齐后记录 actual。
 - `sort.mode != none` 时 V1 要求 `actual capacity <= 262144`；更大容量必须关闭排序或等待 V2（编译器报错，不静默降级）。
 - `spawner.rate >= 0`；burst `count >= 0`；`period > 0`（若有周期）；`repeat >= 1`。
-- `bounds.mode == manual` 时 center/extents 必填；extents > 0。
-- `sort.mode != none` 时每个 output 必须显式声明相同 `sort`（`distance`/`custom`）；V1.2.2 共享 system 排序，所有 output 使用同一 sorted indirection。
+- `bounds.mode == manual` 时 center/extents 必填；extents > 0。`automatic` 时 center/extents 可省略；V3.5 起可写 `padding`，分量 finite，允许负值，只对 automatic 生效。GPU AABB 仍由 alive 粒子计算。
+- `culling` 只接受 `none`/`simulation`/`visible`；非零 `culling` 不能与任一 automatic bounds system 组合。
+- `sort.mode != none` 时每个 output 必须显式声明相同 `sort`（`distance`/`custom`/`cameraDepth`/`youngest`）；V1.2.2 共享 system 排序，所有 output 使用同一 sorted indirection。
 - `sort.mode == custom` 时系统必须声明 scalar（float/int/uint/bool）`sortKey` 属性；否则编译器在 `systems[i].sort.mode` 报错。
 - 属性名唯一；自定义属性 ≤8；不得与内置冲突。
 - 表达式内部类型匹配、无环、嵌套深度 ≤64（V1.0b.3）；block 字段目标类型在 V1.0b.5 kernel 编译入口校验；子图深度 ≤16 在 V1.3 校验。
@@ -592,7 +640,7 @@ vfxbake --check <asset-dir> --shaderc <path> --bgfx-src <path>
 
 - 退出码：0 成功；1 校验/编译失败；2 参数错误。
 - 失败信息包含源文件、JSON 路径（如 `systems[0].update.blocks[3].type`）和可得行/列；自定义 HLSL 错误为 `.code:line:column`，并附 shaderc 输出摘要。
-- `--check` 单文件模式比较 `--output`；批量模式递归查找 `*.vfx.json`，并比较同目录同名 `.vfxb`，不写文件；CMake 在 `HBG_SHADER_COMPILER` 可用时注册 `hbg_vfx_asset_check` CTest，CI 直接跑 `ctest` 即覆盖 **28** 个测试资产（V1.4.5），其中包括 `subgraph_visual`、`custom_hlsl_visual`、`lit_visual`、`soft_visual`/`soft_visual_off` 与性能/empty fixture。
+- `--check` 单文件模式比较 `--output`；批量模式递归查找 `*.vfx.json`，并比较同目录同名 `.vfxb`，不写文件；CMake 在 `HBG_SHADER_COMPILER` 可用时注册 `hbg_vfx_asset_check` CTest，CI 直接跑 `ctest` 即覆盖 **29** 个测试资产（V3.1 增加 `shadow_visual`），其中包括 `subgraph_visual`、`custom_hlsl_visual`、`lit_visual`、`soft_visual`/`soft_visual_off` 与性能/empty fixture。
 - `--shader-pack` 提供 HDRP 风格 include 根（`material/`、`lighting/`）；lit output 需要该路径。`compileGraphFile` 未显式提供时会从资产路径向上查找 `shaders/material/surface_data_types.sc`。
 - `--backend` 默认 `dxbc,spirv`；V1 验收要求双后端。
 - 当前未提供 `--dump-shaders`；生成 shader 仅存在于编译临时目录。

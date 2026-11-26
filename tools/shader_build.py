@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import subprocess
@@ -13,18 +14,22 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import BinaryIO, Dict, List, Optional, Sequence
 
 _EXECUTOR: Optional[ThreadPoolExecutor] = None
 _FUTURES: List[Future[None]] = []
 _BUILD_TIMEOUT: Optional[float] = None
 _OPTIMIZATION = 3
+_RETRIES = 1
 _PROGRESS_ENABLED = True
 _ONLY_FILTER = ""
 _WRITE_MANIFEST = True
 _PROGRESS_LOCK = threading.Lock()
 _PROGRESS = {"scheduled": 0, "completed": 0, "cached": 0, "compiled": 0, "failed": 0, "total": 0}
 _FAILURES: List["BuildFailure"] = []
+_BUILD_LOCK: Optional[BinaryIO] = None
+_PLAN_ONLY = False
+_PLAN: List["CompileTask"] = []
 
 
 @dataclass
@@ -40,6 +45,30 @@ class BuildFailure:
     stderr: str
 
 
+@dataclass
+class CompileTask:
+    source: str
+    output: str
+    stage: str
+    backend: str
+    defines: List[str]
+    varying_def: Optional[str]
+    d3d_skip_optimization: bool
+    optimization: int
+
+    def to_json(self) -> Dict[str, object]:
+        return {
+            "source": self.source,
+            "output": self.output,
+            "stage": self.stage,
+            "backend": self.backend,
+            "defines": self.defines,
+            "varyingDef": self.varying_def,
+            "d3dSkipOptimization": self.d3d_skip_optimization,
+            "optimization": self.optimization,
+        }
+
+
 VARIANT_BITS = (
     (0, "HAS_NORMAL_MAP"),
     (1, "HAS_MASK_MAP"),
@@ -50,20 +79,73 @@ BACKENDS = {
     "dxbc": ["--platform", "windows", "-p", "s_5_0"],
     "spirv": ["--platform", "linux", "-p", "spirv"],
 }
+INCLUDE_DIRS = ("shaders", "shaders/include", "{bgfxSrc}/src")
+
+
+def acquire_build_lock(root: Path) -> BinaryIO:
+    """Serialize shader builds that share shaders/build.
+
+    Multiple CMake targets (or a manual shader build racing an IDE build) must
+    not write the same .bin files concurrently. The lock is held by the OS and
+    is released automatically if the process dies.
+    """
+    lock_path = root / "shaders" / "build" / ".shader_build.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    waited = False
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            return handle
+        except OSError:
+            if os.name != "nt":
+                handle.close()
+                raise
+            if not waited:
+                print("shader build: waiting for another shader build to finish", flush=True)
+                waited = True
+            time.sleep(0.5)
 
 
 def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, output: Path,
                    shader_type: str, backend: str, defines: Sequence[str], force: bool,
                    newest_input: float, varying_def: Optional[Path] = None,
-                   d3d_skip_optimization: bool = False) -> None:
+                   d3d_skip_optimization: bool = False,
+                   optimization: Optional[int] = None) -> None:
+    effective_optimization = (0 if backend == "dxbc" and d3d_skip_optimization
+                              else (_OPTIMIZATION if optimization is None else optimization))
+    source_display = source.relative_to(root).as_posix()
+    output_display = output.relative_to(root).as_posix()
+    _PLAN.append(CompileTask(
+        source=source_display,
+        output=output.relative_to(root / "shaders").as_posix(),
+        stage=shader_type,
+        backend=backend,
+        defines=list(defines),
+        varying_def=(None if shader_type == "compute" or varying_def is None
+                     else varying_def.relative_to(root).as_posix()),
+        d3d_skip_optimization=d3d_skip_optimization,
+        optimization=effective_optimization,
+    ))
+    if _PLAN_ONLY:
+        return
     if _EXECUTOR is None:
         raise RuntimeError("shader compile executor is not initialized")
-    output_display = output.relative_to(root).as_posix()
     if _ONLY_FILTER and _ONLY_FILTER not in output_display:
         return
     output.parent.mkdir(parents=True, exist_ok=True)
-    source_display = source.relative_to(root).as_posix()
-    newest = max(newest_input, source.stat().st_mtime)
+    newest = max(newest_input, source.stat().st_mtime,
+                 varying_def.stat().st_mtime if varying_def is not None else 0.0)
     with _PROGRESS_LOCK:
         _PROGRESS["scheduled"] += 1
     if not force and output.exists() and output.stat().st_size > 0 and output.stat().st_mtime >= newest:
@@ -71,46 +153,72 @@ def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, outp
             _PROGRESS["completed"] += 1
             _PROGRESS["cached"] += 1
         return
+    temp_output = output.with_name(
+        f"{output.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     command: List[str] = [
         str(shaderc),
         "-f", str(source),
-        "-o", str(output),
+        "-o", str(temp_output),
         "--type", shader_type,
-        "-i", str(root / "shaders"),
-        "-i", str(root / "shaders/include"),
-        "-i", str(bgfx_src / "src"),
-        *BACKENDS[backend],
     ]
+    for include_dir in INCLUDE_DIRS:
+        resolved_include = bgfx_src / "src" if include_dir == "{bgfxSrc}/src" else root / include_dir
+        command.extend(["-i", str(resolved_include)])
+    command.extend(BACKENDS[backend])
     # FXC can spend unbounded time optimizing area-light variants. Omitting -O
     # selects D3DCOMPILE_SKIP_OPTIMIZATION; warnings are not treated as errors
     # for this fallback because FXC reports conservative uninitialized-local
     # warnings that the optimized path suppresses.
     if not (backend == "dxbc" and d3d_skip_optimization):
-        command.extend(["-O", str(_OPTIMIZATION), "--Werror"])
+        command.extend(["-O", str(effective_optimization), "--Werror"])
     if shader_type != "compute":
         command.extend(["--varyingdef", str(varying_def or (root / "shaders/include/varying.def.sc"))])
     if defines:
         command.extend(["--define", ";".join(defines)])
+    display_command = [str(output) if part == str(temp_output) else part for part in command]
 
     def run() -> None:
         started = time.monotonic()
         failure_reason: Optional[str] = None
         stdout = ""
         stderr = ""
-        try:
-            result = subprocess.run(command, cwd=root, text=True, capture_output=True,
-                                    timeout=_BUILD_TIMEOUT)
-        except subprocess.TimeoutExpired as error:
-            failure_reason = f"timeout after {_BUILD_TIMEOUT:g}s"
-            stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
-            stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
-        except OSError as error:
-            failure_reason = f"failed to launch shaderc: {error}"
-        else:
-            if result.returncode != 0:
-                failure_reason = f"exit code {result.returncode}"
-                stdout = result.stdout
-                stderr = result.stderr
+        attempts = _RETRIES + 1
+        for attempt in range(attempts):
+            failure_reason = None
+            stdout = ""
+            stderr = ""
+            try:
+                result = subprocess.run(command, cwd=root, text=True, capture_output=True,
+                                        timeout=_BUILD_TIMEOUT)
+            except subprocess.TimeoutExpired as error:
+                failure_reason = f"timeout after {_BUILD_TIMEOUT:g}s"
+                stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+                stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
+            except OSError as error:
+                failure_reason = f"failed to launch shaderc: {error}"
+            else:
+                if result.returncode != 0:
+                    failure_reason = f"exit code {result.returncode}"
+                    stdout = result.stdout
+                    stderr = result.stderr
+                else:
+                    try:
+                        if not temp_output.is_file() or temp_output.stat().st_size == 0:
+                            failure_reason = "empty output"
+                        else:
+                            os.replace(temp_output, output)
+                    except OSError as error:
+                        failure_reason = f"failed to publish output: {error}"
+            if failure_reason is None:
+                break
+            try:
+                temp_output.unlink()
+            except FileNotFoundError:
+                pass
+            if attempt + 1 < attempts:
+                print(f"shader build: retrying {output_display} "
+                      f"({attempt + 2}/{attempts}) after {failure_reason}", flush=True)
+                time.sleep(0.5)
         elapsed = time.monotonic() - started
         if failure_reason is not None:
             failure = BuildFailure(
@@ -120,7 +228,7 @@ def compile_shader(shaderc: Path, root: Path, bgfx_src: Path, source: Path, outp
                 output=output_display,
                 elapsed=elapsed,
                 reason=failure_reason,
-                command=subprocess.list2cmdline(command),
+                command=subprocess.list2cmdline(display_command),
                 stdout=stdout[-4000:],
                 stderr=stderr[-4000:],
             )
@@ -189,13 +297,307 @@ def clean_stale_outputs(root: Path, manifest: Dict[str, object]) -> List[str]:
     return removed
 
 
+def backend_metadata(backend: str) -> Dict[str, str]:
+    args = BACKENDS[backend]
+    try:
+        platform = args[args.index("--platform") + 1]
+        profile = args[args.index("-p") + 1]
+    except (ValueError, IndexError) as error:
+        raise ValueError(f"backend {backend} is missing --platform or -p") from error
+    return {"platform": platform, "profile": profile}
+
+
+def build_plan(passes: Dict[str, object]) -> Dict[str, object]:
+    tasks: List[Dict[str, object]] = []
+    seen: Dict[str, CompileTask] = {}
+    for task in _PLAN:
+        key = f"{task.backend}:{task.output}"
+        previous = seen.get(key)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate task for {task.backend} {task.output}: "
+                f"{previous.source} and {task.source}")
+        seen[key] = task
+        tasks.append(task.to_json())
+    return {
+        "version": 1,
+        "generatedBy": "tools/shader_build.py --dump-plan",
+        "optimization": _OPTIMIZATION,
+        "backends": {backend: backend_metadata(backend) for backend in BACKENDS},
+        "includeDirs": list(INCLUDE_DIRS),
+        "passes": passes,
+        "tasks": tasks,
+    }
+
+
+def write_plan(path: Path, plan: Dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(plan, indent=2, ensure_ascii=False) + "\n"
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
+def describe_plan_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def compare_plan(expected: object, actual: object) -> Optional[str]:
+    if not isinstance(expected, dict):
+        return "expected a JSON object"
+    if not isinstance(actual, dict):
+        return "generated plan is not a JSON object"
+    for key in ("version", "generatedBy", "optimization", "backends", "includeDirs",
+                "passes"):
+        if expected.get(key) != actual.get(key):
+            return (f"{key}: expected {describe_plan_value(expected.get(key))}, "
+                    f"got {describe_plan_value(actual.get(key))}")
+    expected_tasks = expected.get("tasks")
+    actual_tasks = actual.get("tasks")
+    if not isinstance(expected_tasks, list):
+        return "tasks: expected a JSON array"
+    if not isinstance(actual_tasks, list):
+        return "tasks: generated plan is not an array"
+    if len(expected_tasks) != len(actual_tasks):
+        return f"tasks: expected {len(expected_tasks)} entries, got {len(actual_tasks)}"
+    fields = ("source", "output", "stage", "backend", "defines", "varyingDef",
+              "d3dSkipOptimization", "optimization")
+    for index, (expected_task, actual_task) in enumerate(zip(expected_tasks, actual_tasks)):
+        if not isinstance(expected_task, dict) or not isinstance(actual_task, dict):
+            return f"tasks[{index}]: expected a JSON object"
+        if expected_task == actual_task:
+            continue
+        for field in fields:
+            if expected_task.get(field) != actual_task.get(field):
+                return (f"tasks[{index}].{field}: expected "
+                        f"{describe_plan_value(expected_task.get(field))}, got "
+                        f"{describe_plan_value(actual_task.get(field))}")
+        return (f"tasks[{index}]: expected {describe_plan_value(expected_task)}, "
+                f"got {describe_plan_value(actual_task)}")
+    return None
+
+
+def plan_summary(plan: Dict[str, object]) -> str:
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list):
+        return "0 tasks"
+    counts: Dict[str, int] = {}
+    for task in tasks:
+        if isinstance(task, dict):
+            backend = str(task.get("backend"))
+            counts[backend] = counts.get(backend, 0) + 1
+    details = ", ".join(f"{backend} {counts.get(backend, 0)}" for backend in BACKENDS)
+    return f"{len(tasks)} tasks ({details})"
+
+
+def plan_relative_path(value: object, context: str, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{context}.{field} must be a non-empty string")
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"{context}.{field} must be a safe relative path")
+    return value
+
+
+def load_execution_plan(path: Path) -> tuple[Dict[str, object], List[Dict[str, object]]]:
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"failed to read {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid JSON in {path}: {error}") from error
+    if not isinstance(plan, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    if plan.get("version") != 1:
+        raise ValueError(f"{path}: unsupported version {plan.get('version')!r}")
+    passes = plan.get("passes")
+    if not isinstance(passes, dict):
+        raise ValueError(f"{path}: missing 'passes' metadata; regenerate with --dump-plan")
+    raw_tasks = plan.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise ValueError(f"{path}: field 'tasks' must be an array")
+
+    tasks: List[Dict[str, object]] = []
+    outputs: set[str] = set()
+    for index, raw in enumerate(raw_tasks):
+        context = f"tasks[{index}]"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{context} must be an object")
+        source = plan_relative_path(raw.get("source"), context, "source")
+        output = plan_relative_path(raw.get("output"), context, "output")
+        if not output.startswith("build/"):
+            raise ValueError(f"{context}.output must start with 'build/'")
+        stage = raw.get("stage")
+        if stage not in ("vertex", "fragment", "compute"):
+            raise ValueError(f"{context}.stage is invalid")
+        backend = raw.get("backend")
+        if backend not in BACKENDS:
+            raise ValueError(f"{context}.backend is invalid")
+        defines = raw.get("defines")
+        if not isinstance(defines, list) or any(
+                not isinstance(define, str) or not define for define in defines):
+            raise ValueError(f"{context}.defines must be a string array")
+        varying = raw.get("varyingDef")
+        if varying is not None:
+            varying = plan_relative_path(varying, context, "varyingDef")
+        skip = raw.get("d3dSkipOptimization")
+        if not isinstance(skip, bool):
+            raise ValueError(f"{context}.d3dSkipOptimization must be a boolean")
+        optimization = raw.get("optimization")
+        if not isinstance(optimization, int) or isinstance(optimization, bool) or optimization < 0:
+            raise ValueError(f"{context}.optimization must be a non-negative integer")
+        if skip and (backend != "dxbc" or optimization != 0):
+            raise ValueError(f"{context}: d3dSkipOptimization requires dxbc and optimization 0")
+        key = f"{backend}:{output}"
+        if key in outputs:
+            raise ValueError(f"{context}: duplicate output {backend} {output}")
+        outputs.add(key)
+        tasks.append({
+            "source": source,
+            "output": output,
+            "stage": stage,
+            "backend": backend,
+            "defines": list(defines),
+            "varyingDef": varying,
+            "d3dSkipOptimization": skip,
+            "optimization": optimization,
+        })
+
+    metadata_outputs: set[str] = set()
+    for backend, entries in passes.items():
+        if not isinstance(entries, dict):
+            raise ValueError(f"{path}: passes.{backend} must be an object")
+        for value in manifest_paths(entries):
+            if isinstance(value, str) and value.startswith("build/"):
+                metadata_outputs.add(f"{backend}:{value}")
+    if outputs != metadata_outputs:
+        missing = sorted(outputs - metadata_outputs)
+        extra = sorted(metadata_outputs - outputs)
+        detail = []
+        if missing:
+            detail.append(f"missing from passes: {missing[:3]}")
+        if extra:
+            detail.append(f"not in tasks: {extra[:3]}")
+        raise ValueError(f"{path}: passes/tasks mismatch ({'; '.join(detail)})")
+    return plan, tasks
+
+
+def newest_shader_input(root: Path, bgfx_src: Path) -> float:
+    source_dirs = {
+        root / "shaders" / "passes",
+        root / "shaders" / "post",
+        root / "shaders" / "ui",
+    }
+
+    def is_compiled_source(path: Path) -> bool:
+        return path.parent in source_dirs and not path.name.endswith(".def.sc")
+
+    inputs = [path for path in (root / "shaders").rglob("*.sc")
+              if not is_compiled_source(path) and "shadergraph" not in path.parts]
+    inputs.extend([
+        bgfx_src / "src" / "bgfx_shader.sh",
+        bgfx_src / "src" / "bgfx_compute.sh",
+    ])
+    return max((path.stat().st_mtime for path in inputs if path.exists()), default=0.0)
+
+
+def execute_plan(plan_path: Path, root: Path, shaderc: Path, bgfx_src: Path,
+                 args: argparse.Namespace) -> int:
+    try:
+        plan, tasks = load_execution_plan(plan_path)
+    except ValueError as error:
+        print(f"shader plan: {error}", file=sys.stderr)
+        return 1
+
+    global _EXECUTOR
+    _FUTURES.clear()
+    _PLAN.clear()
+    newest_input = newest_shader_input(root, bgfx_src)
+    _EXECUTOR = ThreadPoolExecutor(max_workers=args.jobs)
+    started = time.monotonic()
+    try:
+        for task in tasks:
+            varying = (root / task["varyingDef"]
+                       if task["varyingDef"] is not None else None)
+            compile_shader(
+                shaderc,
+                root,
+                bgfx_src,
+                root / str(task["source"]),
+                root / "shaders" / str(task["output"]),
+                str(task["stage"]),
+                str(task["backend"]),
+                list(task["defines"]),
+                args.force,
+                newest_input,
+                varying,
+                bool(task["d3dSkipOptimization"]),
+                int(task["optimization"]),
+            )
+        with _PROGRESS_LOCK:
+            _PROGRESS["total"] = _PROGRESS["scheduled"]
+        for future in _FUTURES:
+            future.result()
+    finally:
+        _EXECUTOR.shutdown()
+        _EXECUTOR = None
+        _FUTURES.clear()
+
+    elapsed = time.monotonic() - started
+    with _PROGRESS_LOCK:
+        compiled = _PROGRESS["compiled"]
+        cached = _PROGRESS["cached"]
+        failed = _PROGRESS["failed"]
+        scheduled = _PROGRESS["scheduled"]
+    print(f"shader build summary: {scheduled} variants, {compiled} compiled, {cached} cached, "
+          f"{failed} failed, {elapsed:.1f}s")
+
+    if _FAILURES:
+        for failure in _FAILURES:
+            print(f"shader build failed: {failure.source} ({failure.backend}, {failure.shader_type}) "
+                  f"after {failure.elapsed:.1f}s: {failure.reason}", file=sys.stderr)
+            print(f"  output: {failure.output}", file=sys.stderr)
+            print(f"  command: {failure.command}", file=sys.stderr)
+            if failure.stdout:
+                print(failure.stdout, file=sys.stderr)
+            if failure.stderr:
+                print(failure.stderr, file=sys.stderr)
+        return 1
+
+    if not _WRITE_MANIFEST:
+        return 0
+
+    manifest = {
+        "version": 1,
+        "generated_by": "tools/shader_build.py --execute-plan",
+        "optimization": plan.get("optimization", args.optimization),
+        "passes": plan["passes"],
+    }
+    missing = validate_manifest_outputs(root, manifest)
+    if missing:
+        for relative in missing:
+            print(f"shader build missing or empty output: {relative}", file=sys.stderr)
+        return 1
+    stale = clean_stale_outputs(root, manifest)
+    if stale:
+        print(f"shader build pruned {len(stale)} stale output(s)")
+
+    manifest_path = root / "shaders" / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"shader build: {manifest_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--shaderc", type=Path, required=True)
-    parser.add_argument("--bgfx-src", type=Path, required=True)
+    parser.add_argument("--shaderc", type=Path,
+                        help="shaderc executable (required unless --dump-plan/--plan-check)")
+    parser.add_argument("--bgfx-src", type=Path,
+                        help="bgfx source directory (required unless --dump-plan/--plan-check)")
     parser.add_argument("--force", action="store_true", help="ignore cached outputs")
     parser.add_argument("--jobs", type=int, default=max(1, min(8, os.cpu_count() or 1)))
+    parser.add_argument("--retries", type=int, default=1,
+                        help="retry failed variants this many times (default: 1)")
     parser.add_argument("--optimization", type=int, choices=range(4), default=3,
                         help="shaderc optimization level (default: 3; lower levels are not release builds)")
     parser.add_argument("--timeout", type=float, default=1800.0,
@@ -205,33 +607,74 @@ def main() -> int:
                         help="diagnostic: build only outputs whose path contains this text")
     parser.add_argument("--no-manifest", action="store_true",
                         help="diagnostic: do not write or validate shaders/manifest.json")
+    parser.add_argument("--dump-plan", type=Path, metavar="PATH",
+                        help="write the shared compile plan and exit without compiling")
+    parser.add_argument("--plan-check", type=Path, metavar="PATH",
+                        help="compare the shared compile plan with the build schedule and exit")
+    parser.add_argument("--execute-plan", type=Path, metavar="PATH",
+                        help="compile tasks and write the manifest from a variants.json plan")
+    parser.add_argument("--no-plan", action="store_true",
+                        help="use the legacy hardcoded schedule instead of shaders/variants.json")
     args = parser.parse_args()
+    plan_only = args.dump_plan is not None or args.plan_check is not None
+    if args.dump_plan is not None and args.plan_check is not None:
+        print("--dump-plan and --plan-check are mutually exclusive", file=sys.stderr)
+        return 1
+    if args.execute_plan is not None and plan_only:
+        print("--execute-plan cannot be combined with --dump-plan/--plan-check", file=sys.stderr)
+        return 1
     if args.jobs < 1:
         print("--jobs must be at least 1", file=sys.stderr)
+        return 1
+    if args.retries < 0:
+        print("--retries must be zero or positive", file=sys.stderr)
         return 1
     if args.timeout < 0:
         print("--timeout must be zero or positive", file=sys.stderr)
         return 1
-    if args.only and not args.no_manifest:
+    if args.only and not args.no_manifest and not plan_only:
         print("--only requires --no-manifest", file=sys.stderr)
         return 1
     if args.optimization < 3:
         print(f"warning: shader build optimization is O{args.optimization}, not release O3", file=sys.stderr)
+    if not plan_only:
+        if args.shaderc is None:
+            print("--shaderc is required unless --dump-plan or --plan-check is used", file=sys.stderr)
+            return 1
+        if args.bgfx_src is None:
+            print("--bgfx-src is required unless --dump-plan or --plan-check is used", file=sys.stderr)
+            return 1
 
     root = args.root.resolve()
-    shaderc = args.shaderc.resolve()
-    bgfx_src = args.bgfx_src.resolve()
-    if not shaderc.exists():
+    if args.execute_plan is None and not plan_only and not args.no_plan:
+        default_plan = root / "shaders" / "variants.json"
+        if default_plan.is_file():
+            args.execute_plan = default_plan
+            print(f"shader plan: executing {default_plan} "
+                  "(use --no-plan for the legacy schedule)")
+    shaderc = args.shaderc.resolve() if args.shaderc is not None else Path()
+    bgfx_src = args.bgfx_src.resolve() if args.bgfx_src is not None else Path()
+    if not plan_only and not shaderc.exists():
         print(f"shaderc not found: {shaderc}", file=sys.stderr)
         return 1
 
     global _BUILD_TIMEOUT, _OPTIMIZATION, _PROGRESS_ENABLED, _ONLY_FILTER, _WRITE_MANIFEST
+    global _RETRIES, _BUILD_LOCK, _PLAN_ONLY
     _BUILD_TIMEOUT = args.timeout if args.timeout > 0 else None
     _OPTIMIZATION = args.optimization
+    _RETRIES = args.retries
     _PROGRESS_ENABLED = not args.no_progress
     _ONLY_FILTER = args.only
-    _WRITE_MANIFEST = not args.no_manifest
+    _WRITE_MANIFEST = not args.no_manifest and not plan_only
+    _PLAN_ONLY = plan_only
+    _PLAN.clear()
+    if not plan_only:
+        _BUILD_LOCK = acquire_build_lock(root)
+        atexit.register(_BUILD_LOCK.close)
     started_at = time.monotonic()
+
+    if args.execute_plan is not None:
+        return execute_plan(args.execute_plan, root, shaderc, bgfx_src, args)
 
     manifest: Dict[str, object] = {
         "version": 1,
@@ -252,15 +695,19 @@ def main() -> int:
     def is_compiled_source(path: Path) -> bool:
         return path.parent in source_dirs and not path.name.endswith(".def.sc")
 
-    shader_inputs = [path for path in (root / "shaders").rglob("*.sc") if not is_compiled_source(path)]
-    shader_inputs.extend([
-        bgfx_src / "src" / "bgfx_shader.sh",
-        bgfx_src / "src" / "bgfx_compute.sh",
-    ])
-    newest_input = max((path.stat().st_mtime for path in shader_inputs if path.exists()), default=0.0)
-
-    global _EXECUTOR
-    _EXECUTOR = ThreadPoolExecutor(max_workers=args.jobs)
+    shader_inputs = [path for path in (root / "shaders").rglob("*.sc")
+                     if not is_compiled_source(path) and "shadergraph" not in path.parts]
+    if plan_only:
+        newest_input = 0.0
+    else:
+        shader_inputs.extend([
+            bgfx_src / "src" / "bgfx_shader.sh",
+            bgfx_src / "src" / "bgfx_compute.sh",
+        ])
+        newest_input = max((path.stat().st_mtime for path in shader_inputs if path.exists()),
+                           default=0.0)
+        global _EXECUTOR
+        _EXECUTOR = ThreadPoolExecutor(max_workers=args.jobs)
     for backend in BACKENDS:
         backend_root = root / "shaders" / "build" / backend
         forward_vertex = backend_root / "forward.vs.bin"
@@ -271,6 +718,29 @@ def main() -> int:
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_instanced.vs.sc",
                        forward_instanced_vertex, "vertex", backend, [], args.force, newest_input,
                        instanced_varying_def)
+        bindless_forward_vertex = backend_root / "forward_bindless.vs.bin"
+        bindless_varying_def = root / "shaders/include/varying_bindless.def.sc"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_bindless.vs.sc",
+                       bindless_forward_vertex, "vertex", backend, [], args.force, newest_input,
+                       bindless_varying_def)
+        bindless_forward_fragments = []
+        bindless_forward_buffer_fragments = []
+        for mask in range(1 << 2):
+            fragment = backend_root / f"forward_bindless.fs.{mask}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_bindless.fs.sc",
+                           fragment, "fragment", backend,
+                           variant_defines(mask) + ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_CONTACT_SHADOW_TEXTURE=1"],
+                           args.force, newest_input, bindless_varying_def,
+                           d3d_skip_optimization=(backend == "dxbc"))
+            bindless_forward_fragments.append(fragment.relative_to(root / "shaders").as_posix())
+            buffer_fragment = backend_root / f"forward_bindless_buffer.fs.{mask}.bin"
+            compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/forward_bindless.fs.sc",
+                           buffer_fragment, "fragment", backend,
+                           variant_defines(mask) + ["HBG_SHADOW_POINT_SAMPLER=1", "HBG_CONTACT_SHADOW_TEXTURE=1",
+                                                    "HBG_LIGHT_LIST_BUFFER=1"],
+                           args.force, newest_input, bindless_varying_def,
+                           d3d_skip_optimization=(backend == "dxbc"))
+            bindless_forward_buffer_fragments.append(buffer_fragment.relative_to(root / "shaders").as_posix())
         forward_fragments = []
         forward_buffer_fragments = []
         for mask in range(1 << len(VARIANT_BITS)):
@@ -541,6 +1011,16 @@ def main() -> int:
                        motion_fragment, "fragment", backend, [], args.force, newest_input,
                        motion_varying_def)
 
+        transparent_motion_varying_def = root / "shaders/include/transparent_motion_varying.def.sc"
+        transparent_motion_vertex = backend_root / "transparent_motion_vectors.vs.bin"
+        transparent_motion_fragment = backend_root / "transparent_motion_vectors.fs.bin"
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/transparent_motion_vectors.vs.sc",
+                       transparent_motion_vertex, "vertex", backend, [], args.force, newest_input,
+                       transparent_motion_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/transparent_motion_vectors.fs.sc",
+                       transparent_motion_fragment, "fragment", backend, [], args.force, newest_input,
+                       transparent_motion_varying_def)
+
         camera_motion_vertex = backend_root / "camera_motion_vectors.vs.bin"
         camera_motion_fragment = backend_root / "camera_motion_vectors.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/camera_motion_vectors.vs.sc",
@@ -551,6 +1031,8 @@ def main() -> int:
         depth_pyramid_vertex = backend_root / "depth_pyramid.vs.bin"
         depth_pyramid_copy_fragment = backend_root / "depth_pyramid_copy.fs.bin"
         depth_pyramid_downsample_fragment = backend_root / "depth_pyramid_downsample.fs.bin"
+        depth_pyramid_compute = backend_root / "depth_pyramid_compute.cs.bin"
+        depth_pyramid_max_compute = backend_root / "depth_pyramid_max_compute.cs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/depth_pyramid.vs.sc",
                        depth_pyramid_vertex, "vertex", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/depth_pyramid_copy.fs.sc",
@@ -558,6 +1040,10 @@ def main() -> int:
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/depth_pyramid_downsample.fs.sc",
                        depth_pyramid_downsample_fragment, "fragment", backend, [], args.force,
                        newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/depth_pyramid_compute.cs.sc",
+                       depth_pyramid_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/depth_pyramid_max_compute.cs.sc",
+                       depth_pyramid_max_compute, "compute", backend, [], args.force, newest_input)
 
         sky_fragment = backend_root / "sky.fs.bin"
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/sky.fs.sc",
@@ -812,6 +1298,9 @@ def main() -> int:
             shadow_fragments.append(fragment.relative_to(root / "shaders").as_posix())
 
         shadow_cull_compute = backend_root / "shadow_cull.cs.bin"
+        gpu_driven_cull_compute = backend_root / "gpu_driven_cull.cs.bin"
+        gpu_driven_transparent_sort_compute = backend_root / "gpu_driven_transparent_sort.cs.bin"
+        skinning_compute = backend_root / "skinning.cs.bin"
         shadow_moments_compute = backend_root / "shadow_moments.cs.bin"
         shadow_sat_horizontal_compute = backend_root / "shadow_sat_horizontal.cs.bin"
         shadow_sat_vertical_compute = backend_root / "shadow_sat_vertical.cs.bin"
@@ -822,6 +1311,12 @@ def main() -> int:
                        shadow_copy_depth_fragment, "fragment", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_cull.cs.sc",
                        shadow_cull_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gpu_driven_cull.cs.sc",
+                       gpu_driven_cull_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/gpu_driven_transparent_sort.cs.sc",
+                       gpu_driven_transparent_sort_compute, "compute", backend, [], args.force, newest_input)
+        compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/skinning.cs.sc",
+                       skinning_compute, "compute", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_moments.cs.sc",
                        shadow_moments_compute, "compute", backend, [], args.force, newest_input)
         compile_shader(shaderc, root, bgfx_src, root / "shaders/passes/shadow_sat_horizontal.cs.sc",
@@ -856,6 +1351,12 @@ def main() -> int:
                        ui_fragment, "fragment", backend, [], args.force, newest_input, ui_varying_def)
 
         vfx_spike_varying_def = root / "shaders/vfx/vfx_spike.def.sc"
+        vfx_motion_vectors_varying_def = root / "vfx/shaders/vfx_motion_vectors.def.sc"
+        vfx_motion_vectors_vertex = backend_root / "vfx_motion_vectors.vs.bin"
+        vfx_motion_vectors_fragment = backend_root / "vfx_motion_vectors.fs.bin"
+        vfx_shadow_varying_def = root / "vfx/shaders/vfx_shadow.def.sc"
+        vfx_shadow_vertex = backend_root / "vfx_shadow.vs.bin"
+        vfx_shadow_fragment = backend_root / "vfx_shadow.fs.bin"
         vfx_spike_attributes_compute = backend_root / "vfx_spike_attributes.cs.bin"
         vfx_spike_indirect_compute = backend_root / "vfx_spike_indirect.cs.bin"
         vfx_spike_audit_compute = backend_root / "vfx_spike_audit.cs.bin"
@@ -888,6 +1389,18 @@ def main() -> int:
                        vfx_spike_lit_fragment, "fragment", backend,
                        ["HBG_CONTACT_SHADOW_TEXTURE=1"], args.force, newest_input,
                        vfx_spike_varying_def, d3d_skip_optimization=(backend == "dxbc"))
+        compile_shader(shaderc, root, bgfx_src, root / "vfx/shaders/vfx_motion_vectors.vs.sc",
+                       vfx_motion_vectors_vertex, "vertex", backend, [], args.force, newest_input,
+                       vfx_motion_vectors_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "vfx/shaders/vfx_motion_vectors.fs.sc",
+                       vfx_motion_vectors_fragment, "fragment", backend, [], args.force, newest_input,
+                       vfx_motion_vectors_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "vfx/shaders/vfx_shadow.vs.sc",
+                       vfx_shadow_vertex, "vertex", backend, [], args.force, newest_input,
+                       vfx_shadow_varying_def)
+        compile_shader(shaderc, root, bgfx_src, root / "vfx/shaders/vfx_shadow.fs.sc",
+                       vfx_shadow_fragment, "fragment", backend, [], args.force, newest_input,
+                       vfx_shadow_varying_def)
 
         backend_entry = {
             "forward": {
@@ -899,6 +1412,11 @@ def main() -> int:
                 "vertex": forward_instanced_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": forward_fragments,
                 "bufferFragments": forward_buffer_fragments,
+            },
+            "bindlessForward": {
+                "vertex": bindless_forward_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": bindless_forward_fragments,
+                "bufferFragments": bindless_forward_buffer_fragments,
             },
             "forwardAdvanced": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
@@ -935,6 +1453,10 @@ def main() -> int:
                 "expressions": vfx_expressions_test_compute.relative_to(root / "shaders").as_posix(),
                 "indirect": vfx_spike_indirect_compute.relative_to(root / "shaders").as_posix(),
                 "audit": vfx_spike_audit_compute.relative_to(root / "shaders").as_posix(),
+                "motionVectorVertex": vfx_motion_vectors_vertex.relative_to(root / "shaders").as_posix(),
+                "motionVectorFragment": vfx_motion_vectors_fragment.relative_to(root / "shaders").as_posix(),
+                "shadowVertex": vfx_shadow_vertex.relative_to(root / "shaders").as_posix(),
+                "shadowFragment": vfx_shadow_fragment.relative_to(root / "shaders").as_posix(),
             },
             "uberPost": {
                 "vertex": tonemap_vertex.relative_to(root / "shaders").as_posix(),
@@ -1040,6 +1562,15 @@ def main() -> int:
             "shadowCull": {
                 "compute": shadow_cull_compute.relative_to(root / "shaders").as_posix(),
             },
+            "gpuDrivenCull": {
+                "compute": gpu_driven_cull_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "gpuDrivenTransparentSort": {
+                "compute": gpu_driven_transparent_sort_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "skinning": {
+                "compute": skinning_compute.relative_to(root / "shaders").as_posix(),
+            },
             "shadowMoments": {
                 "compute": shadow_moments_compute.relative_to(root / "shaders").as_posix(),
             },
@@ -1065,6 +1596,10 @@ def main() -> int:
             },
             "gbuffer": {
                 "vertex": forward_vertex.relative_to(root / "shaders").as_posix(),
+                "fragments": gbuffer_fragments,
+            },
+            "gbufferInstanced": {
+                "vertex": forward_instanced_vertex.relative_to(root / "shaders").as_posix(),
                 "fragments": gbuffer_fragments,
             },
             "gbufferClear": {
@@ -1171,6 +1706,10 @@ def main() -> int:
                 "vertex": motion_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": motion_fragment.relative_to(root / "shaders").as_posix(),
             },
+            "transparentMotionVectors": {
+                "vertex": transparent_motion_vertex.relative_to(root / "shaders").as_posix(),
+                "fragment": transparent_motion_fragment.relative_to(root / "shaders").as_posix(),
+            },
             "cameraMotionVectors": {
                 "vertex": camera_motion_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": camera_motion_fragment.relative_to(root / "shaders").as_posix(),
@@ -1182,6 +1721,12 @@ def main() -> int:
             "depthPyramidDownsample": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
                 "fragment": depth_pyramid_downsample_fragment.relative_to(root / "shaders").as_posix(),
+            },
+            "depthPyramidCompute": {
+                "compute": depth_pyramid_compute.relative_to(root / "shaders").as_posix(),
+            },
+            "depthPyramidMaxCompute": {
+                "compute": depth_pyramid_max_compute.relative_to(root / "shaders").as_posix(),
             },
             "sky": {
                 "vertex": depth_pyramid_vertex.relative_to(root / "shaders").as_posix(),
@@ -1318,6 +1863,39 @@ def main() -> int:
             },
         }
         passes[backend] = backend_entry
+
+    if plan_only:
+        try:
+            plan = build_plan(passes)
+        except ValueError as error:
+            print(f"shader plan: {error}", file=sys.stderr)
+            return 1
+        if args.dump_plan is not None:
+            try:
+                write_plan(args.dump_plan, plan)
+            except OSError as error:
+                print(f"shader plan: failed to write {args.dump_plan}: {error}", file=sys.stderr)
+                return 1
+            print(f"shader plan: wrote {args.dump_plan} ({plan_summary(plan)})")
+            return 0
+        assert args.plan_check is not None
+        try:
+            expected = json.loads(args.plan_check.read_text(encoding="utf-8"))
+        except OSError as error:
+            print(f"shader plan: failed to read {args.plan_check}: {error}", file=sys.stderr)
+            return 1
+        except json.JSONDecodeError as error:
+            print(f"shader plan: invalid JSON in {args.plan_check}: {error}", file=sys.stderr)
+            return 1
+        difference = compare_plan(expected, plan)
+        if difference is not None:
+            print(f"shader plan check failed: {args.plan_check}: {difference}", file=sys.stderr)
+            print("shader plan: regenerate with "
+                  "`py -3 tools/shader_build.py --dump-plan shaders/variants.json`",
+                  file=sys.stderr)
+            return 1
+        print(f"shader plan check: OK ({plan_summary(plan)})")
+        return 0
 
     with _PROGRESS_LOCK:
         _PROGRESS["total"] = _PROGRESS["scheduled"]

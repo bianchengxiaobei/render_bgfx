@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/atmosphere/volumetric_fog_settings.h"
+#include "render/camera/dynamic_resolution.h"
 #include "render/debug/debug_display.h"
 #include "render/pipeline/frame_settings.h"
 #include "render/postprocess/post_process_settings.h"
@@ -108,9 +109,12 @@ struct PostProcessOverrides {
     std::optional<uint32_t> motionBlurSamples;
     std::optional<float> motionBlurDepthExtent;
     std::optional<bool> taa;
+    std::optional<bool> taaUpscale;
+    std::optional<render::TaaUpsampleInjection> taaUpscaleInjection;
     std::optional<bool> fxaa;
     std::optional<uint32_t> taaQuality;
     std::optional<float> taaMotionRejection;
+    std::optional<float> taaVelocityRejection;
     std::optional<float> taaSharpening;
     std::optional<float> taaJitterScale;
 };
@@ -124,6 +128,14 @@ struct AppOptions {
     bool bgfxDebug = false;
     bool gfxTest = false;
     bool vfxSpike = false;
+    bool sgSpike = false;
+    bool sgPreview = false;
+    std::string sgAssetPath;
+    std::string sgToken;
+    std::string sgEditorPath;
+    std::string sgRoot;
+    std::string sgWebRoot;
+    int sgPort = 8777;
     bool clusterStatsReadback = false;
     bool debugLightData = false;
     bool debugLightmapMask = false;
@@ -142,6 +154,14 @@ struct AppOptions {
     std::optional<bool> gpuLightList;
     std::optional<bool> gpuLightListBuffers;
     std::optional<bool> gpuLightListIndirect;
+    std::optional<bool> gpuSkinning;
+    std::optional<bool> depthPyramidCompute;
+    std::optional<bool> gpuDrivenGeometry;
+    std::optional<bool> transparentBackface;
+    std::optional<bool> transparentPrepass;
+    std::optional<bool> transparentRefraction;
+    std::optional<bool> refractionDepthRejection;
+    std::optional<bool> refractionRoughness;
     std::optional<bool> lightListFeatureFlags;
     std::optional<bool> cookieAtlas;
     std::optional<uint32_t> cookieAtlasSize;
@@ -159,6 +179,9 @@ struct AppOptions {
     std::optional<bool> decals;
     std::optional<bool> reflectionProbes;
     std::optional<bool> vfx;
+    bool vfxInstancing = false;
+    bool vfxTransparentSort = false;
+    std::optional<uint32_t> vfxInstanceBatchSize;
     bool vfxTest = false;
     bool vfxReference = false;
     bool vfxEventReference = false;
@@ -172,6 +195,7 @@ struct AppOptions {
     std::string vfxReferencePath;
     std::string vfxReferenceGraphPath;
     float renderScale = 1.0f;
+    render::DynamicResolutionSettings dynamicResolutionSettings;
     std::optional<float> animationTime;
     std::string assetTestPath;
     std::string scenePath;

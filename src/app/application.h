@@ -2,6 +2,8 @@
 
 #include "app/backend.h"
 #include "app/debug_ui.h"
+#include "app/sg_editor_host.h"
+#include "app/sg_preview_renderer.h"
 #include "app/vfx_editor_ui.h"
 #include "app/window.h"
 #include "gfx/device.h"
@@ -43,6 +45,10 @@ class Application {
     render::ShadowSettings m_shadowSettings;
     DebugUI m_debugUi;
     VfxEditorUI m_vfxEditor;
+    std::unique_ptr<SgEditorHost> m_sgEditor;
+    std::unique_ptr<SgGraphPreviewRenderer> m_sgPreview;
+    render::DynamicResolutionController m_dynamicResolution;
+    float m_dynamicResolutionScale = 1.0f;
     float m_time = 0.0f;
     std::optional<float> m_animationTime;
     double m_lastFrameTime = 0.0;

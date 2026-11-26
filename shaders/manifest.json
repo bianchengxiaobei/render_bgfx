@@ -146,7 +146,11 @@
         "attributesLayoutVertex": "build/dxbc/vfx_attributes_test.vs.bin",
         "expressions": "build/dxbc/vfx_expressions_test.cs.bin",
         "indirect": "build/dxbc/vfx_spike_indirect.cs.bin",
-        "audit": "build/dxbc/vfx_spike_audit.cs.bin"
+        "audit": "build/dxbc/vfx_spike_audit.cs.bin",
+        "motionVectorVertex": "build/dxbc/vfx_motion_vectors.vs.bin",
+        "motionVectorFragment": "build/dxbc/vfx_motion_vectors.fs.bin",
+        "shadowVertex": "build/dxbc/vfx_shadow.vs.bin",
+        "shadowFragment": "build/dxbc/vfx_shadow.fs.bin"
       },
       "uberPost": {
         "vertex": "build/dxbc/tonemap.vs.bin",
@@ -297,6 +301,9 @@
       },
       "shadowCull": {
         "compute": "build/dxbc/shadow_cull.cs.bin"
+      },
+      "skinning": {
+        "compute": "build/dxbc/skinning.cs.bin"
       },
       "shadowMoments": {
         "compute": "build/dxbc/shadow_moments.cs.bin"
@@ -692,6 +699,10 @@
         "vertex": "build/dxbc/motion_vectors.vs.bin",
         "fragment": "build/dxbc/motion_vectors.fs.bin"
       },
+      "transparentMotionVectors": {
+        "vertex": "build/dxbc/transparent_motion_vectors.vs.bin",
+        "fragment": "build/dxbc/transparent_motion_vectors.fs.bin"
+      },
       "cameraMotionVectors": {
         "vertex": "build/dxbc/camera_motion_vectors.vs.bin",
         "fragment": "build/dxbc/camera_motion_vectors.fs.bin"
@@ -703,6 +714,9 @@
       "depthPyramidDownsample": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
         "fragment": "build/dxbc/depth_pyramid_downsample.fs.bin"
+      },
+      "depthPyramidCompute": {
+        "compute": "build/dxbc/depth_pyramid_compute.cs.bin"
       },
       "sky": {
         "vertex": "build/dxbc/depth_pyramid.vs.bin",
@@ -870,6 +884,67 @@
       "ui": {
         "vertex": "build/dxbc/imgui.vs.bin",
         "fragment": "build/dxbc/imgui.fs.bin"
+      },
+      "gpuDrivenCull": {
+        "compute": "build/dxbc/gpu_driven_cull.cs.bin"
+      },
+      "gpuDrivenTransparentSort": {
+        "compute": "build/dxbc/gpu_driven_transparent_sort.cs.bin"
+      },
+      "depthPyramidMaxCompute": {
+        "compute": "build/dxbc/depth_pyramid_max_compute.cs.bin"
+      },
+      "gbufferInstanced": {
+        "vertex": "build/dxbc/forward_instanced.vs.bin",
+        "fragments": [
+          "build/dxbc/gbuffer.fs.0.bin",
+          "build/dxbc/gbuffer.fs.1.bin",
+          "build/dxbc/gbuffer.fs.2.bin",
+          "build/dxbc/gbuffer.fs.3.bin",
+          "build/dxbc/gbuffer.fs.4.bin",
+          "build/dxbc/gbuffer.fs.5.bin",
+          "build/dxbc/gbuffer.fs.6.bin",
+          "build/dxbc/gbuffer.fs.7.bin",
+          "build/dxbc/gbuffer.fs.8.bin",
+          "build/dxbc/gbuffer.fs.9.bin",
+          "build/dxbc/gbuffer.fs.10.bin",
+          "build/dxbc/gbuffer.fs.11.bin",
+          "build/dxbc/gbuffer.fs.12.bin",
+          "build/dxbc/gbuffer.fs.13.bin",
+          "build/dxbc/gbuffer.fs.14.bin",
+          "build/dxbc/gbuffer.fs.15.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.17.bin",
+          "build/dxbc/gbuffer.fs.18.bin",
+          "build/dxbc/gbuffer.fs.19.bin",
+          "build/dxbc/gbuffer.fs.20.bin",
+          "build/dxbc/gbuffer.fs.21.bin",
+          "build/dxbc/gbuffer.fs.22.bin",
+          "build/dxbc/gbuffer.fs.23.bin",
+          "build/dxbc/gbuffer.fs.24.bin",
+          "build/dxbc/gbuffer.fs.25.bin",
+          "build/dxbc/gbuffer.fs.26.bin",
+          "build/dxbc/gbuffer.fs.27.bin",
+          "build/dxbc/gbuffer.fs.28.bin",
+          "build/dxbc/gbuffer.fs.29.bin",
+          "build/dxbc/gbuffer.fs.30.bin",
+          "build/dxbc/gbuffer.fs.31.bin"
+        ]
+      },
+      "bindlessForward": {
+        "vertex": "build/dxbc/forward_bindless.vs.bin",
+        "fragments": [
+          "build/dxbc/forward_bindless.fs.0.bin",
+          "build/dxbc/forward_bindless.fs.1.bin",
+          "build/dxbc/forward_bindless.fs.2.bin",
+          "build/dxbc/forward_bindless.fs.3.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/forward_bindless_buffer.fs.0.bin",
+          "build/dxbc/forward_bindless_buffer.fs.1.bin",
+          "build/dxbc/forward_bindless_buffer.fs.2.bin",
+          "build/dxbc/forward_bindless_buffer.fs.3.bin"
+        ]
       }
     },
     "spirv": {
@@ -1015,7 +1090,11 @@
         "attributesLayoutVertex": "build/spirv/vfx_attributes_test.vs.bin",
         "expressions": "build/spirv/vfx_expressions_test.cs.bin",
         "indirect": "build/spirv/vfx_spike_indirect.cs.bin",
-        "audit": "build/spirv/vfx_spike_audit.cs.bin"
+        "audit": "build/spirv/vfx_spike_audit.cs.bin",
+        "motionVectorVertex": "build/spirv/vfx_motion_vectors.vs.bin",
+        "motionVectorFragment": "build/spirv/vfx_motion_vectors.fs.bin",
+        "shadowVertex": "build/spirv/vfx_shadow.vs.bin",
+        "shadowFragment": "build/spirv/vfx_shadow.fs.bin"
       },
       "uberPost": {
         "vertex": "build/spirv/tonemap.vs.bin",
@@ -1166,6 +1245,9 @@
       },
       "shadowCull": {
         "compute": "build/spirv/shadow_cull.cs.bin"
+      },
+      "skinning": {
+        "compute": "build/spirv/skinning.cs.bin"
       },
       "shadowMoments": {
         "compute": "build/spirv/shadow_moments.cs.bin"
@@ -1561,6 +1643,10 @@
         "vertex": "build/spirv/motion_vectors.vs.bin",
         "fragment": "build/spirv/motion_vectors.fs.bin"
       },
+      "transparentMotionVectors": {
+        "vertex": "build/spirv/transparent_motion_vectors.vs.bin",
+        "fragment": "build/spirv/transparent_motion_vectors.fs.bin"
+      },
       "cameraMotionVectors": {
         "vertex": "build/spirv/camera_motion_vectors.vs.bin",
         "fragment": "build/spirv/camera_motion_vectors.fs.bin"
@@ -1572,6 +1658,9 @@
       "depthPyramidDownsample": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
         "fragment": "build/spirv/depth_pyramid_downsample.fs.bin"
+      },
+      "depthPyramidCompute": {
+        "compute": "build/spirv/depth_pyramid_compute.cs.bin"
       },
       "sky": {
         "vertex": "build/spirv/depth_pyramid.vs.bin",
@@ -1739,6 +1828,67 @@
       "ui": {
         "vertex": "build/spirv/imgui.vs.bin",
         "fragment": "build/spirv/imgui.fs.bin"
+      },
+      "gpuDrivenCull": {
+        "compute": "build/spirv/gpu_driven_cull.cs.bin"
+      },
+      "gpuDrivenTransparentSort": {
+        "compute": "build/spirv/gpu_driven_transparent_sort.cs.bin"
+      },
+      "depthPyramidMaxCompute": {
+        "compute": "build/spirv/depth_pyramid_max_compute.cs.bin"
+      },
+      "gbufferInstanced": {
+        "vertex": "build/spirv/forward_instanced.vs.bin",
+        "fragments": [
+          "build/spirv/gbuffer.fs.0.bin",
+          "build/spirv/gbuffer.fs.1.bin",
+          "build/spirv/gbuffer.fs.2.bin",
+          "build/spirv/gbuffer.fs.3.bin",
+          "build/spirv/gbuffer.fs.4.bin",
+          "build/spirv/gbuffer.fs.5.bin",
+          "build/spirv/gbuffer.fs.6.bin",
+          "build/spirv/gbuffer.fs.7.bin",
+          "build/spirv/gbuffer.fs.8.bin",
+          "build/spirv/gbuffer.fs.9.bin",
+          "build/spirv/gbuffer.fs.10.bin",
+          "build/spirv/gbuffer.fs.11.bin",
+          "build/spirv/gbuffer.fs.12.bin",
+          "build/spirv/gbuffer.fs.13.bin",
+          "build/spirv/gbuffer.fs.14.bin",
+          "build/spirv/gbuffer.fs.15.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.17.bin",
+          "build/spirv/gbuffer.fs.18.bin",
+          "build/spirv/gbuffer.fs.19.bin",
+          "build/spirv/gbuffer.fs.20.bin",
+          "build/spirv/gbuffer.fs.21.bin",
+          "build/spirv/gbuffer.fs.22.bin",
+          "build/spirv/gbuffer.fs.23.bin",
+          "build/spirv/gbuffer.fs.24.bin",
+          "build/spirv/gbuffer.fs.25.bin",
+          "build/spirv/gbuffer.fs.26.bin",
+          "build/spirv/gbuffer.fs.27.bin",
+          "build/spirv/gbuffer.fs.28.bin",
+          "build/spirv/gbuffer.fs.29.bin",
+          "build/spirv/gbuffer.fs.30.bin",
+          "build/spirv/gbuffer.fs.31.bin"
+        ]
+      },
+      "bindlessForward": {
+        "vertex": "build/spirv/forward_bindless.vs.bin",
+        "fragments": [
+          "build/spirv/forward_bindless.fs.0.bin",
+          "build/spirv/forward_bindless.fs.1.bin",
+          "build/spirv/forward_bindless.fs.2.bin",
+          "build/spirv/forward_bindless.fs.3.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/forward_bindless_buffer.fs.0.bin",
+          "build/spirv/forward_bindless_buffer.fs.1.bin",
+          "build/spirv/forward_bindless_buffer.fs.2.bin",
+          "build/spirv/forward_bindless_buffer.fs.3.bin"
+        ]
       }
     }
   }

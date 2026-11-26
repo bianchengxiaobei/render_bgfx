@@ -69,13 +69,13 @@
 | ID | 偏差 | 原项目 | 本项目 V1 | 原因 / 关闭条件 |
 |---|---|---|---|---|
 | D1 | quad 绘制拓扑 | 索引绘制 6 index/quad（`VFXFillIndirectArgs.compute:60-68`） | 非索引 **6 顶点/粒子**（`vertexID / 6`，无 index buffer） | V0 确认 4 顶点非索引无法组成两个三角形；6 顶点与原 6 index 语义等价。bgfx `submitIndirect` 无 16-bit index 限制；减少 index buffer |
-| D2 | indirect 分块 | quads >16384 才按 2048 分实例 | V1 单条 indirect draw，`numVertices = 6 * renderCount`（renderCount 等于 alive） | V0 已用 6*alive 验证；后续在 V1.4 评估大粒子数/驱动限制后再分块 |
+| D2 | indirect 分块 | quads >16384 才按 2048 分实例 | V3.11 起 output draw 固定按 2048 粒子/instance 分块，保留非索引 6 顶点；`numVertices = 6*min(count,2048)`、`numInstances=ceil(count/2048)` | V0 已用单 draw 验证；V3.11 已关闭大粒子数分块，Unity 的 indexed/instance-split 语义仍见 D1/D5 |
 | D3 | attribute 分组 | 读写亲和性分组（`AttributeLayoutPass.cs:30-115`） | V1 单 group（顺序 offset）；V1.0b 默认布局含全部内置属性 + 顶层自定义属性 | 先保证正确性；V1.1 若 profiling 显示 bucket 收益明显再加；后续按 block 读写集合收窄 |
 | D4 | fill indirect | 引擎 VFXManager 用 `VFXFillIndirectArgs.compute` + CPU draw desc（`VFXManagerEditor.cs:184`） | runtime 直接生成 args（简化 kernel） | 自有 runtime 无 Unity 引擎的 draw desc 结构；V1 只需 quad |
 | D5 | effect instancing | 多实例共享仿真 + instance split（`VFXDataParticle.cs:1505-1509`） | 每 effect 独立 buffer | 降低 V1 复杂度；V2+ 再加 |
 | D6 | 自动 bounds | GPU AABB + readback | 手动 bounds + 编译期 spawner bounds | V1 不做 readback；后续加 GPU AABB |
 | D7 | 自定义 HLSL | Unity 允许较完整 HLSL/子图 | 受限 `.sc` 语句片段；`VFX_ATTR`/`VFX_SET_ATTR`/`VFX_PROP` 宏；不可声明 buffer/uniform/texture | 保证双后端可编译与可移植性 |
-| D8 | 渲染 pass 排序 | VFX 透明与场景透明物体统一排序 | VFX 输出 pass 位于 `Forward Transparent` 之前，透明 mesh 不与粒子逐对象交错 | V1 先保证顺序稳定；并入 DrawList 需要 VFX indirect batch、effect-level 深度键或逐粒子 CPU 深度键；V1.4.3 已评估成本，留到后续 |
+| D8 | 渲染 pass 排序 | VFX 透明与场景透明物体统一排序 | VFX 输出 pass 位于 `Forward Transparent` 之前，透明 mesh 不与粒子逐对象交错 | V1 先保证顺序稳定；V3.16 已实现 opt-in effect-level 深度键；完整逐粒子/indirect batch 插入仍需后续 |
 | D9 | random seed 状态 | `Rand(attributes.seed)` 每求值推进粒子 seed（`VFXCommon.hlsl:465`） | V1.0b.3 固定 seed 的确定性 `VFX_RAND`；暂不推进 seed | V1.0b.5 仍使用固定 seed 的确定性 code；seed 推进/每节点 hash 留到 V1.1 生成器完善时关闭 |
 | D10 | 粒子质量 | Drag/Force/Turbulence 使用 `mass` 属性并除以 mass | V1.1.2 固定 `mass=1.0`；没有 mass 属性/Set Mass | 避免为未使用的属性扩大全部 asset layout；增加 mass block 后关闭 |
 | D11 | Turbulence 噪声 | `VFXNoise.hlsl` 的 Value/Perlin/Cellular curl + float cell hash；`FieldTransform` 变换 | 仅 Value curl；整数 Wang cell hash；无 FieldTransform；`scroll` 为扩展的 field 时间偏移 | 原 float hash 在 CPU/GPU 乘加重排下会超过 1e-3；整数 hash 保证双后端确定性。后续需要时再补 Perlin/Cellular/FieldTransform |
@@ -87,6 +87,7 @@
 | D17 | GPU event 范围 | Unity 支持 instancing prefix sum 与多层事件图 | V1.2.3 单 effect、单层 producer→consumer、receiver 不能有 CPU spawner、总 event buffer ≤64 KiB | V1 先保证正确性/双后端；V1.3 子图/事件链和分块后关闭 |
 | D18 | event 诊断 | Unity/后续 `vfx_events` 统计精确事件数 | V1.2.3/4 `Diagnostics::eventCount` 为事件链数；精确 `frameCount/totalCount/dropped` 在 event buffer，reference 读回 | V1.4.4 帧诊断暴露 `vfx_events`（事件链数）；精确计数仍走 reference readback，默认帧循环不读回以避免 GPU stall（V2 异步计数环） |
 | D19 | CPU event 属性/上限 | Unity 支持 event attribute 集合/多 spawner | V1.2.4 每 receive 一个 payload（≤4 属性），缺省值取 consumer 属性默认，类型不兼容拒绝；容量 = receiver 64 对齐 capacity，超出记 dropped | V1 保持单层/单 payload；V1.3+ 扩展属性集/多事件 |
+| D20 | 粒子 motion vector | Unity 由 output feature 控制，输出更新保存上一帧 element-to-VFX 变换；支持 flipbook/逐顶点 MV | V3.0 每个 output 在 `FrameSettings::MotionVectors` 开启时写入场景 MV buffer；codegen 在 init/update 维护 `oldPosition` 作为上一帧位置，输出用其重建 previous clip；V3.2 增加 per-output `generateMotionVector` gate；仍无 flipbook/逐顶点/soft-particle 边缘裁剪 | 先以同一 `.vfxb` v6 结构接入 TAA/motion blur（需重烘焙 checked-in binary）；后续增加 effect transform 历史与 alpha 设置时关闭 |
 
 ## 6. HDRP 对齐
 
@@ -221,11 +222,11 @@
 
 | Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
 |---|---|---|---|
-| Particle sort criteria | `Editor/Models/Contexts/VFXSortingUtility.cs:9-56`, `Editor/NewCompiler/Builder/OutputUpdateTaskBuilder.cs:79-127` | Four criteria: distance to camera, camera depth, youngest in front, custom scalar; per-camera criteria require a view. | V1.2.2 KVP sort already implements distance/custom with deterministic tie-break; V1.4.3 leaves it per output and does not merge scene transparent draws. |
+| Particle sort criteria | `Editor/Models/Contexts/VFXSortingUtility.cs:9-56`, `Editor/NewCompiler/Builder/OutputUpdateTaskBuilder.cs:79-127` | Four criteria: distance to camera, camera depth, youngest in front, custom scalar; per-camera criteria require a view. | V1.2.2 KVP sort implements distance/custom with deterministic tie-break; V3.8 adds cameraDepth/youngest on the shared system sort; V3.9 adds per-output direction while keeping the shared key list. V3.16 adds opt-in effect-level insertion into the scene transparent DrawList; particle-level interleaving remains open. |
 | Output sort activation | `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:110-120` | Transparent alpha/premultiplied outputs sort automatically; custom sorting is an output setting. | Alpha/additive outputs use the existing system sort; no new schema field in V1.4.3. |
-| Transparent frame order | HDRP `Runtime/RenderPipeline/HDRenderPipeline.cs:3465-3498`, `HDRenderPipeline.RenderGraph.cs:1899-1911` | All transparent forward objects share a renderer list sorted with `CommonTransparent \| RendererPriority` before forward transparent. | Scene transparent DrawList uses `kTransparentSortingCriteria`; VFX output stays before that list and is documented as D8. |
+| Transparent frame order | HDRP `Runtime/RenderPipeline/HDRenderPipeline.cs:3465-3498`, `HDRenderPipeline.RenderGraph.cs:1899-1911` | All transparent forward objects share a renderer list sorted with `CommonTransparent \| RendererPriority` before forward transparent. | Scene transparent DrawList uses `kTransparentSortingCriteria`; V3.16 opt-in inserts each VFX effect at an effect-level key; default remains VFX-before-transparent (D8). |
 | Lit clustered lighting | HDRP transparent forward uses punctual light lists/clusters. | Lit transparent VFX binds the cluster light list rather than the global fallback. | `prepareVfxClusterLighting` reuses the texture cluster or builds a CPU cluster-texture mirror when the GPU light-list buffer path is active; VFX output reads `clusterLightList`. |
-| Frame insertion | HDRP VFX update/output order. | Simulation before opaque/GBuffer; output after deferred lighting/SSR and forward-only opaque, before transparent. | Forward `forward_renderer.cpp:5384/5396`; deferred `:5462/5481`. |
+| Frame insertion | HDRP VFX update/output order. | Simulation before opaque/GBuffer; output after deferred lighting/SSR and forward-only opaque, before transparent by default. | Forward/deferred use the shared `addTransparentFramePasses()`; default VFX pass is before transparent, V3.16 opt-in inserts effect-level passes among sliced transparent segments. |
 | Golden | Fixed camera/seed/frame screenshots. | Order + transparent + point-light cluster fixture. | `vfx_order.gltf` + `vfx_order.hdrp.json`; forward/deferred D3D11/Vulkan goldens; `vfx_order_off` baseline and no-VFX compare. |
 
 ## 17. V1.4.4 diagnostics, performance and resource lifetime
@@ -251,7 +252,7 @@
 | Golden matrix | Existing V1.1–V1.4 references | Unlit/lit, additive/alpha, soft, bursts, collision, events, sort, subgraph, custom HLSL, order | D3D11/Vulkan CTest matrix all pass; `hbg_vfx_order_off_*` and `hbg_vfx_empty_*` are exact comparisons. |
 | Release checks | Unity VFX package tests are mostly editor lifecycle sanity; project gate is stricter | CTest, IDL check, baked-asset check, CPU reference, resource/validation checks | `hbg_idl_check`, `hbg_vfx_asset_check` (28 assets), full CTest 111/111, CPU 1024×10 reference pass. |
 
-## 19. V2.0–V2.4 editor foundation
+## 19. V2.0–V2.5 editor foundation
 
 | Topic | Unity reference | Behavior | hdrp-bgfx landing |
 |---|---|---|---|
@@ -268,5 +269,275 @@
 | UI technology | Unity UIElements/GraphView (`VFXView`, `VFXContextUI`) | Node canvas, selection, pan/zoom, inspector, blackboard. | `src/app/vfx_editor_ui.cpp` uses Dear ImGui and the existing DebugUI context; custom canvas, no Qt, no new render pass. |
 | Undo/redo | `Tests/Editor/VisualEffectGraphEditorTests.cs:17-31` covers editor lifecycle; Unity uses graph undo stack | Edits are undoable without corrupting the graph. | V2.2 snapshot undo/redo of `root`/dirty/layout-stale, 128-entry cap, 500ms coalescing; graph revalidated on restore. |
 | Text input | Unity GraphView/UIElements text fields | Names, paths and block string parameters are keyboard-editable. | GLFW key/char callbacks feed `ImGuiKey`/`AddInputCharacter`; system name/new property/block strings/texture paths use `InputText`. |
-| Block defaults | Unity block variants expose serialized default properties | New blocks start with valid defaults defined once. | `vfx/src/core/block_catalog.{h,cpp}` shares parser field specs and editor default JSON; `trigger_event`/over-life use graph context, `subgraph` insertion is deferred. |
-| Editor release checks | Unity editor tests cover open/add/undo/save lifecycle (`Tests/Editor/VisualEffectGraphEditorTests.cs:17-31`) | Editor load/edit/save must not corrupt graph or runtime assets. | `hbg_vfx_tests` 80/80 (38,056 assertions; 13 editor cases / 299 assertions), `hbg_vfx_runtime_tests` 19/19 (494 assertions), `hbg_vfx_editor_{d3d11,vulkan}` smoke, `hbg_vfx_editor_compile` canonical+preview CTest; full CTest 114/114 (1396.72s). V2.3 hot reload verified with temp scene + `--vfx` + Ctrl+S; V2.4 preview verified with `--vfx-editor-preview` and graph/canonical SHA256 checks. No checked-in editor sidecar or generated test binary. |
+| Block defaults | Unity block variants expose serialized default properties and optional input slots (`VFXPlanarPrimitiveOutput.cs:84-98`, `VFXMeshOutput.cs:67-103`) | New blocks start with valid defaults defined once; optional fields can be added explicitly. | `vfx/src/core/block_catalog.{h,cpp}` shares parser field specs and editor default JSON; optional fields carry `defaultJson`; `trigger_event`/over-life use graph context; V2.2b adds subgraph invocation and optional-parameter insertion with raw defaults. |
+| Clipboard/duplicate | `Editor/GraphView/Views/VFXCopy.cs:27-47` (`Copy`/`CopyBlocks`), `:311-390` (node flags/input slots/block copy); `Editor/GraphView/Views/VFXPaste.cs:145-234` (block target: selected block + 1 or context append); `Editor/GraphView/Views/VFXView.cs:2546-2560,2705-2735` | Copy/paste/duplicate blocks and blackboard properties; selection stays valid. | V2.2b raw block/property JSON clipboard; paste block after selected block or append to init/update context; duplicate block/property/system/output; toolbar + `Ctrl+C/V/D`. Single-selection scope. |
+| Subgraph invocation | `Editor/GraphView/Views/VFXView.cs:575-611` (subgraph node creation), `Editor/Models/VFXSubgraphBlock.cs:124-183` (resource copy/resync) | A subgraph block/operator is inserted as a node; runtime graph is expanded separately. | `GraphParseMode::PreserveSubgraphs` keeps raw invocations in `Document`; compiler still flattens. `addSubgraphBlock()` builds args from raw input defaults and UI lists stage-compatible definitions. |
+| Expression editing | Unity slot/operator graph (`VFXExpression`), not raw text | Values can be edited through typed slots and expression nodes. | V2.2b Inspector raw JSON editor for block `Expression`/`Object`/non-numeric arrays (`blockParameterJson`/`setBlockParameterJson`), with parse/rollback and undo. Deviation: no operator node graph yet. |
+| Recovery/dirty state | `Editor/GraphView/Views/VFXView.cs:188-207` (`Save`/`Cancel`/`Discard Changes` dialog), `Editor/GraphView/VFXViewWindow.cs:289-301,354-379` (save/discard/window close) | Unsaved edits are not silently lost; Cancel keeps the window open. | Dirty graph debounce-writes temp recovery; opening prompts Recover/Discard; window close is intercepted and shows Save/Cancel/Discard modal; Save writes graph+layout, Discard clears recovery, Cancel keeps editing; layout sidecar is not in recovery. |
+| Editor release checks | Unity editor tests cover open/add/undo/save lifecycle (`Tests/Editor/VisualEffectGraphEditorTests.cs:17-31`) | Editor load/edit/save must not corrupt graph or runtime assets. | `hbg_vfx_tests` 95/95 (38,249 assertions), `hbg_vfx_runtime_tests` 24/24 (566 assertions), `hbg_vfx_compiler_tests` 27/27 (559 assertions), `hbg_vfx_editor_{d3d11,vulkan}` smoke, `hbg_vfx_editor_compile` canonical+preview CTest; V2.5 `hbg_vfx_editor_roundtrip` saves/reloads 30 assets then `vfxbake --check` per asset (dxbc+spirv), plus D3D11/Vulkan 1280×720 screenshots; full CTest not used as a gate. V2.3 hot reload verified with temp scene + `--vfx` + Ctrl+S; V2.4 preview verified with `--vfx-editor-preview` and graph/canonical SHA256 checks. No checked-in editor sidecar or generated test binary. |
+
+## 20. V3.0 particle motion vectors
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Output feature gate | `Editor/Models/Contexts/VFXAbstractRenderedOutput.cs:62-90` (`generateMotionVector`, `hasMotionVector`), `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:227-228` | Motion vectors are generated only when the output implements and enables them; transparent outputs use alpha clipping. | V3.0 writes MV when `FrameSettings::MotionVectors` is enabled and the fixed program resolves; V3.2 adds per-output `generateMotionVector` (default true for V3.0 compatibility; explicit false skips the MV draw). |
+| Current/previous clip | `Shaders/VFXParticleCommon.template:199-220,217-218`; `Shaders/VFXCommonOutput.hlsl:311-323`; HDRP `Runtime/VFXGraph/Shaders/VFXCommon.hlsl:113-122`, `Runtime/ShaderLibrary/ShaderVariablesFunctions.hlsl:152-155` | Vertex stage computes current and previous clip positions; previous transform comes from output-update history. | `vfx/shaders/vfx_motion_vectors.vs.sc` reads `oldPosition` and, since V3.3, transforms it with `u_vfx_prevWorld` before `u_global_prevViewProj`. Deviation: previous billboard offset still uses current size/angle and there is no per-particle previous element matrix. |
+| Encoding | `Shaders/VFXParticleCommon.template:243-258`; HDRP `Runtime/Material/Builtin/BuiltinData.hlsl:49-56`; `Runtime/RenderPipeline/ShaderPass/ShaderPassMotionVectors.hlsl:91-106` | `currentNDC - previousNDC`, clamp, multiply by 0.5, write RG16F. | `vfx/shaders/vfx_motion_vectors.fs.sc` follows the existing `shaders/passes/motion_vectors.fs.sc` convention; `addVfxMotionVectorsPass` reuses the scene motion-vector buffer. |
+| Pass ordering | HDRP VFX output/motion-vector passes run after simulation and before post-process. | VFX color remains in its existing pass; MV is a separate pass with scene depth. | `ForwardRenderer::addVfxMotionVectorsPass()` records after VFX Output and before transparent forward; debug `motion-vectors` still runs VFX simulation/output. |
+| Verification | Unity editor tests do not compare VFX MV pixels. | Need proof that VFX contributes to the MV buffer. | D3D11/Vulkan `hbg_vfx_motion_vectors` render `vfx_forces.gltf` with `--vfx-test` and `--no-vfx` and require ≥100 differing pixels in the motion-vector debug image. |
+
+## 21. V3.1 particle shadows
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Per-output gate | `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:132,149,600` (`castShadows`, `hasShadowCasting`, `USE_CAST_SHADOWS_PASS`) | Only outputs with `castShadows` enter shadow caster passes; transparent outputs use alpha test. | JSON optional `castShadows`; `.vfxb` v6 OUTPUTS reserved byte 21; editor Inspector checkbox. |
+| Shadow shader | `Shaders/ParticlePlanarPrimitives/PassShadowCaster.template`, `PassDepthOrMV.template:91-106` | `ZWrite On`, `Blend Off`; `VFX_PASSDEPTH_SHADOW` with `VFXApplyShadowBias`. | Fixed `vfx/shaders/vfx_shadow.{vs,fs}.sc`: camera billboard, world transform, shadow VP, depth write; alpha clip for transparent, no clip for opaque. Deviation: no normal-bias function, uses request slope/depth bias. |
+| Integration | HDRP culls/draws VFX shadow casters into its shadow atlases. | VFX must be simulated before shadow pass and exempt from static shadow cache when dynamic. | `ForwardRenderer` records VFX simulation before `addShadowPass`; each request calls `renderVfxShadow` after mesh shadows; `Runtime::hasShadowOutputs()` suppresses directional/punctual/area caches. |
+| Verification | Unity shadow tests are editor-level. | Need proof that particles write the shadow atlas and that flag false writes nothing. | D3D11/Vulkan `hbg_vfx_shadows` compares `directional-shadow-atlas` between `vfx_shadow.gltf` (`castShadows:true`) and `vfx_lit.gltf` (`false`): ≥100 differing pixels, on log `vfx_shadow_draws=4`, off `0`. |
+
+## 22. V3.2 per-output motion-vector gate
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Gate semantics | `Editor/Models/Contexts/VFXAbstractRenderedOutput.cs:62,78-86` (`generateMotionVector`, `hasMotionVector`); `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:227-228` | MV output is enabled only when the sub-output supports it, the output implements it, and the toggle is on. | `OutputDesc::generateMotionVector` defaults true for V3.0 compatibility; explicit false skips `encodeMotionVectors`. |
+| Binary compatibility | Unity serializes the setting in the asset. | Existing assets should keep their behavior. | `.vfxb` v6 OUTPUTS byte 22: `0` = generate, `1` = disabled (old assets have 0); no record size/version change. |
+| Editor | Inspector toggle. | Users can opt out per output. | `Document::setOutputGenerateMotionVector`; Inspector `Generate motion vectors`; node summary `motion on/off`; graphHash includes it. |
+| Verification | Unity editor tests do not compare VFX MV pixels. | Need proof gate-on writes and gate-off writes nothing. | `hbg_vfx_motion_vectors` keeps gate-on coverage; `hbg_vfx_motion_gate` uses `shadow_visual` gate off and requires VFX on/off motion debug 0 diff. |
+
+## 23. V3.3 effect transform motion history
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Previous object transform | `VFXParticleCommon.template:217-218` (`VFXGetPreviousElementToVFX`), HDRP `VFXCommon.hlsl:113-122` (`TransformPreviousObjectToWorld` + previous VP), `ShaderVariablesFunctions.hlsl:152-155` | Previous world position uses the previous object-to-world matrix, not the current transform. | `EffectImpl` keeps `m_previousTransform`; `setTransform()` commits one history per frame and `update()` clears the frame marker. First frame/reset uses current as previous. |
+| Shader binding | `VFXCommonOutput.hlsl:311-323` (per-element previous matrix buffer) | Previous matrix is available during motion-vector vertex shading. | `vfx_motion_vectors.vs.sc` adds `u_vfx_prevWorld`; local systems bind prior effect transform, world systems bind identity. Missing uniform skips the MV pass. |
+| Verification | Unity editor-level motion-vector behavior. | Prove transform movement changes previous clip, not current-only. | `hbg_vfx_runtime_tests` asserts current/previous uniform matrices 1/1→2/1→3/2 on local `curve_visual`; existing `hbg_vfx_motion_vectors`/`motion_gate` and dxbc+spirv shader builds stay green. |
+
+## 24. V3.4 automatic bounds
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Bounds mode | `Editor/Data/VFXDataParticle.cs:215-299` (`BoundsSettingMode`, `needsComputeBounds`, `boundsMode`), `:928-938` (`SystemNeedsComputeBounds`/`SystemAutomaticBounds`) | Per-system bounds can be manual, recorded, or computed from alive particles. | `BoundsMode::Automatic`; JSON `"bounds":{"mode":"automatic"}`; `.vfxb` SYSTEMS reserved byte 60; editor Inspector mode combo. Missing mode/old byte 0 = manual. |
+| GPU reduction | `VFXUpdate.template:182-203`; `VFXBoundsUtils.hlsl:109-168` | Update reads alive position/size, computes a local bound, and interlocked-min/max packs FloatFlip words into `boundsBuffer`. | Automatic systems add `bounds_init` and `bounds` kernels (64 threads) after Update; V3.4 used `0.5*abs(size)*length(scale)`, V3.13 uses the flat-billboard `0.5*abs(size)*length(scale.xy)`, and V3.20 uses camera-aware oriented extents with the 2D radius as fallback. V3.5 adds CPU padding; OBB remains deferred. |
+| Readback | Unity runtime asynchronously reads the bounds buffer and exposes the AABB. | CPU sees a slightly delayed AABB. | `Device::readBufferAsync`/`readbackReady`/`copyReadback`/`releaseReadback`; Hbg uses `bgfx::read` + sentinel polling; runtime polls and decodes FloatFlip AABB, then transforms local bounds by the effect matrix. |
+| Verification | Unity editor-level bounds checks. | Prove GPU data reaches `Effect::bounds()`. | `hbg_vfx_tests` JSON/editor tests; `hbg_vfx_runtime_tests` mock readback AABB + local transform; `hbg_vfx_compiler_tests` bounds kernels/binary mode; D3D11/Vulkan `hbg_vfx_reference_auto_bounds` validates real readback and finite bounds. Hbg D3D11 headless unit test is skipped, but the reference CTest covers the path. |
+
+## 25. V3.5 automatic bounds padding
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Padding setting | `Editor/Models/Contexts/Implementations/VFXBasicInitialize.cs:64-72` (`InputPropertiesPadding.boundsPadding`; range includes negative values) | Additional size added to the culling bounds; mainly useful for recorded bounds. | JSON `bounds.padding` defaults to zero and is accepted for finite values, including negative values (which may shrink/invert the AABB). |
+| CPU mapping | `Editor/Data/VFXDataParticle.cs:956-976` | Manual mode maps `bounds`, Recorded/Automatic map `boundsPadding`. | Padding is applied only to `BoundsMode::Automatic` in `EffectImpl::refreshBounds`; manual bounds ignore it. |
+| Recorder semantics | `Editor/GraphView/BoundsRecorder/VFXBoundsRecorder.cs:211-212,275-276` | `currentBounds.extents += padding` for the displayed/padded bounds. | Runtime adds the padding vector to the readback/fallback AABB before local-to-world transform. No GPU codegen change. |
+| Binary/editor | Unity serializes the padding value in the graph. | Old assets keep zero padding. | Optional `BOUNDS` section (id 11, `u32 count + count*3*f32`); omitted when all automatic padding is zero. `.vfxb` v6 record/version unchanged; `Document::setSystemBoundsPadding`; automatic Inspector field; graphHash includes nonzero padding. |
+| Verification | Unity editor-level bounds. | Prove padding reaches `Effect::bounds()` and local transform, with D3D11/Vulkan parity. | `hbg_vfx_tests` JSON/editor round-trip; `hbg_vfx_runtime_tests` mock AABB `[(-1.25,-0.5,-2.0),(0.75,0.5,1.0)]` + padding `[0.25,0.5,0.75]` + x=10 transform; compiler/BINARY round-trip; reference logs show z `±0.173` → `±0.923` on both backends. |
+
+## 26. V3.6 culling flags
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Asset flags | `Editor/Inspector/VFXAssetEditor.cs:441-451` (`k_CullingOptionsContents`/`k_CullingOptionsValue`; three option combinations) | Asset-level flags choose whether simulation and bounds update stop when the effect is not visible. | JSON `culling`: `"none"` (0), `"simulation"` (1), `"visible"` (3); `Graph::cullingFlags`; default 0 preserves existing assets. |
+| Automatic bounds | `Editor/Data/VFXDataParticle.cs:287-299` forces `VFXCullingFlags.CullNone` when bounds mode becomes Automatic. | Automatic systems always simulate and update bounds. | JSON/reader reject automatic bounds plus non-zero culling; editor clears culling when switching to automatic. |
+| Runtime | Unity native runtime culls effects by camera visibility and honors the asset flags. | Off-screen effects stop simulation/bounds according to flags; output is not submitted. | `Effect::setCulled`; `EffectImpl` skips simulation when `CullSimulation` is set, skips output and motion-vector draws when culled, and refreshes `isCulled()`. Manual bounds have no separate bounds update; automatic culling is rejected. |
+| Renderer | HDRP gathers visible VFX instances and submits only visible output. | Camera frustum test uses effect world bounds. | `ForwardRenderer::updateVfx` converts `Effect::bounds()` and tests `frustumPlanes`; shadows remain on their independent shadow-request path. |
+| Binary/editor | Unity serializes culling flags in the asset info. | Old assets default to always simulate; new assets can opt in. | Optional `CULLING` section (id 12, `u32 flags`), omitted for zero; `Document::setCullingFlags`; Inspector `Effect culling` combo. |
+| Verification | Unity editor-level visibility behavior. | Prove simulation and draw suppression, plus compatibility. | Runtime mock test covers `CullSimulation` dispatch suppression and output suppression; parser/compiler/editor tests cover flags and BINARY round-trip; D3D11/Vulkan reference auto bounds and motion tests remain green. |
+
+## 27. V3.7 output sort priority
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Output order | `Editor/Models/Contexts/IVFXSubRenderer.cs:9-16`, `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:110-111,246-256`, `Editor/Inspector/VFXAssetEditor.cs:98-154` | Output contexts are ordered by an integer priority; the reorder list assigns indices. | JSON output `sortPriority` (int32); runtime stable-sorts output submissions by ascending priority. Default 0 preserves declaration order. |
+| Runtime mapping | `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:792` maps `sortPriority` to the runtime; `Editor/Models/Contexts/Implementations/VFXStaticMeshOutput.cs:261` does the same for static mesh outputs. | Output order is per asset, across systems. | `AssetProgram::sortPriority`; `EffectImpl::m_outputOrder`; color, motion-vector, and shadow encode paths share the sorted list. |
+| Serialization/editor | Unity serializes the priority on output contexts. | Old assets default to 0; no record/version change. | OUTPUTS offset 28 `i32`; reader defaults to 0; graphHash includes only non-zero; `Document::setOutputSortPriority`; Inspector `Sort priority`. |
+| Verification | Unity Output Order editor list. | Prove cross-system output ordering and old-asset compatibility. | Runtime test patches `vfx_event.vfxb` priorities to reverse Emitter/Receiver draw order; parser/compiler/editor round-trip plus D3D11/Vulkan order/force goldens stay green. |
+
+## 28. V3.8 camera depth and youngest sorting
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Sort criteria | `Editor/Models/Contexts/VFXSortingUtility.cs:9-56` | Four criteria: distance to camera, camera depth, youngest in front, custom scalar. | JSON/editor `sort.mode` adds `cameraDepth` and `youngest`; `distance`/`custom` are unchanged. |
+| Sort keys | `Shaders/VFXParticleCommon.template:337-365`, `Editor/NewCompiler/Builder/OutputUpdateTaskBuilder.cs:95-125` | Lowest key renders first; camera depth is camera-forward distance; youngest is `age`; `SORTING_SIGN` handles reverse sorting. | `output_update` writes `dot(cameraRelativePosition, cameraForward)` for `cameraDepth` and `attributes.Load_age()` for `youngest`; `ascending`/`descending` maps to the existing KVP comparator. |
+| Camera data | `VFXParticleCommon.template:349-357` | Depth uses the current view's forward axis and camera-relative position. | Kernel binds `u_vfx_world`, `u_global_cameraPos`, and `u_global_invView`; runtime passes the inverse of `FrameContext::view`. |
+| Serialization | `VFXAbstractParticleOutput.cs:110-120`; Unity stores the criterion on the output. | `.vfxb` sort enum is additive. | SYSTEMS/OUTPUTS `sortMode` values 3=cameraDepth, 4=youngest; reader accepts them; old 0/1/2 bytes and assets are unchanged. |
+| Verification | Unity sorting templates and output UI. | Prove key generation, binary round-trip, and GPU ordering. | Parser/compiler tests cover both modes and BINARY round-trip; `--vfx-reference` with 1024 particles passes on D3D11 and Vulkan for both modes; existing distance/custom goldens remain green. |
+
+## 29. V3.9 per-output sort direction
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Output sort order | `Editor/Models/Contexts/VFXAbstractParticleOutput.cs:117-122` (`sortMode`, `revertSorting`); `Editor/Models/Contexts/VFXOutputUpdate.cs:207-218` | Each output can reverse its particle draw order independently of the system's sort criterion. | JSON output `sortOrder` (ascending/descending); omitted means inherit system order. `.vfxb` v6 reuses OUTPUTS offset 11 `sortOrder`; record/version unchanged. |
+| Shared key list | `Shaders/VFXParticleCommon.template:337-365` (`SORTING_SIGN`) | Reverse changes draw order but not the sorted key values or system sort pass. | Runtime keeps one system KVP/indirection; color VS reads stage 14 `RenderCount` and reverses `drawParticle`; MV/shadow passes reverse using existing params `.z`/`.w`. |
+| Editor | Unity output inspector exposes revert sorting. | Old assets inherit; explicit override is editable. | `Document::setOutputSortOrder()`; Output Inspector `Sort order` with Inherit/Ascending/Descending; `setSystemSort()` leaves per-output overrides intact. |
+| Compatibility | Unity settings serialize per output. | Old assets byte-identical. | Parser defaults to inherit; graphHash only includes explicit `sortOrder`; compiler writes effective order to OUTPUTS offset 11; old binaries retain system order. |
+| Verification | Unity output sort controls. | Prove parser/compiler/runtime direction and default compatibility. | `hbg_vfx_tests` 96/96, compiler 28/28, runtime 25/25; reverse temp asset bakes and `--vfx-reference` passes D3D11/Vulkan; 30 assets byte-identical; order/force/motion/shadow goldens green; CTest 137. |
+
+## 30. V3.10 per-output sort criteria
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Per-output criterion | `Editor/Data/VFXDataParticle.cs:614-666` (`NeedsGlobalSort`, `OutputNeedsOwnSort`); `Editor/Models/Contexts/VFXSortingUtility.cs:73-82` | Outputs with a different criterion need their own sorted list; outputs sharing a criterion use a global sort. | JSON output `sort` may differ from `system.sort.mode`; compiler emits an extra reset/output-update/sort pipeline per distinct extra criterion. |
+| Sort key generation | `Editor/Models/Contexts/VFXOutputUpdate.cs:41,215`; `Shaders/VFXParticleCommon.template:337-365` | Each output's update uses its own criterion and `SORTING_SIGN`. | Extra pipeline reuses one KVP/indirection; `SortReset` (task 16) clears `RenderCount`, then output update/sort/fillIndirect run before the draw. |
+| Ordering | Unity performs one global sort for the majority criterion and per-output sorts for the rest. | Output order remains declaration/priority order. | Runtime re-sorts on criterion changes while walking `m_outputOrder`; consecutive outputs with the same criterion reuse the list. |
+| Binary | Unity serializes criterion/revert per output. | Existing v6 assets remain byte-identical. | OUTPUTS offset 10 stores the effective criterion; KERNELS offset 7 tags extra pipelines (0/old = base); no buffer/section/version change. Existing assets without extra pipelines are unchanged. |
+| Uniform isolation | Output update and color/MV passes use separate uniforms. | Avoid duplicate-uniform assertions when sort compute and raster passes share an encoder. | Assets with extra pipelines compile base/extra output-update shaders with `u_vfxSortWorld`/`u_vfxSortCameraPos`/`u_vfxSortInvView`; runtime selects them via a per-system flag. |
+| Verification | Unity per-output sorting. | Prove parser/compiler/runtime/GPU behavior. | `hbg_vfx_tests` 98/98, compiler 30/30 (616), runtime 26/26 (628); `sort_outputs` asset bakes dxbc+spirv; D3D11/Vulkan smoke tests pass; CTest 139. |
+| Limits | Unity can keep independent lists. | V3.12 keeps independent sorted indirection per extra criterion while sharing KVP/RenderCount; no concurrent GPU sort. | Criterion switches still dispatch output update/sort once per extra list, but color/MV/shadow reuse the list without re-sorting. Assets with extra pipeline task 16 are rejected by older runtimes. |
+
+## 31. V3.11 output draw instancing
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Draw chunk size | `Editor/NewCompiler/Passes/VfxTemplateCodeGenerationPass.cs:12-15`: `k_QuadParticlesPerDrawInstance = 2048`, matching native `RenderQuadCommand::kNbParticlePerInstance`. | One output draw covers at most 2048 particles per draw instance. | `fill_indirect` writes `numVertices = 6 * min(count, 2048)` and `numInstances = ceil(count / 2048)`; start vertex/instance stay 0. |
+| Particle mapping | `VfxTemplateCodeGenerationPass.cs:546-576`: output `linearThreadIndex = (id >> 2) + input.instanceID * 2048`. | The instance ID selects the particle slice. | Output VS and shared MV/shadow VS compute `linearParticle = vertexID / 6 + gl_InstanceID * 2048`; the project keeps its 6-vertex quad instead of Unity's 4 vertices + index buffer. |
+| Tail handling | Unity's fixed-size output path pads each instance to a whole dispatch. | Invalid tail particles must not index outside the shared indirection. | VS always binds stage 14 `RenderCount`; `linearParticle >= renderCount` writes a degenerate vertex, and reverse sorting is applied only after the guard. |
+| Runtime/binary | Unity uses native per-instance output draws. | One indirect draw per output, with instanceCount from the GPU. | No API or v6 section/record change; `drawIndirect` consumes the new args. Shader/fillIndirect changes require rebaking every checked-in asset. |
+| Verification | Unity quad output instancing. | Prove multi-instance and partial-tail behavior on both backends. | `reference_sorted_8192` D3D11/Vulkan reference passes with `[12288, 4]`; `reference_sorted_262144` passes with 128 instances; a temporary 2560-particle partial asset passes with `[12288, 2]`; sort/MV/shadow smokes pass; old HEAD 8192 asset and current 4-instance asset render byte-identical D3D11/Vulkan screenshots; compiler 30/30 (614 assertions), runtime 26/26 (592 assertions); CTest 139. |
+| Limits | Unity also instances effect simulation/instance splits. | This step only chunks output draws. | Scene instances still own separate simulations/buffers; no instance split/property split; no indexed quad; last partial chunk may submit up to 2047 guarded vertices. |
+
+## 32. V3.12 per-output sorted indirection lists
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Per-output sort task | `Editor/Data/VFXDataParticle.cs:1470-1500` | Each output sort task writes to its own `dstBuffer` (`sortedIndirect + j`); outputs with an own criterion do not overwrite another output's list. | Runtime allocates one sorted indirection buffer per extra criterion (`vfx.<system>.sorted.<mode>`), shared by outputs with the same criterion. |
+| Sort key storage | `VFXDataParticle.cs:1478-1493` (`srcBuffer`/`dstBuffer`) and `Shaders/Sort.compute` | The sorted indirection is the per-output draw list; KVP keys are transient sort input. | V3.12 shared KVP/RenderCount/indirect args; V3.14 gives each extra criterion its own KVP/RenderCount/indirect and writes them through `SortBufferSet`. |
+| Draw binding | `VFXOutputUpdate` selects the output list for its draw. | Color, MV, and shadow passes use the output's own sorted list. | `outputBuffers()` chooses stage 13/14 and indirect args; color binds them through vertex bindings, MV/shadow bind them explicitly. |
+| Lifecycle | Unity refreshes output lists from simulation/output update. | Lists must not be reused after simulation changes. | `m_sortGeneration` increments on simulation; extra lists are sorted once per generation on first use; base list comes from the simulation base pipeline. |
+| Verification | Unity per-output sorting. | Prove list separation and reuse. | `sort_outputs` is distance → youngest → distance; runtime test observes stage 13/14/args base → youngest → base and zero extra MV sorts. D3D11/Vulkan smokes pass. |
+| Limits | Unity performs per-output GPU sort scheduling. | No concurrent/partitioned sorting in this step. | Lists are per criterion, not per output; different criteria are still sorted serially; V3.14 adds independent KVP/RenderCount/indirect per criterion and paused camera changes reuse the previous distance/cameraDepth list. |
+
+## 33. V3.13 tight billboard automatic bounds
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Flat-element radius | `VFXBoundsUtils.hlsl:52-59` `ComputeBoundingRadius2DFromMatrix()` uses `0.5*sqrt(xAxisSqrLength + yAxisSqrLength)` | A flat element's bounding sphere uses only the two in-plane axes; its normal/z axis does not contribute. | `makeBoundsSource()` writes `0.5 * abs(size) * length(scale.xy)`; `scale.z` remains in the attribute layout but is excluded from automatic bounds. |
+| 3D/OBB boundary | `VFXBoundsUtils.hlsl:61-65` `GetBoundingRadius3D_Local()` includes all three axes; `GetTightBoundingExtents_VFX()` uses the element-to-VFX matrix. | Unity has a 3D sphere path and a separate tight-extents path for oriented elements. | This step specializes only the camera-facing quad path; V3.20 adds camera-aware AABB extents, while mesh/3D outputs and tight OBB with axis/angle/pivot remain deferred. |
+| Binary/assets | Unity recomputes bounds from the compiled graph. | The radius change must be reflected in the generated kernel and baked asset. | No section/version/API change; only `auto_bounds.vfxb` is rebaked; `vfxbake --check` keeps the other 30 assets byte-identical. |
+| Verification | Unity editor-level bounds. | Prove the generated formula and real GPU readback on both backends. | Compiler 30/30 (616 assertions) checks `length(scale.xy)` and rejects `length(scale)`; runtime 26/26 (605); `hbg_vfx_tests` 98/98 (38,286); D3D11/Vulkan auto-bounds reference pass; D3D11 readback `min=(-1.3821943,-0.6414214,-0.8914214)` / `max=(1.3291512,0.6414214,0.8914214)` with fixture `scale.z=4` confirms z does not contribute and matches radius `0.1414` plus padding `[0.25,0.5,0.75]`; CTest 139. |
+| Limits | Unity can compute 3D/tight bounds for oriented elements. | V3.13 is a billboard-specific tightening, not a general OBB. | Bounds remain an AABB readback; V3.20 adds camera-aware billboard extents, but there is no per-particle tight OBB, mesh extents, or OBB padding. |
+
+## 34. V3.14 per-output sort state
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Per-output indirect state | `Shaders/VFXOutputUpdate.template:31-45` (`Kvp`, `IndirectOutputType`, `outputBuffer0..N`); `Editor/Data/VFXDataParticle.cs:1478-1493` (`srcBuffer`/`dstBuffer`) | Each output update/sort has its own KVP and indirect buffer state. | Runtime allocates an independent KVP, RenderCount, and indirect args buffer per extra criterion; names are `vfx.<system>.sorted.<mode>[.kvp|.count|.indirect]`. |
+| Fill and draw | `Shaders/VFXFillIndirectArgs.compute:60-68` writes args from the active output's count. | The output draw consumes the args belonging to its own sorted list. | `SortBufferSet` overrides compute bindings; `fillIndirect` writes the criterion's KVP/count/args; color/MV/shadow draw from that criterion's indirect handle. |
+| Isolation | Outputs with different criteria do not mutate each other's list or args. | Base and extra outputs can be drawn in any order. | Extra sort/reset/fill no longer touches the base KVP/count/args; the simulation base list remains valid. |
+| Binary/assets | Unity stores sort/output state in the runtime asset. | No serialization change for this step. | `.vfxb` v6, compiler, shaders, and all checked-in assets are unchanged; the new buffers are runtime-only. |
+| Verification | Unity per-output sort state. | Prove stage 13, stage 14, and indirect args isolation on both backends. | Runtime 26/26 (628) checks base → youngest → base for stage 13, stage 14, and draw args, plus MV reuse; `hbg_vfx_tests` 98/98 (38,286), compiler 30/30 (616), adapter 8/8 (328); 12 D3D11/Vulkan smokes pass; CTest 139. |
+| Limits | Unity can schedule per-output GPU sorts. | V3.14 is state isolation, not concurrent sorting. | Sort state is per unique criterion; extra sorts are serial on first use; scratch is shared; no per-output sort state for equal criteria or serialized runtime buffers. |
+
+## 35. V3.15 effect simulation instancing v1
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Instancing state | `Shaders/VFXInstancing.hlsl:1-115` (`instancingCurrentCount`, `instancingActiveCount`, `instancingBatchSize`, current/active/batch indirection) | A batch keeps per-instance spawn/count state and resolves current → active → batch indices. | Runtime keeps one current/previous transform, local bounds, and cull bit per effect instance; no prefix-sum or batch indirection. |
+| Buffer layout | `Editor/Data/VFXDataParticle.cs:918-920` (`instancingIndirectAndActiveIndirect`), `:1505-1509` (`1 + instanceSplitDescs.Count` indirection and prefix-sum sizes) | Instance split descriptions allocate shared per-system instancing buffers. | All compatible instances share the existing system attribute/dead-list/event/sort buffers; no new GPU instancing buffers. |
+| Batch discovery | `Editor/NewCompiler/Passes/OutputPass.cs:300-312` sets `SystemUsesInstancedRendering` and emits `instanceSplitDescs`. | The compiler records which CPU/GPU values require separate batches. | Renderer groups consecutive instances at scene init by asset path, seed, playRate, playOnAwake, and property list; no compiled split data. |
+| Init/update indexing | `Shaders/VFXInit.template:74-112`, `Shaders/VFXUpdate.template:58`, `Shaders/VFXParticleCommon.template:313-325` call `VFXInitInstancing` per dispatch/draw. | Instance index selects the spawn/count slice for the batch. | Simulation runs once; output/MV/shadow iterate instances on the CPU and set `u_vfx_world`/`u_vfx_prevWorld` per draw. |
+| Eligibility | Unity supports split properties and per-camera sorting within batches. | Instancing is not limited to one sort mode or one property set. | v1 only accepts local-space assets with `none`/`youngest` output sorting; other criteria and mismatched properties fall back to separate effects. |
+| Verification | Unity `VFXInstancing.hlsl`/`VFXDataParticle` instancing path. | Prove shared simulation with distinct per-instance transforms and byte-identical fallback rendering. | Runtime 29/29 (671) covers two-instance bounds/draws, previous transforms for MV, and world-space rejection. D3D11/Vulkan `hbg_vfx_instancing` logs effects 2 → 1 with two instances and compares screenshots byte-for-byte; 32 goldens + 12 smokes + CTest 141. |
+| Limits | Unity also batches instanced draws and splits by property/texture. | This step is simulation sharing, not full instancing. | V3.15 per-instance `drawIndirect`; V3.17 batches all-visible instances. No instance split/prefix-sum/batch indirection, no GPU culling compaction, no hot-reload regrouping. |
+
+## 36. V3.16 VFX transparent effect-level ordering v1
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Transparent list key | `Runtime/RenderPipeline/HDRenderPipeline.cs:3460-3499` uses `SortingCriteria.CommonTransparent \| SortingCriteria.RendererPriority`; `HDRenderPipeline.RenderGraph.cs:955-965,1899-1911` builds/draws the forward transparent RendererList. | Transparent renderers are sorted by layer/queue/priority/order/depth. | Effect key uses transparent queue 3000, distance from bounds center, and `kTransparentSortingCriteria`; no per-renderer queue/priority metadata exists for a VFX effect. |
+| VFX internal order | `Editor/Models/Contexts/VFXSortingUtility.cs:9-56`, `Shaders/VFXParticleCommon.template:337-365`. | Particles are sorted by distance/camera depth/youngest/custom before output draw. | Unchanged: each effect still uses its V3.8–V3.14 per-output KVP/indirection state. |
+| Effect insertion | HDRP transparent RendererList contains scene renderers; VFX Graph submission is handled by `VFXManager.ProcessCameraCommand` / VFX output scheduling. | VFX and transparent scene renderers share a frame order, but VFX particles are not individually merged into the RendererList. | V3.16 inserts one VFX pass per effect between sliced transparent DrawList segments; opt-in only. |
+| DrawList slicing | HDRP RendererList owns the sorted transparent set. | Transparent renderers can be drawn in sorted order. | `DrawList::buildRange()` copies a sorted item range and rebuilds batches; segments live in `m_vfxTransparentSegments`. |
+| Runtime API | VFX output is submitted as a batch. | One effect can be encoded independently. | `Runtime::beginOutputFrame()` and `Runtime::encodeOutputEffect()` added; full `Runtime::encodeOutput()` uses the same path. |
+| Frame paths | HDRP forward/deferred transparent lists. | Both paths use the same transparent sorting criteria. | Shared `addTransparentFramePasses()` for forward/deferred; pre-refraction/backface/GPU-driven paths fall back to old ordering. |
+| Verification | Unity transparent RendererList and VFX output behavior. | Prove effect-level order changes while particle order stays stable. | New `vfx_transparent_order` scene has far/near effects around a transparent panel; D3D11/Vulkan off/on tests and goldens pass; off/on differs by 4,680 pixels (max delta 81). |
+| Limits | Full DrawList integration would require per-particle/indirect batch keys. | V3.16 does not merge particles with transparent meshes. | Effect-level only; approximate bounds-center depth; default queue; no refraction/backface merge; CPU segmented transparent fallback when GPU-driven is active. |
+
+## 37. V3.17 effect GPU instancing v2: instanced draw v1
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Instance indexing | `Shaders/VFXInstancing.hlsl:1-115` (`instancingCurrentCount/ActiveCount/BatchSize`, current → active → batch indirection, `VFXInitInstancing()`). | Fixed/variable-size batches select an instance and then its active/batch index. | Effect instance is derived from `gl_InstanceID / particleChunks`; particle chunk is the remainder. No active/batch indirection or variable-size prefix sum. |
+| Transform data | `Shaders/VFXOutputUpdate.template:147-152`, `Shaders/ParticlePlanarPrimitives/PassVS.template:113-142` use per-instance `elementToVFX` and attributes. | Each instance has its own element matrix and state. | One `vfx.instance.transforms` buffer stores current + previous `Mat4` per effect instance at stage 15; raw columns are applied in output/MV/shadow VS. |
+| Indirect draw count | `Editor/NewCompiler/Passes/OutputPass.cs:300-312` sets `SystemUsesInstancedRendering`/`instanceSplitDescs`; output update/fill indirect emits per-instance draw args. | Unity batches output draws using instanced properties/index buffers. | `fill_indirect` writes `particleChunks * effectInstances` as `numInstances`; all instances submit through one `drawIndirect` per output when visible. |
+| Culling | Unity supports active/batch indirection and GPU culling. | Culled instances can be omitted from the batch. | All-or-nothing CPU fallback: any culled instance makes the whole effect use per-instance draws; no GPU compaction. |
+| Verification | Unity instanced output draw path. | Prove batched draws preserve distinct transforms and fallback behavior. | Runtime 30/30 (699) covers color/MV/shadow batch + cull fallback; D3D11/Vulkan instancing color and MV screenshots are 0 diff with rotation/scale; `vfx_draws` 4 → 2. |
+| Limits | Full instancing includes property/texture splits, variable-size batches, active/batch indirection, and per-instance sort state. | Unity is broader than this v1. | Fixed-size compatible groups only; V3.18 adds active indirection and V3.19 active-count args, but no split/prefix-sum/compaction; `distance`/`cameraDepth`/`custom` outputs are not grouped. |
+
+## 38. V3.18 effect GPU instancing v3: active instance indirection
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Fixed-size indexing | `Shaders/VFXInstancing.hlsl:37-54` derives `instanceIndex` from the current draw/dispatch index and clamps to the current count. | Outputs use one instance per fixed-size chunk. | `gl_InstanceID / particleChunks` remains the current effect instance; the particle chunk is the remainder. |
+| Active indirection | `Shaders/VFXInstancing.hlsl:69-80` maps current -> active through `instancingIndirectAndActiveIndirect[instancingActiveIndirectOffset + instanceCurrentIndex]`; `Editor/Compiler/VFXCodeGenerator.cs:962-988` enables active indirection; `Editor/Data/VFXDataParticle.cs:1505` allocates the indirection buffer. | Unity removes culled instances from active compute/draw work. | CPU rebuilds a visible-instance list each frame and appends it to stage 15 after N transform slots; the output/MV VS maps `instanceIndex` through `u_vfxInstanceParams.z` when `w > 0.5`. |
+| Output path | Unity output VS reads `_InstanceActiveIndex`/`_InstanceIndex` per-instance properties (`Editor/ShaderGraph/Templates/VFXConfig.template.hlsl`). | Material instancing supplies active and batch indices. | No material instancing; one effect-level buffer holds current/previous transforms plus the active list. |
+| Partial culling | Active instances can be drawn while inactive ones are omitted. | One draw covers the active subset. | Visible count >1 uses one batch draw; `fill_indirect` still submits `totalInstances` slots and inactive slots degenerate. Visible count 1 keeps per-instance fallback. |
+| Shadow | Unity shadow output can ignore camera culling for shadow casters. | Shadow keeps all effect instances. | `encodeShadow()` uses `totalInstances` with active indirection disabled and always batches N>1 instances. |
+| Verification | Unity instance indexing/active indirection semantics. | Prove partial culling preserves output and MV. | New `vfx_instancing_cull` (3 instances, one off-screen): D3D11/Vulkan color and MV 0 diff; off `vfx_draws=4`, on `vfx_draws=2`; runtime 31/31 (725) and compiler 30/30 (626). |
+| Limits | Unity supports batch indirection, instance/property splits, variable-size prefix sums, and GPU compaction. | This step only adds an active list. | V3.18 itself has no GPU compaction, active-count indirect args, batch indirection, property/texture split, or prefix sum; active slots beyond the visible count still execute a degenerate VS; shadow bypasses the active list. V3.19 adds active-count args but keeps the other limits. |
+
+## 39. V3.19 effect GPU instancing v4: active-count indirect args
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Batch sizes | `Shaders/VFXInstancing.hlsl:10-12` exposes `instancingCurrentCount`, `instancingActiveCount`, and `instancingBatchSize`. | Draw/dispatch work is bounded by the active batch size. | `m_activeArgsRequired` is `instancing && 0 < active < total`; color/MV args use active count, full batches keep total args. |
+| Batch indirection | `Shaders/VFXInstancing.hlsl:29-31` stores active→batch and per-split current→active sections; `:81-92` maps active→batch when `instancingActiveCount < instancingBatchSize`. `Editor/Compiler/VFXCodeGenerator.cs:984-988` enables both defines; `Editor/Data/VFXDataParticle.cs:1505` allocates the indirection buffer. | Unity can address a batch smaller than the active set. | No instance split, so batch order equals active order; the V3.18 active list is the batch→current mapping and no active→batch buffer is needed. |
+| Args generation | Unity output/fill-indirect path derives per-instance draw args from active/batch state. | Active count affects the draw instance count. | `prepareActiveIndirect()` lazily creates `.active.indirect` per system/sort list and dispatches the existing `fill_indirect` with `u_vfxInstanceParams.x = active`; shadow keeps the simulation-generated total args. |
+| Single visible | Unity output still uses its active/batch path. | A one-instance batch should not submit all effect instances. | Visible count 1 uses active args with `particleChunks * 1` and the `u_vfx_world` fallback, avoiding the V3.17/V3.18 total-count duplicate submission. |
+| Verification | Unity active-count/batch semantics. | Prove partial culling preserves output and MV, including non-contiguous active instances. | `vfx_instancing_cull` and `vfx_instancing_cull_gap` (active `[0,2]`) are D3D11/Vulkan color/MV 0 diff, off `vfx_draws=4`, on 2; runtime 31/31 (743), compiler 30/30 (626). |
+| Limits | Unity supports splits, property/texture splits, variable-size prefix sums, and GPU compaction. | This step only narrows fixed-size args. | No split/batch-smaller-than-active active→batch mapping, property/texture split, prefix-sum batch, or GPU cull compaction; active list remains CPU-owned and shadow ignores it. |
+
+## 40. V3.20 tight billboard automatic bounds v2: camera-aware AABB
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Tight extents | `Shaders/VFXBoundsUtils.hlsl:73-85` `GetTightBoundingExtents_VFX()` uses the element matrix columns: `extents.x = max(abs(m00), abs(m01))`, etc. `:52-56` keeps the 2D radius fallback. | An oriented flat element gets tighter AABB extents than its bounding sphere. | Bounds kernel uses camera right/up, particle `angle`, `scale`, and `size` to build `billboardRight/Up` and `extents = 0.5*|size|*(|right|*|scale.x| + |up|*|scale.y|)`. |
+| Camera basis | Unity's element matrix already contains the element orientation. | Orientation is camera-dependent for billboards. | Runtime uploads `FrameContext::cameraRight/Up` only for automatic-bounds systems via `u_vfxBoundsRight/Up`; `u_vfxBoundsParams.x` enables the tight path. |
+| Fallback | Unity keeps `ComputeBoundingRadius2DFromMatrix()`. | Old/unsupported elements remain conservative. | V3.13 `radius = 0.5*|size|*length(scale.xy)` remains fallback when the tight flag is off or `angle` is absent (angle=0). |
+| Assets | Unity recompiles the graph for bounds changes. | The generated bounds kernel is embedded per system. | Only `auto_bounds.vfxb` is rebaked; `auto_bounds` reference logs tight y/z `±0.6/±0.75` instead of the old sphere `±0.6414/±0.8914`. |
+| Verification | Unity editor-level bounds. | Prove generated formula and real GPU readback on both backends. | Runtime 31/31 (751) checks camera uniforms/readback; compiler 30/30 (631) checks the source; new `run_vfx_auto_bounds.cmake` checks D3D11/Vulkan bounds and tight y/z; 90 VFX CTest, 31 assets, CTest 146. |
+| Limits | Unity supports axis/angle/pivot tight OBB and mesh bounds. | V3.20 only tightens the billboard AABB. | Still AABB, not OBB; no mesh/3D extents or OBB padding. Camera changes while paused do not dispatch new bounds; readback remains asynchronous. |
+
+## 41. V3.21 cull-aware visible instance bounds
+
+| Topic | Unity VFX Graph/renderer reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Per-instance bounds | `Shaders/VFXBoundsUtils.hlsl:150-168` writes min/max at `boundsBufferBaseIndex = instanceIndex * 6`; `Editor/Data/VFXDataParticle.cs:928-938` marks automatic bounds. | Bounds are owned per instance and can be resolved against visibility. | `instanceBounds(i)` remains the per-instance transformed AABB; V3.21 adds `visibleBounds()` as the union of non-culled valid instance bounds. |
+| Effect-level sort | Unity renderer culls instances before submitting visible renderers. | A culled instance must not influence the visible set's sort position. | `ForwardRenderer::addTransparentFramePasses()` uses `visibleBounds()` for the V3.16 sort center; invalid visible bounds fall back to the primary instance position. |
+| Full bounds | Renderer diagnostics/debug still expose the complete effect extent. | Culling and debug may need different aggregates. | `bounds()` remains the all-instance union; only transparent ordering and the new API use the culled subset. |
+| Cull updates | Visibility changes are consumed when the renderer updates culling. | Sort should follow the latest cull state available in the frame. | `refreshBounds()` and `setCulled()`/`setInstanceCulled()` refresh the cached visible bounds; the next `updateVfx` consumes camera changes. |
+| Verification | Unity per-instance bounds/culling. | Prove the visible aggregate excludes culled instances and recovers. | Runtime 31/31 (761) checks all-visible, one-culled `[2,4]`, all-culled invalid, and restored bounds; 90 VFX CTest, 98/98 VFX tests, 8/8 adapter, 318/33,587 hbg tests, 31 assets, CTest 147. |
+| Limits | Unity can interleave individual VFX renderers with transparent objects. | This step only corrects the aggregate key. | Still one effect-level key per instanced group; no per-instance/per-particle transparent interleave, GPU cull compaction, or shadow active list. |
+
+## 42. V3.22 fixed-size active instance split
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Batch sizes | `Shaders/VFXInstancing.hlsl:10-12` exposes current/active/batch counts; `:81-92` maps active→batch when the batch is smaller than active. | Draw work can be bounded by a batch size. | `EffectDesc::instanceBatchLimit` / `PipelineSettings::vfxInstanceBatchSize` / `--vfx-instance-batch=<n>`; 0 means one full active batch. |
+| Active→batch mapping | `Shaders/VFXInstancing.hlsl:29-31` stores active→batch and current→active indirection; `Editor/Compiler/VFXCodeGenerator.cs:984-988` enables it. | Active and batch indices can differ. | No instance split, so batch order equals active order; batch-local index is resolved as `activeBase + batchOffset`. No separate active→batch buffer. |
+| Args | Unity derives per-batch draw args from the batch state. | Each batch gets its own instance count. | `BatchIndirectRuntime` creates `.active.indirect` / `.active.indirect.1...`; `fill_indirect` writes each batch's `particleChunks * localInstances`. |
+| Shader | Unity output VS receives `_InstanceActiveIndex`/`_InstanceIndex` per instance. | Batch-local index must map to a current instance. | Existing generated output/MV VS is unchanged; `u_vfxInstanceParams.z` carries `activeBase + batchOffset` and the V3.18 active list maps to current. |
+| Shadow | Shadow output can keep all effect instances. | Camera culling need not split shadow batches. | V3.22 itself leaves shadow at one total batch; V3.23 applies the same limit to total-instance shadow batches while still ignoring the active list. |
+| Verification | Unity active/batch semantics. | Prove split preserves pixels and cull mapping. | Runtime 32/32 (792): limit 2 on 3 active gives args `{3,2,96,1}` / `{3,1,98,1}`; culling the middle gives `[0,2]`. Instancing fixture limit 1 emits 4 draws and is 0 diff on D3D11/Vulkan color/MV; cull fixtures also remain 0 diff, including active `[0,2]`. |
+| Limits | Unity supports instance/property/texture splits, variable-size prefix sums, and GPU compaction. | This step only slices the active list. | Fixed-size contiguous batches; no property/texture split, prefix-sum batch, independent active→batch buffer, or GPU cull compaction. `instanceBatchLimit` is creation-time only. |
+
+## 43. V3.23 fixed-size shadow instance split
+
+| Topic | Unity VFX Graph reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Draw offset | `Shaders/VFXInstancing.hlsl:5,10-17` exposes current/active/batch counts and `instancingCurrentOffset`; `:37-54` adds the offset to a fixed-size current index. | A shadow batch-local instance must resolve to the global transform slot. | `vfx_shadow.vs.sc` adds `u_vfxInstanceParams.z` to the batch-local instance index. |
+| Batch sizing | `Editor/Compiler/VFXCodeGenerator.cs:185-186` emits `instanceIndex` at task entry; shadow is another instanced task. | Shadow can use the same batch limit but must include every effect instance. | `refreshDrawInstancing()` computes `shadowBatchSize/Count` from total instance count and `instanceBatchLimit`, independent of active color/MV batches. |
+| Args | Unity derives per-draw args from its current/batch state. | Each shadow batch needs its own instance count. | `SystemRuntime::shadowIndirect` holds `.shadow.indirect[.N]`; `prepareShadowIndirect()` fills each with `particleChunks * localInstances` and caches by `m_shadowArgsSerial`. |
+| Submission | Shadow receives the same instance offset semantics as other draws. | Camera culling must not remove shadow instances. | `encodeShadow()` loops total batches with `{totalInstances, localInstances, batchOffset, 0}` and never reads the active list. |
+| Verification | Unity instancing offset semantics. | Prove batch-local shadow instances map to the right transforms. | Runtime 33/33 (814): 3 instances, limit 2 gives two shadow draws and params `{3,2,0,0}` / `{3,1,2,0}`; culling does not change shadow batching. DXBC/SPIR-V shader compile passes. Manual D3D11/Vulkan smoke on 3 local shadow instances, limit 1: `vfx_shadow_draws` 4 → 12 and 0-diff shadow atlas; the shared manifest needed temporary color-pyramid placeholders due to a parallel edit. |
+| Limits | Unity supports property/texture splits, variable-size prefix sums, and GPU compaction. | This step only slices shadow by total instance count. | No shadow active list, GPU cull compaction, property/texture split, prefix-sum batch, or active→batch buffer. `instanceBatchLimit` is creation-time only. |
+
+## 44. V3.24 VFX transparent per-batch insertion
+
+| Topic | Unity/HDRP reference | Behavior | hdrp-bgfx landing |
+|---|---|---|---|
+| Transparent ordering | HDRP `Runtime/RenderPipeline/HDRenderPipeline.cs:3460-3475` builds transparent RendererLists with `SortingCriteria.CommonTransparent \| RendererPriority`; `HDRenderPipeline.RenderGraph.cs:1872,1902` submits all transparent forward categories through the same sorted list. | Transparent items are sorted at draw/submesh granularity, not whole materials/effects. | V3.24 keeps the V3.16 transparent key but emits one submission per active instance batch; `n=1` gives per-instance granularity. |
+| Batch mapping | Unity `Shaders/VFXInstancing.hlsl:5,10-17,37-54` defines fixed-size current offset; V3.22/V3.23 use it for color/MV/shadow. | The transparent split must use the same active batch/args as the color pass. | `Effect::outputBatchCount/outputBatchSize` expose the V3.22 active batch; `Runtime::encodeOutputEffectBatch` reuses `prepareActiveIndirect()` and `.active.indirect[.N]`. |
+| Batch bounds | Unity VFX culling/sorting uses per-instance bounds; `Shaders/VFXBoundsUtils.hlsl:150-168` writes per-instance results. | Each submission needs a representative transparent depth. | ForwardRenderer unions non-culled `instanceBounds()` per active batch and uses the union center as the transparent key; culled instances are skipped. |
+| Visibility | Shadow keeps all instances; camera culling affects visible color/MV. | Batch insertion must not change shadow or MV semantics. | Only color output passes are per-batch; MV runs once after transparent segments and shadow still draws total instances. |
+| Defaults | HDRP transparent sorting is pipeline behavior. | Existing effect-level behavior must remain stable. | Requires `--vfx-transparent-sort` plus non-zero `--vfx-instance-batch`; `0` keeps V3.16 effect-level key. No new setting/asset/shader. |
+| Verification | HDRP transparent RendererList + Unity batch semantics. | Prove order changes and mapping survives cull. | Runtime 34/34 (843): limit-1 batch 1 uses `active.indirect.1` and `{3,1,97,1}`; cull middle → 2 batches over `[0,2]`. New D3D11/Vulkan `vfx_transparent_batch_order`: 3 grouped instances + panel, `batches=1/3`, `vfx_draws=2/6`, order diff 4,680 px/max81, cross-backend max1. |
+| Limits | Unity has per-renderer transparent ordering and particle-internal sorting. | Batch granularity is still coarser than per-particle. | No per-particle insertion, pre-refraction/backface merge, or GPU-driven transparent merge; batch size >1 cannot interleave transparent objects inside the batch. |

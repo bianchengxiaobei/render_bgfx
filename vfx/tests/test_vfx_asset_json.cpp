@@ -50,7 +50,7 @@ constexpr std::string_view kValidAsset = R"json(
         {"type": "reap"}
       ]},
       "outputs": [
-        {"type": "quad", "lit": false, "blend": "additive", "texture": "MainTex", "sort": "distance"}
+        {"type": "quad", "lit": false, "blend": "additive", "texture": "MainTex", "castShadows": true, "generateMotionVector": false, "sortPriority": -3, "sort": "distance"}
       ]
     }
   ]
@@ -109,6 +109,9 @@ TEST_CASE("vfx asset parses a complete graph") {
     CHECK(static_cast<int>(system.outputs[0].type) == static_cast<int>(vfx::OutputType::Quad));
     CHECK(static_cast<int>(system.outputs[0].blend) == static_cast<int>(vfx::BlendMode::Additive));
     CHECK(system.outputs[0].texture == "MainTex");
+    CHECK(system.outputs[0].castShadows);
+    CHECK_FALSE(system.outputs[0].generateMotionVector);
+    CHECK(system.outputs[0].sortPriority == -3);
     CHECK(system.outputs[0].sort.has_value());
     CHECK(static_cast<int>(system.outputs[0].sort->mode) == static_cast<int>(vfx::SortMode::Distance));
 }
@@ -139,6 +142,193 @@ TEST_CASE("vfx asset supplies defaults and aligns capacity") {
     CHECK(system.updateBlocks.empty());
     CHECK(static_cast<int>(system.outputs[0].blend) == static_cast<int>(vfx::BlendMode::Alpha));
     CHECK_FALSE(system.outputs[0].sort.has_value());
+    CHECK_FALSE(system.outputs[0].castShadows);
+    CHECK(system.outputs[0].generateMotionVector);
+    CHECK(system.outputs[0].sortPriority == 0);
+}
+
+TEST_CASE("vfx asset parses camera depth and youngest sorting") {
+    const auto depth = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "sort":{"mode":"cameraDepth","order":"ascending"},
+     "outputs":[{"sort":"cameraDepth"}]}]}
+    )json");
+    REQUIRE(depth.ok());
+    CHECK(static_cast<int>(depth.graph->systems[0].sort.mode) ==
+          static_cast<int>(vfx::SortMode::CameraDepth));
+    REQUIRE(depth.graph->systems[0].outputs[0].sort.has_value());
+    CHECK(static_cast<int>(depth.graph->systems[0].outputs[0].sort->mode) ==
+          static_cast<int>(vfx::SortMode::CameraDepth));
+    CHECK_FALSE(depth.graph->systems[0].outputs[0].sortOrder.has_value());
+
+    const auto reversed = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "sort":{"mode":"distance","order":"descending"},
+     "outputs":[{"sort":"distance","sortOrder":"ascending"}]}]}
+    )json");
+    REQUIRE(reversed.ok());
+    REQUIRE(reversed.graph->systems[0].outputs[0].sortOrder.has_value());
+    CHECK(static_cast<int>(*reversed.graph->systems[0].outputs[0].sortOrder) ==
+          static_cast<int>(vfx::SortOrder::Ascending));
+
+    const auto youngest = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "sort":{"mode":"youngest","order":"descending"},
+     "outputs":[{"sort":"youngest"}]}]}
+    )json");
+    REQUIRE(youngest.ok());
+    CHECK(static_cast<int>(youngest.graph->systems[0].sort.mode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+    CHECK(static_cast<int>(youngest.graph->systems[0].sort.order) ==
+          static_cast<int>(vfx::SortOrder::Descending));
+    REQUIRE(youngest.graph->systems[0].outputs[0].sort.has_value());
+    CHECK(static_cast<int>(youngest.graph->systems[0].outputs[0].sort->mode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+}
+
+TEST_CASE("vfx asset parses per-output sort criteria") {
+    const auto result = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "sort":{"mode":"distance","order":"ascending"},
+     "outputs":[{"sort":"distance"},{"sort":"youngest"}]}]}
+    )json");
+    REQUIRE(result.ok());
+    const vfx::SystemDesc& system = result.graph->systems[0];
+    REQUIRE(system.outputs.size() == 2u);
+    REQUIRE(system.outputs[0].sort.has_value());
+    REQUIRE(system.outputs[1].sort.has_value());
+    CHECK(static_cast<int>(system.outputs[0].sort->mode) ==
+          static_cast<int>(vfx::SortMode::Distance));
+    CHECK(static_cast<int>(system.outputs[1].sort->mode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+}
+
+TEST_CASE("vfx asset validates output sort priority") {
+    const auto nonInteger = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "outputs":[{"sortPriority":1.5}]}]}
+    )json");
+    CHECK_FALSE(nonInteger.ok());
+    REQUIRE_FALSE(nonInteger.errors.empty());
+    CHECK(nonInteger.errors[0].path == "systems[0].outputs[0].sortPriority");
+
+    const auto tooLarge = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "outputs":[{"sortPriority":2147483648}]}]}
+    )json");
+    CHECK_FALSE(tooLarge.ok());
+    REQUIRE_FALSE(tooLarge.errors.empty());
+    CHECK(tooLarge.errors[0].path == "systems[0].outputs[0].sortPriority");
+}
+
+TEST_CASE("vfx asset validates output sort order") {
+    const auto invalid = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "sort":{"mode":"distance"},
+     "outputs":[{"sort":"distance","sortOrder":"sideways"}]}]}
+    )json");
+    CHECK_FALSE(invalid.ok());
+    REQUIRE_FALSE(invalid.errors.empty());
+    CHECK(invalid.errors[0].path == "systems[0].outputs[0].sortOrder");
+
+    const auto unsorted = parse(R"json(
+    {"version":1,"name":"x","systems":[{"name":"s","capacity":1,
+     "outputs":[{"sortOrder":"descending"}]}]}
+    )json");
+    CHECK_FALSE(unsorted.ok());
+    REQUIRE_FALSE(unsorted.errors.empty());
+    CHECK(unsorted.errors[0].path == "systems[0].outputs[0].sortOrder");
+}
+
+TEST_CASE("vfx asset parses automatic bounds") {
+    constexpr std::string_view json = R"json(
+    {
+      "version": 1,
+      "name": "Auto",
+      "systems": [{
+        "name": "Main",
+        "capacity": 4,
+        "bounds": {"mode": "automatic", "padding": [0.25, 0.5, 0.75]},
+        "outputs": [{"lit": false}]
+      }]
+    }
+    )json";
+    const auto result = parse(json);
+    REQUIRE(result.ok());
+    const vfx::SystemDesc& system = result.graph->systems[0];
+    CHECK(system.bounds.mode == vfx::BoundsMode::Automatic);
+    CHECK(system.bounds.center.x == 0.0f);
+    CHECK(system.bounds.extents.x == 1.0f);
+    CHECK(system.bounds.padding.x == doctest::Approx(0.25f));
+    CHECK(system.bounds.padding.y == doctest::Approx(0.5f));
+    CHECK(system.bounds.padding.z == doctest::Approx(0.75f));
+}
+
+TEST_CASE("vfx asset accepts negative automatic bounds padding") {
+    constexpr std::string_view json = R"json(
+    {
+      "version": 1,
+      "name": "NegativePadding",
+      "systems": [{
+        "name": "Main",
+        "capacity": 4,
+        "bounds": {"mode": "automatic", "padding": [0.0, -0.1, 0.0]},
+        "outputs": [{"lit": false}]
+      }]
+    }
+    )json";
+    const auto result = parse(json);
+    REQUIRE(result.ok());
+    CHECK(result.graph->systems[0].bounds.padding.y == doctest::Approx(-0.1f));
+}
+
+TEST_CASE("vfx asset parses asset culling flags") {
+    std::string json(kValidAsset);
+    json.insert(json.find('{') + 1, R"("culling": "visible",)");
+    const auto result = parse(json);
+    REQUIRE(result.ok());
+    CHECK(result.graph->cullingFlags == (vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+}
+
+TEST_CASE("vfx asset rejects invalid and automatic culling") {
+    std::string invalid(kValidAsset);
+    invalid.insert(invalid.find('{') + 1, R"("culling": "sometimes",)");
+    CHECK_FALSE(parse(invalid).ok());
+
+    std::string automatic(kValidAsset);
+    automatic.insert(automatic.find('{') + 1, R"("culling": "simulation",)");
+    const std::string manualBounds =
+        R"("bounds": {"mode": "manual", "center": [0, 1, 0], "extents": [2, 3, 4]})";
+    const auto bounds = automatic.find(manualBounds);
+    REQUIRE(bounds != std::string::npos);
+    automatic.replace(bounds, manualBounds.size(), R"("bounds": {"mode": "automatic"})");
+    CHECK_FALSE(parse(automatic).ok());
+}
+
+TEST_CASE("vfx asset rejects unknown bounds modes") {
+    constexpr std::string_view json = R"json(
+    {
+      "version": 1,
+      "name": "BadBounds",
+      "systems": [{
+        "name": "Main",
+        "capacity": 4,
+        "bounds": {"mode": "recorded"},
+        "outputs": [{"lit": false}]
+      }]
+    }
+    )json";
+    CHECK_FALSE(parse(json).ok());
+}
+
+TEST_CASE("vfx asset parses the shadow fixture motion gate") {
+    const auto result = vfx::loadGraphFile(std::filesystem::path(VFX_SOURCE_DIR) /
+                                           "tests/assets/shadow_visual.vfx.json");
+    REQUIRE(result.ok());
+    REQUIRE(result.graph->systems.size() == 1u);
+    REQUIRE(result.graph->systems[0].outputs.size() == 1u);
+    CHECK(result.graph->systems[0].outputs[0].castShadows);
+    CHECK_FALSE(result.graph->systems[0].outputs[0].generateMotionVector);
 }
 
 TEST_CASE("vfx asset hash is deterministic") {

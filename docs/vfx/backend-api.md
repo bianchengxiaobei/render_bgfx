@@ -11,7 +11,7 @@
 ```text
 vfx/include/vfx/
 ├─ types.h            Vec2/3/4, Mat4, Bounds, BlendMode, CompareFunc, TextureFormat, UniformType, Limits
-├─ handles.h          BufferHandle/TextureHandle/ProgramHandle/UniformHandle/SamplerHandle
+├─ handles.h          BufferHandle/TextureHandle/ProgramHandle/UniformHandle/SamplerHandle/ReadbackHandle
 ├─ asset.h            Graph JSON 解析（compiler/tool）
 ├─ runtime.h          Runtime/Effect/EffectDesc/Diagnostics；Asset 为 opaque
 ├─ device.h           Device 接口
@@ -70,6 +70,13 @@ public:
     virtual void destroyBuffer(BufferHandle) = 0;
     virtual bool updateBuffer(BufferHandle, std::span<const std::byte> data, uint32_t offset = 0) = 0;
 
+    // Async GPU -> CPU readback; the implementation owns the staging storage
+    // until copyReadback/releaseReadback, so Effect destruction cannot dangle.
+    virtual ReadbackHandle readBufferAsync(BufferHandle, uint32_t size) = 0;
+    virtual bool readbackReady(ReadbackHandle) const = 0;
+    virtual bool copyReadback(ReadbackHandle, std::span<std::byte> data) const = 0;
+    virtual void releaseReadback(ReadbackHandle) = 0;
+
     virtual TextureHandle createTexture(const TextureDesc&) = 0;
     virtual void destroyTexture(TextureHandle) = 0;
     virtual bool updateTexture(TextureHandle, std::span<const std::byte> data, uint32_t rowPitch) = 0;
@@ -92,6 +99,7 @@ public:
 - `StorageVertex` 用于 attribute buffer（CS 写、VS 读）。
 - `Storage`/`StorageVertex` 的 `initialData` 仅作为只读初始内容（`BGFX_BUFFER_COMPUTE_READ`）；需要 GPU 写的 buffer 不带 `initialData`，由 dispatch 初始化。
 - `Limits`：`maxTextureSamplers`、`maxComputeBindings`；V1 要求 ≥16（hdrp-bgfx 当前为 16）。
+- `readBufferAsync` 用于 automatic bounds：runtime 请求 24B，Hbg 用 `bgfx::read` 排队并用 sentinel 轮询，`copyReadback` 只在 ready 后读 backend-owned staging；effect 销毁时只 `releaseReadback`，不持有 GPU readback 指针。D3D11/Vulkan `hbg_vfx_reference_auto_bounds` 覆盖真实 readback；单测里的 D3D11 headless 初始化因无 window/backbuffer 会跳过。V3.5 的 `bounds.padding` 是 CPU 侧扩展，不需要新的 Device API。
 
 ## 3. CommandSink（命令记录）
 
@@ -192,6 +200,7 @@ struct EffectDesc {
     bool playOnAwake = true;
     float playRate = 1.0f;
     uint32_t randomSeed = 0;
+    uint32_t instanceBatchLimit = 0; // V3.22/V3.23/V3.24: 0 = one full active/shadow batch
     bool hasBoundsOverride = false;
     Bounds boundsOverride{};
 };
@@ -214,6 +223,9 @@ public:
     virtual void reset() = 0;
     virtual void advanceOneFrame() = 0; // 暂停时推进固定 1/60s 仿真；输出保持可绘制
     virtual void setTransform(const Mat4& world) = 0;
+    virtual void setInstanceTransforms(std::span<const Mat4> worlds) = 0; // V3.15/V3.17/V3.18/V3.19/V3.22/V3.23/V3.24: one simulation, active/shadow split batch, or per-instance draws
+    virtual void setCulled(bool culled) = 0;
+    virtual void setInstanceCulled(std::size_t index, bool culled) = 0;
     virtual void setPlayRate(float) = 0;
     virtual bool isAlive() const = 0;
 
@@ -228,7 +240,14 @@ public:
     virtual void sendEvent(std::string_view name, std::span<const EventAttribute> = {}) = 0;
 
     virtual Bounds bounds() const = 0;
+    virtual Bounds visibleBounds() const = 0;
+    virtual Bounds instanceBounds(std::size_t index) const = 0;
+    virtual std::size_t instanceCount() const = 0;
+    virtual bool supportsEffectInstancing() const = 0;
     virtual bool isCulled() const = 0;
+    virtual bool isInstanceCulled(std::size_t index) const = 0; // V3.24: per-instance frustum state
+    virtual std::uint32_t outputBatchCount() const = 0;        // V3.24: active batch count, 1 = effect-level
+    virtual std::uint32_t outputBatchSize() const = 0;         // V3.24: active instances per batch
 };
 
 class Runtime {
@@ -244,9 +263,15 @@ public:
 
     void update(float deltaSeconds);
     void encodeSimulation(CommandSink&, const FrameContext&);
+    void beginOutputFrame();
     void encodeOutput(CommandSink&, const FrameContext&);
+    void encodeOutputEffect(CommandSink&, const FrameContext&, Effect&);
+    void encodeOutputEffectBatch(CommandSink&, const FrameContext&, Effect&, std::uint32_t batchIndex);
+    void encodeMotionVectors(CommandSink&, const FrameContext&);
+    void encodeShadow(CommandSink&, const Mat4& shadowViewProjection);
 
     void setErrorCallback(std::function<void(std::string_view)>);
+    bool hasShadowOutputs() const;
     Diagnostics diagnostics() const;
 };
 
@@ -257,7 +282,12 @@ public:
 - `loadAsset(path)`：读取并校验 `.vfxb` bytes；不依赖 compiler target。
 - `update(dt)`：clamp dt、推进 spawner/事件、更新 bounds；不产生 GPU 命令。
 - `encodeSimulation`：按 system 依赖顺序 dispatch；内部 `beginPass({name, simulation=true, ...})`。
+- `beginOutputFrame` / `encodeOutputEffect`：V3.16 additive API。renderer 可以按 effect 分批插入 transparent pass：先 begin 一次清空 output diagnostics/timing，再对每个 effect 调 encodeOutputEffect；`encodeOutput` 仍保留完整批次入口。
 - `encodeOutput`：按输出排序提交 indirect draw；内部 `beginPass({name, simulation=false, ...})`。
+- `encodeMotionVectors`：V3.0 additive API；在 host 已绑定 RG16F/RGBA16F motion-vector target 和 scene depth 后，按 output 提交同一 indirect draw，复用 `oldPosition` 计算当前/上一帧 clip 并写 `currentNDC - previousNDC`。V3.2 对 `AssetProgram::generateMotionVector == false` 的 output 直接跳过；缺省/旧资产为 true。V3.3 由 runtime 保存每帧 effect transform 历史，local system 额外上传 `u_vfx_prevWorld` 给 motion VS；world system 仍绑定 identity。需要 `ShadingProvider::resolveProgram({"vfx.motionVectors"})` 提供固定 program；不可用时静默 no-op。调用方应像 `encodeOutput` 一样用独立 graph pass 绑定目标，并在需要 TAA/motion blur 时排在 output 后。
+- `FrameContext::prevViewProjection` 与 `viewProjection` 已足够描述相机历史；V3.3 的 effect 历史不新增 FrameContext 字段或公开 API。`encodeMotionVectors` 增加的 draw 会计入 `Diagnostics::draws`，耗时累加进 `outputMs`。
+- `encodeShadow`：V3.1 additive API；host 已在 shadow atlas viewport 中设置 view transform/framebuffer/depth bias 后传入该 request 的 `viewProj`。runtime 只对 `castShadows` output 提交 indirect draw，需 `resolveProgram({"vfx.shadow"})`；固定 shader 用 camera billboard、当前 `u_vfx_world` 和 shadow VP 写 depth，透明 output 用 `s_vfxMain` alpha 裁剪。draw 数计入 `Diagnostics::shadowDraws`，不改变 color output。
+- `hasShadowOutputs()`：是否存在任一 output 的 `castShadows`；renderer 用它禁用 static shadow cache，避免粒子上一帧的 shadow 被缓存复用。
 - `setProperty` 的 Curve/Gradient 会立即重新生成并上传按类型打包的 LUT 纹理（`Device::updateTexture`）；V1 允许在播放中修改。compute shader 在 stage 9/10 采样，`setCurve/setGradient` 重传整张 256×N 类型纹理。
 - `PropertyValue` 中的 `std::span` 只在调用期间有效；库会立即拷贝控制点，不保留调用方内存。
 - GPU 事件已在 V1.2.3 接入，CPU 事件在 V1.2.4 接入：runtime 创建全局 `vfx.events` Storage buffer 与 `vfx.cpu.events` staging；event copy/prefix/reset program 不进入 system kernel。`sendEvent` 按 CPU link 入队，缺省属性使用 consumer 默认值，类型错误通过 error callback 报告。
@@ -268,7 +298,7 @@ public:
 - `Diagnostics::particles` 是 CPU spawn 估算，不是 GPU dead list 读回；`draws`/`dispatches`/`sortPasses` 为最近一次 encode 计数；`eventCount` 在 V1.2.3/4/V1.4.4 记录事件链数量；GPU/CPU 精确事件数需读 event buffer，V1 仅在 reference 测试路径读回。V1.0b.8 的 `--vfx-reference` 测试路径会实际读回 GPU deadList，但不回写交互 diagnostics。
 - `Device` 没有 uniform/sampler 销毁接口；runtime 创建的名称缓存由适配层 `HbgVfxBackend` 持有，随 backend 析构释放。buffer/program/texture 由 runtime/Effect 释放。
 - 输出 pass 由 runtime 设置 `u_vfx_world`：local system 用 effect transform，world system 用 identity；global camera uniforms 来自 `FrameContext`。
-- `Effect::isCulled()` 在 V1.0b.6 恒为 false；相机/包围盒剔除在 V1.0b.7 集成。
+- V3.6：`Effect::setCulled(bool)` 由 host renderer 按相机 frustum 与 `Effect::bounds()` 设置；`isCulled()` 返回当前状态。asset 的 `culling` flags 为非零时，`CullSimulation` 会暂停 `update()` 时间/spawn 与 `encodeSimulation()` dispatch；culled effect 的 `encodeOutput()`/`encodeMotionVectors()` 不提交 draw。`encodeShadow()` 不读取该相机 culling 状态，shadow request 继续独立绘制。默认 flags=0 时只跳过不可见 output/MV draw，仿真继续。V3.7 的 `AssetProgram::sortPriority` 仅决定同一 effect 的 output 提交顺序；color/MV/shadow encode 共用稳定排序后的 output 列表，不影响 simulation/events。V3.8 的 `cameraDepth` 排序需要 `FrameContext::view`/`cameraPosition`/`cameraForward` 一致；runtime 用 `inverse(view)` 上传 `u_global_invView`，`youngest` 只读取粒子 `age` 属性。V3.9 的 `AssetProgram::sortOrder` 是 effective output order；与 system order 不同时 color VS 反向读取 indirection，MV/shadow 通过 `u_vfxMotionParams.z`/`u_vfxShadowParams.w` 反向，`RenderCount` 同时可用于 vertex stage。V3.10 的 `AssetProgram::sortMode` 是 effective output criterion；criterion 与 system 不同时，runtime 在 color/MV/shadow draw 前按需 dispatch `SortReset`(task 16) + 额外 output update/sort/fillIndirect；有 extra pipeline 的 system 使用 `u_vfxSortWorld`/`u_vfxSortCameraPos`/`u_vfxSortInvView`，避免与 raster pass 的 `u_global_*` 冲突。V3.11 的 output draw 仍由 `drawIndirect` 提交一次：args 的 `numVertices=6*min(count, 2048)`、`numInstances=ceil(count/2048)`；output/MV/shadow VS 固定绑定 stage 14 `RenderCount`，用 `gl_InstanceID*2048` 选择切片并对 partial tail 输出退化顶点。V3.12 为额外 criterion 增加 runtime-only sorted indirection；V3.14 再为每个额外 criterion 增加独立 KVP/RenderCount/indirect args，`SortBufferSet` 同时选择 stage 13 indirection、stage 14 count 和 draw args，base 与 extra state 不再互相覆写。V3.15 增加 additive `Effect::setInstanceTransforms`/`setInstanceCulled`、`instanceBounds`/`instanceCount`/`supportsEffectInstancing`：同一 `Effect` 可承载多个 scene instance，simulation 只跑一次，color/MV/shadow 逐 instance 写 transform 并 draw；仅 local-space 且 output sort 为 `none`/`youngest` 时可用。host 通过 `PipelineSettings::supportVFXInstancing` / `--vfx-instancing` 启用，默认关闭。V3.16 增加 `PipelineSettings::supportVFXTransparentSort` / `--vfx-transparent-sort`：renderer 以 effect bounds 中心生成透明键，把每个 effect 的 VFX pass 插入 sliced transparent DrawList；默认仍由单个 VFX pass 在 transparent 前绘制。V3.17 在 V3.15 分组且全部 instance 可见时，把每个 output 的 color/MV/shadow draw 合并为一次 indirect draw：`fill_indirect` 的 `numInstances = particleChunks * effectInstances`，`u_vfxInstanceParams.x` 传 effect instance 数，stage 15 的 `vfx.instance.transforms` 保存每 instance current/previous `Mat4`；任一 instance culled 或 N=1 时回退逐 instance draw。N=1 仍绑定 attributes buffer 到 stage 15 作为 descriptor fallback。V3.18 在 stage 15 的 transform slot 后追加 active instance 列表，`u_vfxInstanceParams` 扩展为 `{totalInstances, activeInstances, activeBase, activeIndirection}`：部分 instance 可见且可见数 >1 时 color/MV 仍用一个 batch draw，shader 只让 active slot 产生顶点；shadow 使用 totalInstances 且不读 active 列表。可见数 =1 保留逐 instance fallback，0 时跳过 color/MV。V3.19 为每个 system/sort list 懒创建 `.active.indirect` args buffer：`0 < active < total` 时在 `ensureOutputSort()` 后用 `fill_indirect` 写入 `numInstances = particleChunks * activeInstances`，color/MV 改用 active args；full batch 继续使用 simulation 生成的 total args，shadow 始终使用 total args。visible=1 也使用 active=1 args，避免按 total instance 重复提交。V3.20 在 automatic-bounds system 的 simulation 中额外上传 `u_vfxBoundsParams={1,0,0,0}` 与 `u_vfxBoundsRight/Up`（来自 `FrameContext::cameraRight/Up`），bounds kernel 用 angle/scale 计算 tight billboard AABB；非 automatic system 不设置这些 uniform。bounds readback、padding 与 host culling 接口不变。V3.21 增加 `Effect::visibleBounds()`：只合并未 cull 且有效的 `instanceBounds(i)`，`bounds()` 仍返回全量并集；`ForwardRenderer` 的 V3.16 effect-level 透明排序中心改用 visible bounds，全部 cull 或 bounds 无效时回退 primary instance position。V3.22 增加 `EffectDesc::instanceBatchLimit`（0 = 不切分）与 `PipelineSettings::vfxInstanceBatchSize` / `--vfx-instance-batch=<n>`：active instance 按固定大小切成连续 batch，每个 batch 懒创建 `.active.indirect[.N]` args，`u_vfxInstanceParams` 用 `activeBase + batchOffset` 映射 active list；color/MV 每个 batch 一次 `drawIndirect`，shader 源码不变。shadow 继续 total-sized batch，不读 active list。V3.22 没有 instance/property/texture split、prefix-sum variable-size batch、独立 active→batch buffer 或 GPU cull compaction。V3.23 把同一 `instanceBatchLimit` 扩展到 shadow：按 total instance 的连续 batch 懒创建 `.shadow.indirect[.N]`，`u_vfxInstanceParams` 用 `{totalInstances, localInstances, batchOffset, 0}`，shadow VS 在 batch-local instance index 上叠加 `batchOffset`；shadow 仍绘制全部 instance、不读 active list。`instanceBatchLimit` 只在创建 effect 时读取，运行期修改需重建 effect。V3.24 增加 `Effect::isInstanceCulled(index)`/`outputBatchCount()`/`outputBatchSize()` 与 `Runtime::encodeOutputEffectBatch()`：启用 `--vfx-transparent-sort` 且 `--vfx-instance-batch>0` 时，renderer 按 active instance batch 生成独立透明 key，每个 batch 使用自己的 `.active.indirect[.N]` args、union bounds 中心和 VFX output pass；`0` 仍保持 V3.16 effect-level 单 key，`n=1` 即逐 instance interleave。MV 和 shadow 不随透明 batch 拆分。
 
 ## 6. 编译器 API（编辑器/工具）
 
@@ -355,7 +385,9 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
 | `CommandSink::drawIndirect` | `gfx::Encoder::submitIndirect` |
 | `CommandSink::setState` | `bgfx::setState` 封装（现有 `gfx::state` 可扩展） |
 | `ShadingProvider::bindLighting` | 复用 `ForwardRenderer` 的 `PassUniforms`/`GlobalUniforms`/`ObjectUniforms`/光照 stage 绑定 |
-| `FrameContext` | `ViewState` + `RenderScene` 相机 + 当前 `resources.depth` |
+| `ShadingProvider::resolveProgram("vfx.motionVectors")` | V3.0 `HbgVfxBackend` 按当前 backend 懒加载 `shaders/build/{dxbc,spirv}/vfx_motion_vectors.{vs,fs}.bin`；program 由 backend 持有 |
+| `ShadingProvider::resolveProgram("vfx.shadow")` | V3.1 `HbgVfxBackend` 懒加载 `shaders/build/{dxbc,spirv}/vfx_shadow.{vs,fs}.bin`；program 由 backend 持有 |
+| `FrameContext` | `ViewState` + `RenderScene` 相机 + 当前 `resources.depth`；`prevViewProjection` 供粒子 MV |
 
 ## 9. 错误、诊断、生命周期
 
@@ -379,7 +411,7 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
       float totalMs = 0.0f;
   };
   ```
-- `encodeMs = simulationMs + outputMs`，`totalMs = updateMs + encodeMs`；`Runtime::update` 每帧重置 phase 计时。`eventCount` 仍是事件链数量，精确 GPU 计数由 reference 读回，默认帧循环不做同步读回。
+- `encodeMs = simulationMs + outputMs`，`totalMs = updateMs + encodeMs`；`Runtime::update` 每帧重置 phase 计时；`shadowDraws` 由 `encodeShadow` 累加，`draws` 只统计 color/MV draw。`eventCount` 仍是事件链数量，精确 GPU 计数由 reference 读回，默认帧循环不做同步读回。
 - `EffectImpl` 在创建资源前校验 capacity、当前后端 shader blob 和 binding stage 上限；失败时返回空 effect 且回收未引用 asset。
 - 资源：`Runtime` 只销毁自己创建的 buffer/texture/program；外部纹理（engine 绑定）不销毁。
 - 适配层 `ResourceManager` 负责两帧延迟销毁；`Runtime` 在 `destroyEffect` 时释放自己持有的句柄。
@@ -424,7 +456,8 @@ out.setRenderFunc([&](RenderGraphContext& ctx) {
 
 ## 12. V2 编辑器文档 API（不属于 renderer 契约）
 
-- `vfx/include/vfx/editor.h`：`Document::load/save`、system/output/block/property typed setter、结构 add/remove/move、block 参数、Curve/Gradient、undo/redo、layout sidecar、`ParseError`、`defaultBinaryPath()`、`errorFocus()`；不暴露 nlohmann、ImGui、bgfx。
+- `vfx/include/vfx/editor.h`：`Document::load/save`、system/output/block/property typed setter、结构 add/remove/move、block 参数、Curve/Gradient、undo/redo、layout sidecar、`ParseError`、`defaultBinaryPath()`、`defaultRecoveryPath()`、`errorFocus()`；V2.2b 增加 `copyBlock/pasteBlock/duplicateBlock`、`copyProperty/pasteProperty/duplicateProperty`、`duplicateSystem/duplicateOutput`、`addSubgraphBlock/subgraphNames`、`blockParameterJson/setBlockParameterJson`、`saveRecovery/loadRecovery/clearRecovery`；不暴露 nlohmann、ImGui、bgfx。
+- `vfx/include/vfx/asset.h`：`parseGraphJson(json, source, GraphParseMode)`；默认 `FlattenSubgraphs` 保持 compiler/runtime/V1 语义，编辑器用 `PreserveSubgraphs` 保留 raw subgraph invocation。该参数是 additive API，不改变 `.vfxb` binary。
 - `vfx/src/editor/document.cpp`：编辑原始 `.vfx.json`（`ordered_json`），每次修改后重新 `parseGraphJson()`；失败恢复旧 JSON；snapshot undo/redo 只保存图/脏标记，布局仍由 sidecar 管理。`errorFocus()` 将 `systems[i].{init,update}.blocks[j]` / `outputs[j]` / `properties[j]` 映射为选择目标。
 - layout sidecar `<asset>.editor.json` 只由编辑器读写；`vfxbake`、runtime、graph hash 和 `.vfxb` 都不包含它。`defaultBinaryPath()` 与 `vfxbake` 使用同一 `.vfx.json` → `.vfxb` 规则。
 - `src/app/vfx_editor_ui.cpp` 是 app 层 ImGui 消费者，复用 DebugUI context；不是 runtime 依赖。`HBG_BUILD_VFX=OFF` 时由 `vfx_editor_ui_stub.cpp` 提供明确失败。block 默认参数来自 `vfx/src/core/block_catalog.{h,cpp}`，与 V1 parser 共用 field 表。

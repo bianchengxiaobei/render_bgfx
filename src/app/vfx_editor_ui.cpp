@@ -1,4 +1,4 @@
-﻿#include "app/vfx_editor_ui.h"
+#include "app/vfx_editor_ui.h"
 
 #include "core/log.h"
 #include "vfx/compiler.h"
@@ -27,9 +27,13 @@ namespace hbg {
 namespace {
 
 using vfx::BlendMode;
+using vfx::BoundsMode;
+using vfx::kCullBoundsUpdate;
+using vfx::kCullSimulation;
 using vfx::PropertyType;
 using vfx::SortMode;
 using vfx::SortOrder;
+using vfx::SystemDesc;
 using vfx::SystemSpace;
 using vfx::editor::ContextKind;
 using vfx::editor::ContextRef;
@@ -224,9 +228,19 @@ struct VfxEditorUI::Impl {
     std::unique_ptr<vfx::editor::Document> document;
     Selection selection;
     std::string status;
+    std::filesystem::path recoveryPath;
+    bool recoveryAvailable = false;
+    bool recoveryPrompted = false;
+    bool closeRequested = false;
+    bool closeApproved = false;
+    std::string closeError;
+    std::chrono::steady_clock::time_point lastRecoveryWrite{};
     std::array<char, 128> newPropertyName{};
     int newPropertyType = 0;
     std::string blockTypeChoice;
+    std::string subgraphChoice;
+    std::string clipboardBlock;
+    std::string clipboardProperty;
     std::uint32_t nameSystem = vfx::editor::kAppend;
     std::string nameBuffer;
     std::unordered_map<std::string, std::string> textEdits;
@@ -346,6 +360,292 @@ struct VfxEditorUI::Impl {
         resetTextEdits();
         clampSelection();
         status = "redo";
+    }
+
+    bool blockPasteTarget(ContextRef& target, std::uint32_t& index) const {
+        if (selection.kind == SelectionKind::Block) {
+            target = selection.context;
+            index = selection.block + 1;
+            return true;
+        }
+        if (selection.kind == SelectionKind::Context &&
+            (selection.context.kind == ContextKind::Init || selection.context.kind == ContextKind::Update)) {
+            target = selection.context;
+            index = vfx::editor::kAppend;
+            return true;
+        }
+        return false;
+    }
+
+    void copySelection() {
+        if (selection.kind == SelectionKind::Block) {
+            if (document->copyBlock(selection.context.system, selection.context.kind, selection.block,
+                                    clipboardBlock)) {
+                status = "block copied";
+            } else {
+                status = "copy failed: block is no longer available";
+            }
+            return;
+        }
+        if (selection.kind == SelectionKind::Property) {
+            if (document->copyProperty(selection.property, clipboardProperty)) {
+                status = "property copied";
+            } else {
+                status = "copy failed: property is no longer available";
+            }
+            return;
+        }
+        status = "select an init/update block or a property to copy";
+    }
+
+    void pastePropertySelection() {
+        if (clipboardProperty.empty()) {
+            status = "property clipboard is empty";
+            return;
+        }
+        std::string inserted;
+        if (!document->pasteProperty(clipboardProperty, inserted)) {
+            status = "paste property failed: " + document->lastError();
+            return;
+        }
+        selection = Selection{};
+        selection.kind = SelectionKind::Property;
+        selection.property = inserted;
+        resetTextEdits();
+        status = "property pasted as '" + inserted + "'";
+    }
+
+    void pasteSelection() {
+        ContextRef target;
+        std::uint32_t index = vfx::editor::kAppend;
+        if (blockPasteTarget(target, index)) {
+            if (clipboardBlock.empty()) {
+                status = clipboardProperty.empty()
+                             ? "clipboard is empty"
+                             : "property clipboard cannot be pasted into a block context";
+                return;
+            }
+            std::uint32_t inserted = 0;
+            if (!document->pasteBlock(target.system, target.kind, index, clipboardBlock, inserted)) {
+                status = "paste failed: " + document->lastError();
+                return;
+            }
+            selection = Selection{};
+            selection.kind = SelectionKind::Block;
+            selection.context = ContextRef{target.system, target.kind, 0};
+            selection.block = inserted;
+            resetTextEdits();
+            status = "block pasted";
+            return;
+        }
+        if (selection.kind == SelectionKind::Property ||
+            (selection.kind == SelectionKind::None && !clipboardProperty.empty())) {
+            pastePropertySelection();
+            return;
+        }
+        if (selection.kind == SelectionKind::None && !clipboardBlock.empty()) {
+            status = "select an init/update context or block to paste";
+            return;
+        }
+        status = "select an init/update context, block, property or the blackboard to paste";
+    }
+
+    void duplicateSelection() {
+        if (selection.kind == SelectionKind::Block) {
+            std::uint32_t duplicated = 0;
+            if (!document->duplicateBlock(selection.context.system, selection.context.kind, selection.block,
+                                          duplicated)) {
+                status = "duplicate failed: " + document->lastError();
+                return;
+            }
+            selection.block = duplicated;
+            resetTextEdits();
+            status = "block duplicated";
+            return;
+        }
+        if (selection.kind == SelectionKind::Property) {
+            std::string duplicated;
+            if (!document->duplicateProperty(selection.property, duplicated)) {
+                status = "duplicate failed: " + document->lastError();
+                return;
+            }
+            selection.property = duplicated;
+            resetTextEdits();
+            status = "property duplicated as '" + duplicated + "'";
+            return;
+        }
+        if (selection.kind == SelectionKind::Context) {
+            if (selection.context.kind == ContextKind::Output) {
+                std::uint32_t duplicated = 0;
+                if (!document->duplicateOutput(selection.context.system, selection.context.output, duplicated)) {
+                    status = "duplicate failed: " + document->lastError();
+                    return;
+                }
+                selection.context.output = duplicated;
+                resetTextEdits();
+                status = "output duplicated";
+                return;
+            }
+            std::uint32_t duplicated = 0;
+            if (!document->duplicateSystem(selection.context.system, duplicated)) {
+                status = "duplicate failed: " + document->lastError();
+                return;
+            }
+            selection.context.system = duplicated;
+            resetTextEdits();
+            status = "system duplicated";
+            return;
+        }
+        status = "select a context, block or property to duplicate";
+    }
+
+    void drawJsonParameter(const std::string& name, const std::string& key, const ContextRef& context,
+                           const vfx::Value& value) {
+        std::string json;
+        if (!document->blockParameterJson(context.system, context.kind, selection.block, name, json)) {
+            ImGui::TextWrapped("%s: %s", name.c_str(), formatValue(value).c_str());
+            return;
+        }
+        ImGui::TextUnformatted(name.c_str());
+        std::string committed;
+        const std::string jsonKey = key + ".json";
+        if (textField("##json", jsonKey, json, committed, 0, true)) {
+            if (!document->setBlockParameterJson(context.system, context.kind, selection.block, name,
+                                                 committed)) {
+                textEdits[jsonKey] = json;
+                status = "JSON parameter failed: " + document->lastError();
+            }
+        }
+    }
+
+    void drawRecoveryPopup() {
+        if (!recoveryAvailable) {
+            return;
+        }
+        if (!recoveryPrompted) {
+            ImGui::OpenPopup("Recover unsaved changes?");
+            recoveryPrompted = true;
+        }
+        if (ImGui::BeginPopupModal("Recover unsaved changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("A recovery snapshot for this graph was found:");
+            ImGui::TextDisabled("%s", recoveryPath.string().c_str());
+            ImGui::Separator();
+            if (ImGui::Button("Recover", ImVec2(120.0f, 0.0f))) {
+                std::string error;
+                if (document->loadRecovery(error)) {
+                    recoveryAvailable = false;
+                    lastRecoveryWrite = std::chrono::steady_clock::now();
+                    selection = Selection{};
+                    selection.kind = SelectionKind::Context;
+                    selection.context = ContextRef{0, ContextKind::Update, 0};
+                    resetTextEdits();
+                    status = "recovered unsaved changes; save to overwrite the graph";
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    status = "recovery load failed: " + error;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Discard", ImVec2(120.0f, 0.0f))) {
+                document->clearRecovery();
+                recoveryAvailable = false;
+                lastRecoveryWrite = {};
+                status = "recovery discarded";
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    void drawClosePopupHost() {
+        if (!closeRequested || closeApproved) {
+            return;
+        }
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(ImVec2(1.0f, 1.0f));
+        ImGui::Begin("##vfx_close_host", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs |
+                         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        drawClosePopup();
+        ImGui::End();
+    }
+
+    void drawClosePopup() {
+        if (!closeRequested || closeApproved) {
+            return;
+        }
+        constexpr const char* kPopup = "Unsaved VFX changes";
+        if (!ImGui::IsPopupOpen(kPopup)) {
+            ImGui::OpenPopup(kPopup);
+        }
+        const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal(kPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            const std::string assetPath = document->assetPath().string();
+            ImGui::TextWrapped("Do you want to save the changes you made to the VFX graph and layout?");
+            ImGui::TextDisabled("%s", assetPath.c_str());
+            ImGui::TextWrapped("Your changes will be lost if you don't save them.");
+            ImGui::Separator();
+            if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
+                std::string error;
+                if (saveAll(error)) {
+                    closeError.clear();
+                    closeRequested = false;
+                    closeApproved = true;
+                    status = "saved graph and layout";
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    closeError = "save failed: " + error;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                closeError.clear();
+                closeRequested = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Discard Changes", ImVec2(140.0f, 0.0f))) {
+                document->clearRecovery();
+                closeError.clear();
+                closeRequested = false;
+                closeApproved = true;
+                status = "discarded unsaved changes";
+                ImGui::CloseCurrentPopup();
+            }
+            if (!closeError.empty()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", closeError.c_str());
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    void updateRecovery() {
+        if (!document || recoveryAvailable || closeApproved) {
+            return;
+        }
+        if (!dirty()) {
+            if (lastRecoveryWrite != std::chrono::steady_clock::time_point{}) {
+                document->clearRecovery();
+                lastRecoveryWrite = {};
+            }
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (lastRecoveryWrite != std::chrono::steady_clock::time_point{} &&
+            now - lastRecoveryWrite < std::chrono::seconds(2)) {
+            return;
+        }
+        std::string error;
+        if (document->saveRecovery(error)) {
+            lastRecoveryWrite = now;
+            HBG_LOGD("VFX editor recovery saved: {}", document->recoveryPath().string());
+        } else {
+            lastRecoveryWrite = now;
+            status = "recovery save failed: " + error;
+        }
     }
 
     bool saveAll(std::string& error) {
@@ -707,6 +1007,8 @@ struct VfxEditorUI::Impl {
         }
         drawGraphWindow();
         drawInspectorWindow();
+        updateRecovery();
+        drawClosePopupHost();
     }
 
     void drawGraphWindow() {
@@ -740,6 +1042,18 @@ struct VfxEditorUI::Impl {
             redoEdit();
         }
         ImGui::SameLine();
+        if (ImGui::Button("Copy")) {
+            copySelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Paste")) {
+            pasteSelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            duplicateSelection();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Add System")) {
             if (document->addSystem()) {
                 clampSelection();
@@ -769,7 +1083,7 @@ struct VfxEditorUI::Impl {
             ImGui::TextDisabled("%s", status.c_str());
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("  MMB/right pan, wheel zoom, double-click header collapse");
+        ImGui::TextDisabled("  MMB/right pan, wheel zoom, Ctrl+C/V/D");
 
         const ImGuiIO& io = ImGui::GetIO();
         if (!io.WantTextInput && io.KeyCtrl) {
@@ -783,8 +1097,15 @@ struct VfxEditorUI::Impl {
                 redoEdit();
             } else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
                 saveGraph(true);
+            } else if (ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+                copySelection();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_V, false)) {
+                pasteSelection();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_D, false)) {
+                duplicateSelection();
             }
         }
+        drawRecoveryPopup();
     }
 
     void drawCanvas(ImVec2, ImVec2) {
@@ -929,8 +1250,14 @@ struct VfxEditorUI::Impl {
                     rows.emplace_back(std::string("type quad  blend ") + blend);
                     rows.emplace_back(output.lit ? "lit" : "unlit");
                     rows.emplace_back("soft " + std::string(output.softParticles ? "on" : "off"));
+                    rows.emplace_back("shadows " + std::string(output.castShadows ? "on" : "off"));
+                    rows.emplace_back("motion " +
+                                      std::string(output.generateMotionVector ? "on" : "off"));
                     rows.emplace_back("texture " +
                                       std::string(output.texture.empty() ? "(white)" : output.texture.c_str()));
+                    if (output.sortPriority != 0) {
+                        rows.emplace_back("order " + std::to_string(output.sortPriority));
+                    }
                 }
             }
             const float bodyHeight = node.collapsed ? 0.0f : padding * 2.0f + rowHeight * rows.size();
@@ -1067,8 +1394,14 @@ struct VfxEditorUI::Impl {
                 return output.lit ? "lit" : "unlit";
             case 2:
                 return output.softParticles ? "soft on" : "soft off";
-            default:
+            case 3:
+                return output.castShadows ? "shadows on" : "shadows off";
+            case 4:
+                return output.generateMotionVector ? "motion on" : "motion off";
+            case 5:
                 return "texture " + std::string(output.texture.empty() ? "(white)" : output.texture.c_str());
+            default:
+                return "order " + std::to_string(output.sortPriority);
             }
         }
         return {};
@@ -1233,6 +1566,9 @@ struct VfxEditorUI::Impl {
                     status = "add property failed: " + document->lastError();
                 }
             }
+            if (!clipboardProperty.empty() && ImGui::Button("Paste Property")) {
+                pastePropertySelection();
+            }
         }
     }
 
@@ -1287,6 +1623,10 @@ struct VfxEditorUI::Impl {
                 return;
             }
         }
+        if (ImGui::Button("Duplicate System")) {
+            duplicateSelection();
+            return;
+        }
         ImGui::TextDisabled("Context: %s", contextLabel(selection.context.kind));
 
         int capacity = static_cast<int>(std::min<std::uint32_t>(
@@ -1298,13 +1638,26 @@ struct VfxEditorUI::Impl {
         if (ImGui::Combo("Space", &space, "World\0Local\0")) {
             document->setSystemSpace(selection.context.system, space == 1 ? SystemSpace::Local : SystemSpace::World);
         }
-        int sortMode = system.sort.mode == SortMode::Distance ? 1 : system.sort.mode == SortMode::Custom ? 2 : 0;
-        if (ImGui::Combo("Sort", &sortMode, "None\0Distance\0Custom\0")) {
-            document->setSystemSort(selection.context.system,
-                                    sortMode == 1   ? SortMode::Distance
-                                    : sortMode == 2 ? SortMode::Custom
-                                                    : SortMode::None,
-                                    system.sort.order);
+        int sortMode = static_cast<int>(system.sort.mode);
+        if (ImGui::Combo("Sort", &sortMode, "None\0Distance\0Custom\0Camera depth\0Youngest in front\0")) {
+            SortMode mode = SortMode::None;
+            switch (sortMode) {
+            case 1:
+                mode = SortMode::Distance;
+                break;
+            case 2:
+                mode = SortMode::Custom;
+                break;
+            case 3:
+                mode = SortMode::CameraDepth;
+                break;
+            case 4:
+                mode = SortMode::YoungestInFront;
+                break;
+            default:
+                break;
+            }
+            document->setSystemSort(selection.context.system, mode, system.sort.order);
         }
         if (system.sort.mode != SortMode::None) {
             int order = system.sort.order == SortOrder::Descending ? 1 : 0;
@@ -1314,16 +1667,59 @@ struct VfxEditorUI::Impl {
             }
         }
 
-        float center[3] = {system.bounds.center.x, system.bounds.center.y, system.bounds.center.z};
-        float extents[3] = {system.bounds.extents.x, system.bounds.extents.y, system.bounds.extents.z};
-        bool boundsChanged = false;
-        boundsChanged = ImGui::DragFloat3("Bounds center", center, 0.1f, 0.0f, 0.0f, "%.3f") || boundsChanged;
-        boundsChanged = ImGui::DragFloat3("Bounds extents", extents, 0.1f, 0.001f, std::numeric_limits<float>::max(),
-                                          "%.3f", ImGuiSliderFlags_AlwaysClamp) ||
-                        boundsChanged;
-        if (boundsChanged) {
-            document->setSystemBounds(selection.context.system, {center[0], center[1], center[2]},
-                                      {extents[0], extents[1], extents[2]});
+        int boundsMode = system.bounds.mode == vfx::BoundsMode::Automatic ? 1 : 0;
+        if (ImGui::Combo("Bounds mode", &boundsMode, "Manual\0Automatic\0")) {
+            document->setSystemBoundsMode(selection.context.system,
+                                          boundsMode == 1 ? vfx::BoundsMode::Automatic
+                                                          : vfx::BoundsMode::Manual);
+        }
+        if (system.bounds.mode == vfx::BoundsMode::Automatic) {
+            ImGui::TextDisabled("Computed from alive particles on the GPU (readback lags a few frames).");
+            float padding[3] = {system.bounds.padding.x, system.bounds.padding.y,
+                                system.bounds.padding.z};
+            if (ImGui::DragFloat3("Bounds padding", padding, 0.01f,
+                                  -std::numeric_limits<float>::max(),
+                                  std::numeric_limits<float>::max(), "%.3f",
+                                  ImGuiSliderFlags_AlwaysClamp)) {
+                document->setSystemBoundsPadding(selection.context.system,
+                                                 {padding[0], padding[1], padding[2]});
+            }
+        } else {
+            float center[3] = {system.bounds.center.x, system.bounds.center.y, system.bounds.center.z};
+            float extents[3] = {system.bounds.extents.x, system.bounds.extents.y, system.bounds.extents.z};
+            bool boundsChanged = false;
+            boundsChanged =
+                ImGui::DragFloat3("Bounds center", center, 0.1f, 0.0f, 0.0f, "%.3f") || boundsChanged;
+            boundsChanged = ImGui::DragFloat3("Bounds extents", extents, 0.1f, 0.001f,
+                                              std::numeric_limits<float>::max(), "%.3f",
+                                              ImGuiSliderFlags_AlwaysClamp) ||
+                            boundsChanged;
+            if (boundsChanged) {
+                document->setSystemBounds(selection.context.system, {center[0], center[1], center[2]},
+                                          {extents[0], extents[1], extents[2]});
+            }
+        }
+
+        const bool automaticBounds =
+            std::any_of(graph.systems.begin(), graph.systems.end(), [](const SystemDesc& candidate) {
+                return candidate.bounds.mode == BoundsMode::Automatic;
+            });
+        if (automaticBounds) {
+            ImGui::TextDisabled("Effect culling: automatic bounds require always simulate.");
+        } else {
+            int culling = graph.cullingFlags == (kCullSimulation | kCullBoundsUpdate) ? 0
+                          : graph.cullingFlags == kCullSimulation               ? 1
+                                                                                  : 2;
+            if (ImGui::Combo("Effect culling", &culling,
+                             "Simulate + bounds when visible\0Simulate when visible\0Always simulate\0")) {
+                const std::uint32_t flags =
+                    culling == 0 ? (kCullSimulation | kCullBoundsUpdate)
+                    : culling == 1 ? kCullSimulation
+                                   : 0u;
+                if (!document->setCullingFlags(flags)) {
+                    status = "culling edit failed: " + document->lastError();
+                }
+            }
         }
 
         float rate = system.spawner.rate;
@@ -1400,17 +1796,74 @@ struct VfxEditorUI::Impl {
             }
             ImGui::EndCombo();
         }
+        const std::vector<std::string> subgraphs = document->subgraphNames(context);
+        if (blockTypeChoice == "subgraph") {
+            if (subgraphs.empty()) {
+                ImGui::TextDisabled("No compatible subgraph definitions.");
+            } else {
+                if (std::find(subgraphs.begin(), subgraphs.end(), subgraphChoice) == subgraphs.end()) {
+                    subgraphChoice = subgraphs.front();
+                }
+                std::vector<const char*> subgraphLabels;
+                subgraphLabels.reserve(subgraphs.size());
+                for (const std::string& subgraph : subgraphs) {
+                    subgraphLabels.push_back(subgraph.c_str());
+                }
+                int subgraphIndex = static_cast<int>(std::distance(
+                    subgraphs.begin(), std::find(subgraphs.begin(), subgraphs.end(), subgraphChoice)));
+                ImGui::SetNextItemWidth(180.0f);
+                if (ImGui::Combo("##subgraph", &subgraphIndex, subgraphLabels.data(),
+                                 static_cast<int>(subgraphLabels.size()))) {
+                    subgraphChoice = subgraphs[static_cast<std::size_t>(subgraphIndex)];
+                }
+            }
+        }
         ImGui::SameLine();
         if (ImGui::Button("+ Block")) {
             const std::uint32_t newIndex = static_cast<std::uint32_t>(blocks.size());
-            if (document->addBlock(selection.context.system, context, blockTypeChoice, vfx::editor::kAppend)) {
-                selection.kind = SelectionKind::Block;
-                selection.context = ContextRef{selection.context.system, context, 0};
-                selection.block = newIndex;
+            bool added = false;
+            if (blockTypeChoice == "subgraph") {
+                if (subgraphChoice.empty()) {
+                    status = "no compatible subgraph definition for this context";
+                    return;
+                }
+                std::uint32_t inserted = 0;
+                added = document->addSubgraphBlock(selection.context.system, context, subgraphChoice,
+                                                   vfx::editor::kAppend, inserted);
+                if (added) {
+                    selection.kind = SelectionKind::Block;
+                    selection.context = ContextRef{selection.context.system, context, 0};
+                    selection.block = inserted;
+                }
+            } else {
+                added = document->addBlock(selection.context.system, context, blockTypeChoice,
+                                           vfx::editor::kAppend);
+                if (added) {
+                    selection.kind = SelectionKind::Block;
+                    selection.context = ContextRef{selection.context.system, context, 0};
+                    selection.block = newIndex;
+                }
+            }
+            if (added) {
+                resetTextEdits();
                 status = "block added";
                 return;
             }
             status = "add block failed: " + document->lastError();
+        }
+        ImGui::SameLine();
+        if (!clipboardBlock.empty() && ImGui::Button("Paste Block")) {
+            const std::uint32_t insert = static_cast<std::uint32_t>(blocks.size());
+            std::uint32_t inserted = 0;
+            if (document->pasteBlock(selection.context.system, context, insert, clipboardBlock, inserted)) {
+                selection.kind = SelectionKind::Block;
+                selection.context = ContextRef{selection.context.system, context, 0};
+                selection.block = inserted;
+                resetTextEdits();
+                status = "block pasted";
+                return;
+            }
+            status = "paste failed: " + document->lastError();
         }
     }
 
@@ -1466,6 +1919,18 @@ struct VfxEditorUI::Impl {
             }
             return;
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Copy Block")) {
+            copySelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            duplicateSelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Paste After")) {
+            pasteSelection();
+        }
         ImGui::Separator();
         drawBlockParameters(block, context);
     }
@@ -1479,6 +1944,27 @@ struct VfxEditorUI::Impl {
             ImGui::PushID(name.c_str());
             drawBlockParameter(name, value, context);
             ImGui::PopID();
+        }
+        const std::vector<std::string> optional =
+            document->optionalBlockParameters(context.system, context.kind, selection.block);
+        if (!optional.empty()) {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Optional parameters");
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::BeginCombo("##optional_parameter", "Add optional...")) {
+                for (const std::string& name : optional) {
+                    if (ImGui::Selectable(name.c_str())) {
+                        if (document->addOptionalBlockParameter(context.system, context.kind, selection.block,
+                                                                name)) {
+                            status = "optional parameter added: " + name;
+                            resetTextEdits();
+                        } else {
+                            status = "add optional parameter failed: " + document->lastError();
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            }
         }
     }
 
@@ -1530,7 +2016,7 @@ struct VfxEditorUI::Impl {
                 return item.kind == vfx::Value::Kind::Number;
             });
             if (!numeric || value.array.size() > 4) {
-                ImGui::TextWrapped("%s: %s", name.c_str(), formatValue(value).c_str());
+                drawJsonParameter(name, key, context, value);
                 break;
             }
             ImGui::TextUnformatted(name.c_str());
@@ -1549,6 +2035,8 @@ struct VfxEditorUI::Impl {
         }
         case vfx::Value::Kind::Object:
         case vfx::Value::Kind::Expression:
+            drawJsonParameter(name, key, context, value);
+            break;
         case vfx::Value::Kind::Invalid:
             ImGui::TextWrapped("%s: %s", name.c_str(), formatValue(value).c_str());
             break;
@@ -1584,6 +2072,62 @@ struct VfxEditorUI::Impl {
         if (ImGui::DragFloat("Soft distance", &softDistance, 0.01f, 0.001f, 1000.0f, "%.3f",
                              ImGuiSliderFlags_AlwaysClamp)) {
             document->setOutputSoftDistance(selection.context.system, selection.context.output, softDistance);
+        }
+        bool castShadows = output.castShadows;
+        if (ImGui::Checkbox("Cast shadows", &castShadows)) {
+            document->setOutputCastShadows(selection.context.system, selection.context.output, castShadows);
+        }
+        bool generateMotionVector = output.generateMotionVector;
+        if (ImGui::Checkbox("Generate motion vectors", &generateMotionVector)) {
+            document->setOutputGenerateMotionVector(selection.context.system, selection.context.output,
+                                                    generateMotionVector);
+        }
+        int sortPriority = output.sortPriority;
+        if (ImGui::InputInt("Sort priority", &sortPriority, 1, 10)) {
+            document->setOutputSortPriority(selection.context.system, selection.context.output, sortPriority);
+        }
+        if (system.sort.mode != SortMode::None) {
+            int sortCriterion = static_cast<int>(output.sort ? output.sort->mode : system.sort.mode);
+            int criterionIndex = 0;
+            switch (static_cast<SortMode>(sortCriterion)) {
+            case SortMode::Custom:
+                criterionIndex = 1;
+                break;
+            case SortMode::CameraDepth:
+                criterionIndex = 2;
+                break;
+            case SortMode::YoungestInFront:
+                criterionIndex = 3;
+                break;
+            case SortMode::Distance:
+            default:
+                criterionIndex = 0;
+                break;
+            }
+            if (ImGui::Combo("Sort criterion", &criterionIndex,
+                             "Distance\0Custom\0Camera depth\0Youngest in front\0")) {
+                SortMode criterion = SortMode::Distance;
+                if (criterionIndex == 1) {
+                    criterion = SortMode::Custom;
+                } else if (criterionIndex == 2) {
+                    criterion = SortMode::CameraDepth;
+                } else if (criterionIndex == 3) {
+                    criterion = SortMode::YoungestInFront;
+                }
+                document->setOutputSortMode(selection.context.system, selection.context.output,
+                                            criterion);
+            }
+            int sortOrder =
+                !output.sortOrder ? 0 : (*output.sortOrder == SortOrder::Ascending ? 1 : 2);
+            if (ImGui::Combo("Sort order", &sortOrder, "Inherit\0Ascending\0Descending\0")) {
+                std::optional<SortOrder> order;
+                if (sortOrder == 1) {
+                    order = SortOrder::Ascending;
+                } else if (sortOrder == 2) {
+                    order = SortOrder::Descending;
+                }
+                document->setOutputSortOrder(selection.context.system, selection.context.output, order);
+            }
         }
         if (!output.metallicProperty.empty()) {
             ImGui::TextDisabled("metallic property: %s", output.metallicProperty.c_str());
@@ -1633,6 +2177,11 @@ struct VfxEditorUI::Impl {
             return;
         }
         ImGui::SameLine();
+        if (ImGui::Button("Duplicate Output")) {
+            duplicateSelection();
+            return;
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Remove Output")) {
             if (system.outputs.size() <= 1) {
                 status = "at least one output is required";
@@ -1660,6 +2209,14 @@ struct VfxEditorUI::Impl {
         const vfx::Property property = *found;
         ImGui::Text("Property: %s", property.name.c_str());
         ImGui::TextDisabled("Type: %s", propertyTypeName(property.type));
+        if (ImGui::Button("Copy Property")) {
+            copySelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            duplicateSelection();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Remove Property")) {
             if (document->removeProperty(property.name)) {
                 selection = Selection{};
@@ -1867,9 +2424,17 @@ bool VfxEditorUI::open(const std::filesystem::path& assetPath, std::string& erro
         m_impl->selection.context = ContextRef{0, ContextKind::Update, 0};
     }
     m_impl->status.clear();
+    m_impl->recoveryPath = m_impl->document->recoveryPath();
+    m_impl->recoveryAvailable = std::filesystem::exists(m_impl->recoveryPath);
+    m_impl->recoveryPrompted = false;
+    m_impl->closeRequested = false;
+    m_impl->closeApproved = false;
+    m_impl->closeError.clear();
+    m_impl->lastRecoveryWrite = {};
     m_impl->dragging = false;
     m_impl->resetTextEdits();
     m_impl->blockTypeChoice.clear();
+    m_impl->subgraphChoice.clear();
     m_impl->newPropertyName[0] = '\0';
     m_impl->compileErrors.clear();
     m_impl->compileError.clear();
@@ -1924,11 +2489,28 @@ bool VfxEditorUI::preview(std::string& error) {
     return m_impl->previewGraph(error);
 }
 
+bool VfxEditorUI::saveRecovery(std::string& error) {
+    if (!m_impl->document) {
+        error = "VFX editor has no loaded graph";
+        return false;
+    }
+    return m_impl->document->saveRecovery(error);
+}
+
 bool VfxEditorUI::valid() const {
     return m_impl->valid();
 }
 bool VfxEditorUI::dirty() const {
     return m_impl->dirty();
+}
+void VfxEditorUI::requestClose() {
+    if (!m_impl->valid() || m_impl->closeApproved) {
+        return;
+    }
+    m_impl->closeRequested = true;
+}
+bool VfxEditorUI::closeApproved() const {
+    return m_impl->closeApproved;
 }
 void VfxEditorUI::draw() {
     m_impl->draw();

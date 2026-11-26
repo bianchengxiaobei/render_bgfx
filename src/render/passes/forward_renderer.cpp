@@ -4,6 +4,7 @@
 #include "core/log.h"
 #include "gfx/encoder.h"
 #include "gfx/state.h"
+#include "render/culling/frustum.h"
 #include "render/lighting/ltc_lut.h"
 #include "render/passes/prepass_utils.h"
 #include "render/vfx/hbg_vfx_backend.h"
@@ -73,6 +74,16 @@ bool equivalentPath(const std::filesystem::path& left, const std::filesystem::pa
     return ::vfx::Vec3{source.x, source.y, source.z};
 }
 
+Bounds toRenderBounds(const ::vfx::Bounds& source) {
+    if (!source.valid) {
+        return {};
+    }
+    Bounds result;
+    result.expand(Vec3{source.min.x, source.min.y, source.min.z});
+    result.expand(Vec3{source.max.x, source.max.y, source.max.z});
+    return result;
+}
+
 ::vfx::PropertyValue toVfxProperty(const VfxPropertyValue& source) {
     ::vfx::PropertyValue result;
     switch (source.kind) {
@@ -94,6 +105,20 @@ bool equivalentPath(const std::filesystem::path& left, const std::filesystem::pa
     }
     result.f = source.values;
     return result;
+}
+
+bool sameVfxProperties(const VfxInstance& left, const VfxInstance& right) {
+    if (left.properties.size() != right.properties.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < left.properties.size(); ++i) {
+        const VfxPropertyValue& a = left.properties[i];
+        const VfxPropertyValue& b = right.properties[i];
+        if (a.name != b.name || a.kind != b.kind || a.values != b.values) {
+            return false;
+        }
+    }
+    return true;
 }
 
 ForwardRenderer::ClusterStats summarizeClusterOffsets(const std::vector<uint32_t>& offsets) {
@@ -161,6 +186,15 @@ uint64_t forwardState(const asset::Material& material, bool transparent, bool de
     return material.doubleSided ? gfx::state::kOpaqueNoCull : gfx::state::kOpaque;
 }
 
+uint64_t preRefractionState(const asset::Material& material) {
+    const uint64_t base =
+        BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_CULL_CW |
+        BGFX_STATE_BLEND_FUNC_SEPARATE(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA,
+                                       BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA) |
+        BGFX_STATE_MSAA;
+    return material.doubleSided ? (base & ~BGFX_STATE_CULL_CW) : base;
+}
+
 uint64_t bakedGIState(const asset::Material& material) {
     const uint64_t base =
         BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_EQUAL | BGFX_STATE_MSAA;
@@ -195,6 +229,18 @@ uint32_t litVariantStencilTest(uint32_t variant) {
 
 uint64_t motionVectorState(const asset::Material& material) {
     return material.doubleSided ? gfx::state::kMotionVectorsNoCull : gfx::state::kMotionVectors;
+}
+
+uint64_t transparentMotionVectorState(const asset::Material& material) {
+    return material.doubleSided ? (gfx::state::kTransparentMotionVectors & ~BGFX_STATE_CULL_CW)
+                                : gfx::state::kTransparentMotionVectors;
+}
+
+uint64_t transparentBackfaceState(const asset::Material& material) {
+    if (material.doubleSided) {
+        return gfx::state::kTransparent & ~BGFX_STATE_CULL_CW;
+    }
+    return (gfx::state::kTransparent & ~BGFX_STATE_CULL_CW) | BGFX_STATE_CULL_CCW;
 }
 
 uint64_t shadowState(const asset::Material& material) {
@@ -239,6 +285,16 @@ bool framebufferFormatSupported(gfx::TextureFormat format) {
     }
     const bgfx::TextureFormat::Enum native = gfx::toBgfx(format);
     return native != bgfx::TextureFormat::Count && (caps->formats[native] & BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER) != 0;
+}
+
+bool textureImageWriteSupported(gfx::TextureFormat format) {
+    const bgfx::Caps* caps = bgfx::getCaps();
+    if (caps == nullptr) {
+        return false;
+    }
+    const bgfx::TextureFormat::Enum native = gfx::toBgfx(format);
+    return native != bgfx::TextureFormat::Count &&
+           (caps->formats[native] & BGFX_CAPS_FORMAT_TEXTURE_IMAGE_WRITE) != 0;
 }
 
 gfx::TextureHandle createSolidTexture(gfx::ResourceManager& resources, uint8_t red, uint8_t green, uint8_t blue,
@@ -292,6 +348,38 @@ bool ForwardRenderer::motionVectorsActive() const {
 
 bool ForwardRenderer::objectMotionVectorsActive() const {
     return motionVectorsActive() && m_frameSettings.isEnabled(FrameSettingsField::ObjectMotionVectors);
+}
+
+bool ForwardRenderer::transparentMotionVectorsActive() const {
+    return motionVectorsActive() && m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects) &&
+           !m_transparentMotionVectorDrawList.empty();
+}
+
+bool ForwardRenderer::transparentBackfaceActive() const {
+    return m_pipelineSettings.supportTransparentBackface &&
+           m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects) &&
+           !m_transparentBackfaceDrawList.empty();
+}
+
+bool ForwardRenderer::transparentDepthPrepassActive() const {
+    return m_pipelineSettings.supportTransparentDepthPrepass &&
+           m_frameSettings.isEnabled(FrameSettingsField::TransparentPrepass) &&
+           m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects) &&
+           !m_transparentDepthPrepassDrawList.empty();
+}
+
+bool ForwardRenderer::transparentRefractionActive() {
+    return m_pipelineSettings.supportTransparentRefraction &&
+           m_frameSettings.isEnabled(FrameSettingsField::Refraction) &&
+           m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects) &&
+           m_fullscreenVertexBuffer.valid() && m_shadowCopySampler.valid() &&
+           m_shadowCopyParamsUniform.valid() && m_bakedIndirectSampler.valid() &&
+           m_bakedGICompositeModeUniform.valid() &&
+           m_shaderLibrary.program(shader::ProgramKey{shader::PassId::ShadowCopyDepth, 0, 0}).valid() &&
+           m_shaderLibrary.program(shader::ProgramKey{shader::PassId::BakedGIForwardComposite, 0, 0})
+               .valid() &&
+           !transparentBackfaceActive() && !m_transparentPreRefractionDrawList.empty() &&
+           !m_transparentRefractionDrawList.empty();
 }
 
 const char* ForwardRenderer::deferredUnavailableReason() const {
@@ -515,12 +603,47 @@ gfx::TextureFormat ForwardRenderer::selectMotionVectorFormat() const {
     return gfx::TextureFormat::RGBA16F;
 }
 
-gfx::TextureFormat ForwardRenderer::selectDepthPyramidFormat() const {
-    if (framebufferFormatSupported(gfx::TextureFormat::RGBA32F)) {
-        return gfx::TextureFormat::RGBA32F;
+gfx::TextureFormat ForwardRenderer::selectDepthPyramidFormat() {
+    if (framebufferFormatSupported(gfx::TextureFormat::R32F)) {
+        return gfx::TextureFormat::R32F;
     }
-    HBG_LOGW("RG32F depth pyramid is not framebuffer-capable; using RGBA32F");
+    if (!m_depthPyramidFormatWarningLogged) {
+        HBG_LOGW("R32F depth pyramid is not framebuffer-capable; using RGBA32F");
+        m_depthPyramidFormatWarningLogged = true;
+    }
     return gfx::TextureFormat::RGBA32F;
+}
+
+bool ForwardRenderer::depthPyramidComputeSupported() {
+    if (!m_pipelineSettings.supportDepthPyramidCompute) {
+        return false;
+    }
+    const bgfx::Caps* caps = bgfx::getCaps();
+    if (caps == nullptr || (caps->supported & BGFX_CAPS_COMPUTE) == 0 ||
+        (caps->supported & BGFX_CAPS_IMAGE_RW) == 0) {
+        return false;
+    }
+    if (!framebufferFormatSupported(gfx::TextureFormat::R32F) ||
+        !textureImageWriteSupported(gfx::TextureFormat::R32F)) {
+        return false;
+    }
+    return m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DepthPyramidCompute, 0, 0}).valid();
+}
+
+bool ForwardRenderer::depthPyramidMaxComputeSupported() {
+    if (!m_pipelineSettings.supportGpuDrivenGeometry) {
+        return false;
+    }
+    const bgfx::Caps* caps = bgfx::getCaps();
+    if (caps == nullptr || (caps->supported & BGFX_CAPS_COMPUTE) == 0 ||
+        (caps->supported & BGFX_CAPS_IMAGE_RW) == 0) {
+        return false;
+    }
+    if (!framebufferFormatSupported(gfx::TextureFormat::R32F) ||
+        !textureImageWriteSupported(gfx::TextureFormat::R32F)) {
+        return false;
+    }
+    return m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DepthPyramidMaxCompute, 0, 0}).valid();
 }
 
 gfx::TextureFormat ForwardRenderer::selectSsaoFormat() const {
@@ -555,6 +678,31 @@ void ForwardRenderer::setGpuLightListBufferEnabled(bool enabled) {
     m_gpuLightListWarningLogged = false;
 }
 
+void ForwardRenderer::setGpuDrivenGeometryEnabled(bool enabled) {
+    if (m_pipelineSettings.supportGpuDrivenGeometry == enabled) {
+        return;
+    }
+    m_pipelineSettings.supportGpuDrivenGeometry = enabled;
+    m_gpuDrivenRequested = enabled;
+    m_gpuDrivenWarningLogged = false;
+    releaseGpuDrivenDrawData(m_gpuDrivenForward);
+    releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+    releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+    releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+    releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+    releaseGpuDrivenHiZTextures();
+    m_depthPyramidMaxComputeActive = false;
+}
+
+void ForwardRenderer::setGpuSkinningEnabled(bool enabled) {
+    if (m_gpuSkinningEnabled == enabled) {
+        return;
+    }
+    m_gpuSkinningEnabled = enabled;
+    m_pipelineSettings.supportGpuSkinning = enabled;
+    m_gpuSkinningWarningLogged = false;
+}
+
 ForwardRenderer::ForwardRenderer() = default;
 
 ForwardRenderer::~ForwardRenderer() { releaseVfx(); }
@@ -577,6 +725,7 @@ void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, cons
     m_frameSettings.sanitize(m_pipelineSettings);
     setGpuLightListEnabled(m_pipelineSettings.supportGpuLightList);
     setGpuLightListBufferEnabled(m_pipelineSettings.supportGpuLightListBuffers);
+    setGpuSkinningEnabled(m_pipelineSettings.supportGpuSkinning);
     m_litVariantsEnabled = m_pipelineSettings.supportLitVariants;
     m_litVariantTilesEnabled = m_pipelineSettings.supportLitVariants && m_pipelineSettings.supportLitVariantTiles;
     m_litVariantsActive = false;
@@ -591,13 +740,17 @@ void ForwardRenderer::setSettings(const PipelineSettings& pipelineSettings, cons
     m_decalFallbackLogged = false;
     m_areaEvsmBlurWarningLogged = false;
     HBG_LOGI("frame settings: lit={} shadows={} opaque={} transparent={} postprocess={} motionVectors={} "
-             "lightLayers={}",
+             "transparentPrepass={} lightLayers={}",
              m_frameSettings.litShaderMode() == LitShaderMode::Deferred ? "deferred" : "forward",
              m_frameSettings.isEnabled(FrameSettingsField::ShadowMaps),
              m_frameSettings.isEnabled(FrameSettingsField::OpaqueObjects),
              m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects),
              m_frameSettings.isEnabled(FrameSettingsField::Postprocess),
              m_frameSettings.isEnabled(FrameSettingsField::MotionVectors),
+             m_pipelineSettings.supportTransparentDepthPrepass &&
+                 m_frameSettings.isEnabled(FrameSettingsField::TransparentPrepass)
+                 ? "true"
+                 : "false",
              m_pipelineSettings.supportLightLayers ? "true" : "false");
 }
 
@@ -686,16 +839,27 @@ void ForwardRenderer::setRenderScale(float scale) {
         return;
     }
     HBG_LOGI("forward renderer render scale: {:.3f} -> {:.3f}", m_renderScale, sanitized);
+    const bool preserveTaaHistory =
+        m_renderScale < 1.0f && sanitized < 1.0f && m_postProcessChain.taaActive() &&
+        m_postProcessChain.settings().taa.upscale;
     m_renderScale = sanitized;
-    m_viewState.resetHistory();
-    m_postProcessChain.resetHistory();
+    m_graphMaterialSystem.setGlobalMipBias(std::log2(sanitized));
+    if (preserveTaaHistory) {
+        HBG_LOGI("dynamic resolution: preserving TAAU history across scale change");
+        m_postProcessChain.resetHistoryPreservingTaa();
+        m_preserveHistoryOnScaleChange = true;
+    } else {
+        m_viewState.resetHistory();
+        m_postProcessChain.resetHistory();
+        m_preserveHistoryOnScaleChange = false;
+    }
     releaseSsaoHistory();
     releaseSsrHistory();
     releaseSsgiHistory();
     releaseVolumetricFogHistory();
 }
 
-bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& scene, uint16_t width, uint16_t height) {
+bool ForwardRenderer::init(gfx::ResourceManager& resources, RenderScene& scene, uint16_t width, uint16_t height) {
     m_resources = &resources;
     m_width = width;
     m_height = height;
@@ -706,6 +870,10 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     if (!m_materialSystem.init(resources, scene)) {
         HBG_LOGE("forward renderer: material system initialization failed");
         return false;
+    }
+    std::string graphMaterialError;
+    if (!m_graphMaterialSystem.init(resources, scene, &graphMaterialError)) {
+        HBG_LOGW("forward renderer: graph materials disabled: {}", graphMaterialError);
     }
     m_materialSamplers = m_materialSystem.samplers();
     m_lightmapSampler = resources.createUniform({"s_lightmapSH", gfx::UniformType::Sampler, 1});
@@ -781,6 +949,12 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     m_shadowCopyParamsUniform = resources.createUniform({"u_shadowCopyParams", gfx::UniformType::Vec4, 1});
     m_shadowMomentSlotUniform = resources.createUniform({"u_shadowMomentSlot", gfx::UniformType::Vec4, 1});
     m_shadowMomentParamsUniform = resources.createUniform({"u_shadowMomentParams", gfx::UniformType::Vec4, 1});
+    m_skinParamsUniform = resources.createUniform({"u_skin_params", gfx::UniformType::Vec4, 1});
+    m_gpuDrivenParamsUniform = resources.createUniform({"u_gpuDrivenParams", gfx::UniformType::Vec4, 1});
+    m_gpuDrivenCullModeUniform = resources.createUniform({"u_gpuDrivenCullMode", gfx::UniformType::Vec4, 1});
+    m_gpuSortParamsUniform = resources.createUniform({"u_gpuSortParams", gfx::UniformType::Vec4, 1});
+    m_bindlessMaterialUniform =
+        resources.createUniform({"u_bindlessMaterialData", gfx::UniformType::Vec4, 32 * 12});
     m_shadowMomentDepthSampler = resources.createUniform({"s_shadowDepth", gfx::UniformType::Sampler, 1});
     m_shadowMomentSampler = resources.createUniform({"s_shadowMoment", gfx::UniformType::Sampler, 1});
     gfx::TextureDesc shadowMomentSatFallback;
@@ -814,6 +988,11 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
     m_cookieAtlasSampler = resources.createUniform({"s_cookieAtlas", gfx::UniformType::Sampler, 1});
     m_ssaoSampler = resources.createUniform({"s_ssao", gfx::UniformType::Sampler, 1});
     m_bakedIndirectSampler = resources.createUniform({"s_bakedIndirect", gfx::UniformType::Sampler, 1});
+    m_refractionSourceDepthSampler =
+        resources.createUniform({"s_refractionSourceDepth", gfx::UniformType::Sampler, 1});
+    m_refractionPreColorSampler =
+        resources.createUniform({"s_refractionPreColor", gfx::UniformType::Sampler, 1});
+    m_bakedGICompositeModeUniform = resources.createUniform({"u_bakedGICompositeMode", gfx::UniformType::Vec4, 1});
     m_ssaoInputSampler = resources.createUniform({"s_ssaoInput", gfx::UniformType::Sampler, 1});
     m_ssaoHistorySampler = resources.createUniform({"s_ssaoHistory", gfx::UniformType::Sampler, 1});
     m_ssrSampler = resources.createUniform({"s_ssr", gfx::UniformType::Sampler, 1});
@@ -900,7 +1079,10 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
         !m_shadowSampler.valid() || !m_shadowPunctualSampler.valid() || !m_shadowPointSampler.valid() ||
         !m_shadowPointPunctualSampler.valid() || !m_shadowCopySampler.valid() ||
         !m_shadowCopyParamsUniform.valid() || !m_shadowMomentSlotUniform.valid() ||
-        !m_shadowMomentParamsUniform.valid() || !m_shadowMomentDepthSampler.valid() ||
+        !m_shadowMomentParamsUniform.valid() || !m_skinParamsUniform.valid() ||
+        !m_gpuDrivenParamsUniform.valid() || !m_gpuDrivenCullModeUniform.valid() ||
+        !m_gpuSortParamsUniform.valid() || !m_bindlessMaterialUniform.valid() ||
+        !m_shadowMomentDepthSampler.valid() ||
         !m_shadowMomentSampler.valid() ||
         !m_shadowMomentSatFallback.valid() ||
         !m_depthSourceSampler.valid() || !m_normalSampler.valid() || !m_motionVectorSampler.valid() ||
@@ -912,7 +1094,9 @@ bool ForwardRenderer::init(gfx::ResourceManager& resources, const RenderScene& s
         !m_probeArraySampler.valid() || !m_probeArrayFallback.valid() ||
         !m_cookieAtlasSampler.valid() || !m_cookieAtlasFallback.valid() || !m_ssaoSampler.valid() ||
         !m_ssaoInputSampler.valid() || !m_ssaoHistorySampler.valid() || !m_ssaoFallback.valid() ||
-        !m_bakedIndirectSampler.valid() || !m_bakedIndirectFallback.valid() ||
+        !m_bakedIndirectSampler.valid() || !m_refractionSourceDepthSampler.valid() ||
+        !m_refractionPreColorSampler.valid() || !m_bakedGICompositeModeUniform.valid() ||
+        !m_bakedIndirectFallback.valid() ||
         !m_contactShadowFallback.valid() ||
         !m_contactShadowSampler.valid() || !m_ssrSampler.valid() || !m_ssrHistorySampler.valid() ||
         !m_ssgiSampler.valid() || !m_ssgiRawSampler.valid() || !m_ssgiHistorySampler.valid() ||
@@ -1009,10 +1193,12 @@ void ForwardRenderer::resize(uint16_t width, uint16_t height) {
         releaseGBufferTextures();
         releaseDecalTextures();
         m_viewState.resetHistory();
+        m_preserveHistoryOnScaleChange = false;
         releaseSsaoHistory();
         releaseSsrHistory();
         releaseSsgiHistory();
         releaseVolumetricFogHistory();
+        releaseGpuDrivenHiZTextures();
     }
     m_width = width;
     m_height = height;
@@ -1027,7 +1213,9 @@ void ForwardRenderer::updateCamera(const RenderScene& scene, uint16_t width, uin
     m_debugUniforms.lightmapParams = Vec4(1.0f, 0.0f, 0.0f, 0.0f);
 
     const bool homogeneousDepth = bgfx::getCaps() != nullptr && bgfx::getCaps()->homogeneousDepth;
-    m_viewState.update(m_camera, width, height, m_renderScale, m_jitterEnabled, homogeneousDepth);
+    m_viewState.update(m_camera, width, height, m_renderScale, m_jitterEnabled, homogeneousDepth,
+                       m_preserveHistoryOnScaleChange);
+    m_preserveHistoryOnScaleChange = false;
     m_cameraPosition = m_viewState.cameraPosition();
     m_cameraForward = m_viewState.cameraForward();
     updateGlobalUniforms();
@@ -2326,6 +2514,485 @@ void ForwardRenderer::releaseShadowGpuBuffers() {
     m_shadowGpuIndirectActive = false;
 }
 
+void ForwardRenderer::releaseGpuDrivenDrawData(GpuDrivenDrawData& data) {
+    if (m_resources != nullptr) {
+        for (gfx::BufferHandle* handle :
+             {&data.input, &data.visible, &data.batches, &data.indirect, &data.drawRecords,
+              &data.sortedVisible, &data.sortedIndirect, &data.count}) {
+            if (handle->valid()) {
+                m_resources->destroyBuffer(*handle);
+            }
+            *handle = {};
+        }
+    } else {
+        data.input = {};
+        data.visible = {};
+        data.batches = {};
+        data.indirect = {};
+        data.drawRecords = {};
+        data.sortedVisible = {};
+        data.sortedIndirect = {};
+        data.count = {};
+    }
+    data.itemCount = 0;
+    data.batchCount = 0;
+    data.recordCount = 0;
+    data.perItemBatches = false;
+    data.bindless = false;
+    data.sorted = false;
+    data.materialVariant = 0;
+    data.active = false;
+}
+
+void ForwardRenderer::releaseGpuDrivenHiZTextures() {
+    for (gfx::TextureHandle& texture : m_hiZPyramidTextures) {
+        if (texture.valid()) {
+            if (m_resources != nullptr) {
+                m_resources->destroyTexture(texture);
+            }
+            texture = {};
+        }
+    }
+    m_hiZPyramidWidth = 0;
+    m_hiZPyramidHeight = 0;
+    m_hiZPyramidMipCount = 0;
+    m_hiZPyramidIndex = 0;
+    m_hiZHistoryValid = false;
+    m_gpuDrivenPrepassActive = false;
+}
+
+bool ForwardRenderer::ensureGpuDrivenHiZTextures(uint16_t width, uint16_t height, uint8_t mipCount) {
+    if (m_resources == nullptr || width == 0 || height == 0 || mipCount == 0) {
+        return false;
+    }
+    if (m_hiZPyramidWidth == width && m_hiZPyramidHeight == height && m_hiZPyramidMipCount == mipCount &&
+        m_hiZPyramidTextures[0].valid() && m_hiZPyramidTextures[1].valid()) {
+        return true;
+    }
+
+    releaseGpuDrivenHiZTextures();
+    for (uint32_t index = 0; index < m_hiZPyramidTextures.size(); ++index) {
+        gfx::TextureDesc desc;
+        desc.width = width;
+        desc.height = height;
+        desc.format = gfx::TextureFormat::R32F;
+        desc.mipCount = mipCount;
+        desc.renderTarget = true;
+        desc.computeWrite = true;
+        desc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
+        desc.name = "prepass.hiZDepthPyramid" + std::to_string(index);
+        m_hiZPyramidTextures[index] = m_resources->createTexture(desc);
+    }
+    if (!m_hiZPyramidTextures[0].valid() || !m_hiZPyramidTextures[1].valid()) {
+        releaseGpuDrivenHiZTextures();
+        return false;
+    }
+    m_hiZPyramidWidth = width;
+    m_hiZPyramidHeight = height;
+    m_hiZPyramidMipCount = mipCount;
+    m_hiZPyramidIndex = 0;
+    m_hiZHistoryValid = false;
+    return true;
+}
+
+bool ForwardRenderer::ensureGpuDrivenDrawData(GpuDrivenDrawData& data, const DrawList& list,
+                                               const char* prefix, bool perItemBatches, bool bindless,
+                                               bool sorted) {
+    if (m_resources == nullptr || list.empty() || list.batches().empty()) {
+        releaseGpuDrivenDrawData(data);
+        return false;
+    }
+    const uint32_t itemCount = static_cast<uint32_t>(list.size());
+    const uint32_t batchCount = bindless ? 1u
+                                         : (perItemBatches ? itemCount
+                                                           : static_cast<uint32_t>(list.batches().size()));
+    const uint32_t recordCount = bindless ? itemCount : batchCount;
+    const uint32_t countCount = bindless ? 1u : batchCount;
+    if (data.active && data.itemCount == itemCount && data.batchCount == batchCount &&
+        data.recordCount == recordCount && data.perItemBatches == perItemBatches &&
+        data.bindless == bindless && data.sorted == sorted && data.input.valid() && data.visible.valid() &&
+        data.batches.valid() && data.indirect.valid() && data.drawRecords.valid() && data.count.valid() &&
+        (!sorted || (data.sortedVisible.valid() && data.sortedIndirect.valid()))) {
+        return true;
+    }
+
+    releaseGpuDrivenDrawData(data);
+
+    gfx::VertexLayout inputLayout;
+    for (uint8_t attribute = 0; attribute < 9; ++attribute) {
+        inputLayout.add(static_cast<bgfx::Attrib::Enum>(bgfx::Attrib::TexCoord0 + attribute), 4,
+                        bgfx::AttribType::Float);
+    }
+    inputLayout.end();
+
+    gfx::VertexLayout outputLayout;
+    for (uint8_t attribute = 0; attribute < 5; ++attribute) {
+        outputLayout.add(static_cast<bgfx::Attrib::Enum>(bgfx::Attrib::TexCoord0 + attribute), 4,
+                         bgfx::AttribType::Float);
+    }
+    outputLayout.end();
+
+    gfx::BufferDesc inputDesc;
+    inputDesc.type = gfx::BufferType::StorageVertex;
+    inputDesc.count = itemCount;
+    inputDesc.layout = &inputLayout;
+    inputDesc.flags = BGFX_BUFFER_COMPUTE_READ;
+    inputDesc.name = std::string(prefix) + ".input";
+    data.input = m_resources->createBuffer(inputDesc);
+
+    gfx::BufferDesc outputDesc;
+    outputDesc.type = gfx::BufferType::StorageVertex;
+    outputDesc.count = itemCount;
+    outputDesc.layout = &outputLayout;
+    outputDesc.flags = BGFX_BUFFER_COMPUTE_READ | BGFX_BUFFER_COMPUTE_WRITE;
+    outputDesc.name = std::string(prefix) + ".visible";
+    data.visible = m_resources->createBuffer(outputDesc);
+
+    gfx::BufferDesc batchDesc;
+    batchDesc.type = gfx::BufferType::Storage;
+    batchDesc.count = batchCount * 8u;
+    batchDesc.flags = BGFX_BUFFER_COMPUTE_READ;
+    batchDesc.name = std::string(prefix) + ".batches";
+    data.batches = m_resources->createBuffer(batchDesc);
+
+    gfx::BufferDesc indirectDesc;
+    indirectDesc.type = gfx::BufferType::Indirect;
+    indirectDesc.count = recordCount;
+    indirectDesc.name = std::string(prefix) + ".indirect";
+    data.indirect = m_resources->createBuffer(indirectDesc);
+
+    gfx::BufferDesc drawRecordsDesc;
+    drawRecordsDesc.type = gfx::BufferType::Storage;
+    drawRecordsDesc.count = itemCount * 4u;
+    drawRecordsDesc.flags = BGFX_BUFFER_COMPUTE_READ | BGFX_BUFFER_COMPUTE_WRITE;
+    drawRecordsDesc.name = std::string(prefix) + ".drawRecords";
+    data.drawRecords = m_resources->createBuffer(drawRecordsDesc);
+
+    if (sorted) {
+        gfx::BufferDesc sortedVisibleDesc;
+        sortedVisibleDesc.type = gfx::BufferType::StorageVertex;
+        sortedVisibleDesc.count = itemCount;
+        sortedVisibleDesc.layout = &outputLayout;
+        sortedVisibleDesc.flags = BGFX_BUFFER_COMPUTE_WRITE;
+        sortedVisibleDesc.name = std::string(prefix) + ".sorted.visible";
+        data.sortedVisible = m_resources->createBuffer(sortedVisibleDesc);
+
+        gfx::BufferDesc sortedIndirectDesc;
+        sortedIndirectDesc.type = gfx::BufferType::Indirect;
+        sortedIndirectDesc.count = recordCount;
+        sortedIndirectDesc.name = std::string(prefix) + ".sorted.indirect";
+        data.sortedIndirect = m_resources->createBuffer(sortedIndirectDesc);
+    }
+
+    std::vector<uint32_t> countData(static_cast<std::size_t>(countCount) * 4u, 0u);
+    gfx::BufferDesc countDesc;
+    countDesc.type = gfx::BufferType::Index;
+    countDesc.data = countData.data();
+    countDesc.size = static_cast<uint32_t>(countData.size() * sizeof(uint32_t));
+    countDesc.count = static_cast<uint32_t>(countData.size());
+    countDesc.flags = BGFX_BUFFER_INDEX32 | BGFX_BUFFER_DRAW_INDIRECT | BGFX_BUFFER_COMPUTE_READ;
+    countDesc.name = std::string(prefix) + ".count";
+    data.count = m_resources->createBuffer(countDesc);
+
+    if (!data.input.valid() || !data.visible.valid() || !data.batches.valid() || !data.indirect.valid() ||
+        !data.drawRecords.valid() || !data.count.valid() ||
+        (sorted && (!data.sortedVisible.valid() || !data.sortedIndirect.valid()))) {
+        HBG_LOGE("gpu-driven geometry: failed to create {} buffers", prefix);
+        releaseGpuDrivenDrawData(data);
+        return false;
+    }
+
+    data.itemCount = itemCount;
+    data.batchCount = batchCount;
+    data.recordCount = recordCount;
+    data.perItemBatches = perItemBatches;
+    data.bindless = bindless;
+    data.sorted = sorted;
+    data.active = true;
+    return true;
+}
+
+bool ForwardRenderer::updateGpuDrivenData(const RenderScene& scene, bool deferred, bool depthPrepass) {
+    m_gpuDrivenCullingPasses = 0;
+    m_gpuDrivenTransparentSortActive = false;
+    const bgfx::Caps* caps = bgfx::getCaps();
+    m_gpuDrivenIndirectCountSupported =
+        caps != nullptr && (caps->supported & BGFX_CAPS_DRAW_INDIRECT_COUNT) != 0;
+    if (!m_pipelineSettings.supportGpuDrivenGeometry || !depthPrepass || !m_depthPyramidMaxComputeActive ||
+        caps == nullptr || (caps->supported & BGFX_CAPS_COMPUTE) == 0 ||
+        (caps->supported & BGFX_CAPS_DRAW_INDIRECT) == 0 ||
+        !m_gpuDrivenParamsUniform.valid() || !m_gpuDrivenCullModeUniform.valid() ||
+        !m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GpuDrivenCull, 0, 0}).valid()) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+        if (m_gpuDrivenRequested && !m_gpuDrivenWarningLogged) {
+            HBG_LOGW("gpu-driven geometry: compute/indirect path is unavailable; using CPU draw lists");
+            m_gpuDrivenWarningLogged = true;
+        }
+        return false;
+    }
+
+    (void)m_materialSystem.ensureBindlessResources(scene);
+    const DrawList& forwardList = deferred ? m_forwardOpaqueDrawList : m_opaqueDrawList;
+    const bool forwardEligible = !m_advancedMaterialActive && !m_pipelineSettings.supportLightLayers &&
+                                 !forwardList.empty() && !forwardList.batches().empty();
+
+    const bool decalsRequested = deferred && m_pipelineSettings.supportDecals &&
+                                 m_frameSettings.isEnabled(FrameSettingsField::Decals) &&
+                                 !scene.decals.empty();
+    const bool gbufferEligible =
+        deferred && !m_deferredLightLayersActive && !decalsRequested && !m_gbufferDrawList.empty() &&
+        !m_gbufferDrawList.batches().empty() &&
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GBufferInstanced, 0, 0}).valid();
+    const bool transparentEligible = !m_advancedMaterialActive && !m_pipelineSettings.supportLightLayers &&
+                                     !transparentRefractionActive() && !m_transparentDrawList.empty() &&
+                                     !m_transparentDrawList.batches().empty();
+    constexpr uint64_t kBindlessMaterialVariantMask =
+        shader::MaterialVariantNormalMap | shader::MaterialVariantMaskMap;
+    bool transparentBindlessEligible = transparentEligible && !transparentBackfaceActive() &&
+                                       m_materialSystem.bindlessReady() &&
+                                       m_bindlessMaterialUniform.valid() &&
+                                       m_materialSystem.materials().size() <= 32u &&
+                                       m_shaderLibrary.program(shader::ProgramKey{
+                                           shader::PassId::GpuDrivenTransparentSort, 0, 0})
+                                           .valid();
+    uint32_t transparentVariant = 0;
+    if (transparentBindlessEligible) {
+        constexpr uint64_t kTransparentMaterialVariantMask =
+            shader::MaterialVariantNormalMap | shader::MaterialVariantMaskMap |
+            shader::MaterialVariantTransparent;
+        for (const DrawItem& item : m_transparentDrawList.items()) {
+            if (item.lightmapAtlas != UINT32_MAX || item.meshIndex >= m_materialSystem.meshes().size() ||
+                item.materialIndex >= m_materialSystem.materials().size() ||
+                item.materialIndex >= scene.materials.size() ||
+                m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+                transparentBindlessEligible = false;
+                break;
+            }
+            const GpuMesh& mesh = m_materialSystem.meshes()[item.meshIndex];
+            const GpuMaterial& material = m_materialSystem.materials()[item.materialIndex];
+            const asset::Material& sourceMaterial = scene.materials[item.materialIndex];
+            if (!mesh.bindlessEligible || (material.variantKey & ~kTransparentMaterialVariantMask) != 0 ||
+                (material.variantKey & shader::MaterialVariantTransparent) == 0 || material.features != 0 ||
+                sourceMaterial.type != asset::MaterialType::Lit ||
+                sourceMaterial.alphaMode != asset::AlphaMode::Blend || sourceMaterial.doubleSided) {
+                transparentBindlessEligible = false;
+                break;
+            }
+            transparentVariant |= static_cast<uint32_t>(material.variantKey & kBindlessMaterialVariantMask);
+        }
+        if (transparentBindlessEligible &&
+            !lightListProgram(shader::PassId::BindlessForwardInstanced, transparentVariant).valid()) {
+            transparentBindlessEligible = false;
+        }
+    }
+    bool prepassGraphMaterial = false;
+    for (const DrawItem& item : m_prepassDrawList.items()) {
+        if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+            prepassGraphMaterial = true;
+            break;
+        }
+    }
+    const bool prepassEligible =
+        depthPrepass && !m_prepassDrawList.empty() && !m_prepassDrawList.batches().empty() &&
+        !prepassGraphMaterial;
+
+    bool bindlessForwardEligible = forwardEligible && m_materialSystem.bindlessReady() &&
+                                    m_bindlessMaterialUniform.valid() &&
+                                    m_materialSystem.materials().size() <= 32u;
+    uint32_t bindlessVariant = 0;
+    if (bindlessForwardEligible) {
+        for (const DrawItem& item : forwardList.items()) {
+            if (item.transparent || item.lightmapAtlas != UINT32_MAX ||
+                item.meshIndex >= m_materialSystem.meshes().size() ||
+                item.materialIndex >= m_materialSystem.materials().size() ||
+                item.materialIndex >= scene.materials.size() ||
+                m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+                bindlessForwardEligible = false;
+                break;
+            }
+            const GpuMesh& mesh = m_materialSystem.meshes()[item.meshIndex];
+            const GpuMaterial& material = m_materialSystem.materials()[item.materialIndex];
+            const asset::Material& sourceMaterial = scene.materials[item.materialIndex];
+            if (!mesh.bindlessEligible || (material.variantKey & ~kBindlessMaterialVariantMask) != 0 ||
+                material.features != 0 || sourceMaterial.type != asset::MaterialType::Lit ||
+                sourceMaterial.alphaMode != asset::AlphaMode::Opaque || sourceMaterial.doubleSided) {
+                bindlessForwardEligible = false;
+                break;
+            }
+            bindlessVariant |= static_cast<uint32_t>(material.variantKey & kBindlessMaterialVariantMask);
+        }
+        if (bindlessForwardEligible &&
+            !lightListProgram(shader::PassId::BindlessForwardInstanced, bindlessVariant).valid()) {
+            bindlessForwardEligible = false;
+        }
+    }
+
+    if (!forwardEligible) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+    } else if (!ensureGpuDrivenDrawData(m_gpuDrivenForward, forwardList, "gpuDriven.forward", false,
+                                        bindlessForwardEligible)) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+        if (bindlessForwardEligible) {
+            bindlessForwardEligible = false;
+            if (!ensureGpuDrivenDrawData(m_gpuDrivenForward, forwardList, "gpuDriven.forward")) {
+                releaseGpuDrivenDrawData(m_gpuDrivenForward);
+            }
+        }
+    }
+    m_gpuDrivenForward.materialVariant = m_gpuDrivenForward.active && m_gpuDrivenForward.bindless ? bindlessVariant : 0;
+    if (!gbufferEligible) {
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+    } else if (!ensureGpuDrivenDrawData(m_gpuDrivenGbuffer, m_gbufferDrawList, "gpuDriven.gbuffer")) {
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+    }
+    if (!transparentEligible) {
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+    } else if (!ensureGpuDrivenDrawData(m_gpuDrivenTransparent, m_transparentDrawList,
+                                        "gpuDriven.transparent", true,
+                                        transparentBindlessEligible, transparentBindlessEligible)) {
+        if (transparentBindlessEligible) {
+            transparentBindlessEligible = false;
+            if (!ensureGpuDrivenDrawData(m_gpuDrivenTransparent, m_transparentDrawList,
+                                         "gpuDriven.transparent", true)) {
+                releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+            }
+        } else {
+            releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+        }
+    }
+    m_gpuDrivenTransparent.materialVariant =
+        m_gpuDrivenTransparent.active && m_gpuDrivenTransparent.bindless ? transparentVariant : 0;
+    if (!prepassEligible ||
+        !ensureGpuDrivenDrawData(m_gpuDrivenPrepass, m_prepassDrawList, "gpuDriven.prepass", true) ||
+        !ensureGpuDrivenDrawData(m_gpuDrivenPrepassSecond, m_prepassDrawList, "gpuDriven.prepass.second",
+                                 true)) {
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+    }
+
+    const auto upload = [this, &scene](GpuDrivenDrawData& data, const DrawList& list) {
+        if (!data.active) {
+            return false;
+        }
+        std::vector<Vec4> inputData(static_cast<std::size_t>(data.itemCount) * 9u);
+        std::vector<uint32_t> batchData(static_cast<std::size_t>(data.batchCount) * 8u, 0u);
+        const std::vector<DrawItem>& items = list.items();
+        for (uint32_t itemIndex = 0; itemIndex < data.itemCount; ++itemIndex) {
+            const DrawItem& item = items[itemIndex];
+            const std::size_t base = static_cast<std::size_t>(itemIndex) * 9u;
+            inputData[base + 0u] = Vec4(item.world[0], item.world[1], item.world[2], item.world[3]);
+            inputData[base + 1u] = Vec4(item.world[4], item.world[5], item.world[6], item.world[7]);
+            inputData[base + 2u] = Vec4(item.world[8], item.world[9], item.world[10], item.world[11]);
+            inputData[base + 3u] = Vec4(item.world[12], item.world[13], item.world[14], item.world[15]);
+            const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+            inputData[base + 4u] = lightmap.st;
+            const bool valid = item.worldBounds.valid();
+            const Vec3 center = valid ? item.worldBounds.center()
+                                      : Vec3(item.world[12], item.world[13], item.world[14]);
+            const Vec3 extents = valid ? item.worldBounds.extents() : Vec3(0.0f, 0.0f, 0.0f);
+            inputData[base + 5u] = Vec4(center.x, center.y, center.z, 0.0f);
+            inputData[base + 6u] = Vec4(extents.x, extents.y, extents.z, 0.0f);
+            inputData[base + 7u] = Vec4(valid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+            uint32_t materialIndex = 0;
+            uint32_t indexOffset = item.indexOffset;
+            uint32_t indexCount = item.indexCount;
+            uint32_t vertexBase = 0;
+            if (data.bindless && item.meshIndex < m_materialSystem.meshes().size()) {
+                const GpuMesh& mesh = m_materialSystem.meshes()[item.meshIndex];
+                materialIndex = item.materialIndex;
+                indexOffset = mesh.bindlessIndexBase + item.indexOffset;
+                vertexBase = mesh.bindlessVertexBase;
+            }
+            std::memcpy(&inputData[base + 7u].y, &materialIndex, sizeof(materialIndex));
+            std::memcpy(&inputData[base + 7u].z, &indexOffset, sizeof(indexOffset));
+            std::memcpy(&inputData[base + 7u].w, &indexCount, sizeof(indexCount));
+            std::memcpy(&inputData[base + 8u].x, &vertexBase, sizeof(vertexBase));
+            if (data.sorted) {
+                const auto bias16 = [](int value) {
+                    return static_cast<uint32_t>(std::clamp(value + 32768, 0, 65535));
+                };
+                const DrawSortKey& sortKey = item.sortKey;
+                const uint32_t layer = bias16(sortKey.sortingLayer);
+                const uint32_t queue = bias16(sortKey.renderQueue);
+                const uint32_t priority = 65535u - bias16(sortKey.rendererPriority);
+                const uint32_t order = bias16(sortKey.sortingOrder);
+                uint32_t distanceBits = 0;
+                std::memcpy(&distanceBits, &sortKey.distance, sizeof(distanceBits));
+                const uint32_t key0 = (layer << 16) | queue;
+                const uint32_t key1 = (priority << 16) | order;
+                const uint32_t key2 = ~distanceBits;
+                std::memcpy(&inputData[base + 8u].y, &key0, sizeof(key0));
+                std::memcpy(&inputData[base + 8u].z, &key1, sizeof(key1));
+                std::memcpy(&inputData[base + 8u].w, &key2, sizeof(key2));
+            }
+        }
+        if (data.bindless) {
+            batchData[0] = 0u;
+            batchData[1] = data.itemCount;
+            batchData[2] = 0u;
+            batchData[3] = 0u;
+            batchData[4] = 0u;
+            batchData[5] = 1u;
+        } else if (data.perItemBatches) {
+            for (uint32_t itemIndex = 0; itemIndex < data.itemCount; ++itemIndex) {
+                const DrawItem& item = items[itemIndex];
+                const std::size_t base = static_cast<std::size_t>(itemIndex) * 8u;
+                batchData[base + 0u] = itemIndex;
+                batchData[base + 1u] = 1u;
+                batchData[base + 2u] = item.indexOffset;
+                batchData[base + 3u] = item.indexCount;
+            }
+        } else {
+            const std::vector<DrawBatch>& batches = list.batches();
+            for (uint32_t batchIndex = 0; batchIndex < data.batchCount; ++batchIndex) {
+                const DrawBatch& batch = batches[batchIndex];
+                const std::size_t base = static_cast<std::size_t>(batchIndex) * 8u;
+                const DrawItem& first = items[batch.firstItem];
+                batchData[base + 0u] = batch.firstItem;
+                batchData[base + 1u] = batch.itemCount;
+                batchData[base + 2u] = first.indexOffset;
+                batchData[base + 3u] = first.indexCount;
+            }
+        }
+        return m_resources->updateBuffer(data.input, inputData.data(),
+                                         static_cast<uint32_t>(inputData.size() * sizeof(Vec4))) &&
+               m_resources->updateBuffer(data.batches, batchData.data(),
+                                          static_cast<uint32_t>(batchData.size() * sizeof(uint32_t)));
+    };
+
+    const bool forwardReady = upload(m_gpuDrivenForward, forwardList);
+    const bool gbufferReady = gbufferEligible && upload(m_gpuDrivenGbuffer, m_gbufferDrawList);
+    const bool transparentReady = transparentEligible && upload(m_gpuDrivenTransparent, m_transparentDrawList);
+    const bool prepassReady = m_gpuDrivenPrepass.active && upload(m_gpuDrivenPrepass, m_prepassDrawList);
+    const bool prepassSecondReady =
+        m_gpuDrivenPrepassSecond.active && upload(m_gpuDrivenPrepassSecond, m_prepassDrawList);
+    if (!forwardReady) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+    }
+    if (!gbufferReady) {
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+    }
+    if (!transparentReady) {
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+    }
+    if (!prepassReady || !prepassSecondReady) {
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+    }
+    if ((!m_gpuDrivenForward.active && !m_gpuDrivenGbuffer.active && !m_gpuDrivenTransparent.active &&
+         !m_gpuDrivenPrepass.active) &&
+        !m_gpuDrivenWarningLogged) {
+        HBG_LOGW("gpu-driven geometry: no eligible draw list; using CPU draw lists");
+        m_gpuDrivenWarningLogged = true;
+    }
+    return m_gpuDrivenForward.active || m_gpuDrivenGbuffer.active || m_gpuDrivenTransparent.active ||
+           m_gpuDrivenPrepass.active;
+}
+
 bool ForwardRenderer::updateShadowGpuData(const RenderScene& scene) {
     (void)scene;
     m_shadowGpuCullingActive = false;
@@ -2462,6 +3129,65 @@ void ForwardRenderer::addGpuShadowCullPass(RenderGraph& graph, const FramePassRe
         });
 }
 
+void ForwardRenderer::addGpuSkinningPass(RenderGraph& graph) {
+    if (!m_gpuSkinningActive || m_resources == nullptr || m_materialSystem.gpuSkinMeshes().empty()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Skinning, 0, 0});
+    if (!program.valid() || !m_skinParamsUniform.valid()) {
+        if (!m_gpuSkinningWarningLogged) {
+            HBG_LOGW("gpu skinning: compute program unavailable; using the CPU path");
+            m_gpuSkinningWarningLogged = true;
+        }
+        m_gpuSkinningActive = false;
+        m_materialSystem.setGpuSkinningEnabled(false);
+        return;
+    }
+
+    graph.addComputePass("GPU Skinning")
+        .allowCulling(false)
+        .setRenderFunc([this, program](RenderGraphContext& context) {
+            gfx::Encoder& encoder = context.encoder();
+            const bgfx::ViewId view = context.viewId();
+            encoder.setViewRect(view, 0, 0, 1, 1);
+            encoder.setViewFrameBuffer(view, {});
+
+            const std::vector<GpuMesh>& meshes = m_materialSystem.meshes();
+            m_gpuSkinningDispatches = 0;
+            for (uint32_t meshIndex : m_materialSystem.gpuSkinMeshes()) {
+                if (meshIndex >= meshes.size()) {
+                    continue;
+                }
+                const GpuMesh& mesh = meshes[meshIndex];
+                const gfx::Buffer* output = m_resources->buffer(mesh.skinOutputBuffer);
+                if (output == nullptr || !output->valid() || output->count() == 0 ||
+                    !mesh.skinBaseBuffer.valid() || !mesh.skinInfoBuffer.valid() ||
+                    !mesh.skinInfluenceBuffer.valid() || !mesh.skinJointBuffer.valid()) {
+                    continue;
+                }
+                const uint32_t vertexCount = output->count();
+                const uint32_t jointCount = static_cast<uint32_t>(mesh.previousJointMatrices.size());
+                if (jointCount == 0) {
+                    continue;
+                }
+
+                const Vec4 params(static_cast<float>(vertexCount), static_cast<float>(jointCount), 0.0f, 0.0f);
+                encoder.setUniform(m_skinParamsUniform, &params.x, 1);
+                encoder.setStorageBuffer(0, mesh.skinBaseBuffer, bgfx::Access::Read);
+                encoder.setStorageBuffer(1, mesh.skinInfoBuffer, bgfx::Access::Read);
+                encoder.setStorageBuffer(2, mesh.skinInfluenceBuffer, bgfx::Access::Read);
+                encoder.setStorageBuffer(3, mesh.skinJointBuffer, bgfx::Access::Read);
+                encoder.setStorageBuffer(4, mesh.skinOutputBuffer, bgfx::Access::Write);
+                const uint32_t groups = (vertexCount + 63u) / 64u;
+                encoder.dispatch(view, program, groups, 1, 1);
+                ++m_gpuSkinningDispatches;
+                m_gpuSkinningVertices += vertexCount;
+            }
+            encoder.touch(view);
+        });
+}
+
 bool ForwardRenderer::gpuLightListPathAvailable() {
     if (!m_gpuLightListEnabled || m_resources == nullptr) {
         return false;
@@ -2552,7 +3278,8 @@ void ForwardRenderer::updateLightList() {
     const uint32_t bufferClusterFlagCount =
         static_cast<uint32_t>(clusterTileCountX) * clusterTileCountY;
     const bool bufferAvailable =
-        m_gpuLightListEnabled && m_gpuLightListBufferEnabled && computeSupported && m_resources != nullptr &&
+        m_gpuLightListEnabled && m_gpuLightListBufferEnabled && !m_graphMaterialSystem.hasAnyMaterial() &&
+        computeSupported && m_resources != nullptr &&
         m_lightDataTexture.valid() && m_lightViewRowsTexture.valid() && m_lightScreenBoundsBuffer.valid() &&
         m_lightBigTileBuffer.valid() && m_lightFptlBuffer.valid() &&
         (bufferCount(m_lightScreenBoundsBuffer) == kMaxGpuLights * 2u) &&
@@ -2678,8 +3405,11 @@ void ForwardRenderer::updateLightList() {
         updateCpuLightList();
     }
 
-    if (m_gpuLightListEnabled && !bufferAvailable && m_gpuLightListBufferEnabled && textureAvailable &&
-        !m_gpuLightListWarningLogged) {
+    if (m_graphMaterialSystem.hasAnyMaterial() && textureAvailable && !m_graphLightListTextureLogged) {
+        HBG_LOGI("gpu light list: graph materials use the texture path");
+        m_graphLightListTextureLogged = true;
+    } else if (m_gpuLightListEnabled && !bufferAvailable && m_gpuLightListBufferEnabled && textureAvailable &&
+               !m_graphMaterialSystem.hasAnyMaterial() && !m_gpuLightListWarningLogged) {
         HBG_LOGW("gpu light list: buffer path unavailable; using the texture path");
         m_gpuLightListWarningLogged = true;
     }
@@ -3068,8 +3798,37 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
     diagnostics.shadowCachedAreaRequests = m_shadowManager.cachedAreaRequestCount();
     diagnostics.gpuShadowCulling = m_shadowGpuCullingActive;
     diagnostics.gpuShadowIndirect = m_shadowGpuIndirectActive;
+    diagnostics.gpuSkinningRequested = m_gpuSkinningEnabled;
+    diagnostics.gpuSkinningActive = m_gpuSkinningActive;
+    diagnostics.gpuSkinningMeshes = m_gpuSkinningMeshes;
+    diagnostics.gpuSkinningVertices = m_gpuSkinningVertices;
+    diagnostics.gpuSkinningDispatches = m_gpuSkinningDispatches;
+    diagnostics.depthPyramidComputeRequested = m_pipelineSettings.supportDepthPyramidCompute;
+    diagnostics.depthPyramidComputeActive = m_depthPyramidComputeActive;
+    diagnostics.depthPyramidMips = m_depthPyramidMipCount;
     diagnostics.gpuShadowCullDispatches = m_shadowGpuCullDispatches;
     diagnostics.gpuShadowIndirectDraws = m_shadowIndirectDraws;
+    diagnostics.gpuDrivenRequested = m_gpuDrivenRequested;
+    diagnostics.gpuDrivenActive = m_gpuDrivenForward.active || m_gpuDrivenGbuffer.active ||
+                                  m_gpuDrivenTransparent.active || m_gpuDrivenPrepass.active;
+    diagnostics.gpuDrivenHiZActive = m_depthPyramidMaxComputeActive;
+    diagnostics.gpuDrivenForwardActive = m_gpuDrivenForward.active;
+    diagnostics.gpuDrivenGbufferActive = m_gpuDrivenGbuffer.active;
+    diagnostics.gpuDrivenTransparentActive = m_gpuDrivenTransparent.active;
+    diagnostics.gpuDrivenTransparentSorted =
+        m_gpuDrivenTransparent.active && m_gpuDrivenTransparent.sorted && m_gpuDrivenTransparentSortActive;
+    diagnostics.gpuDrivenPrepassActive = m_gpuDrivenPrepassActive;
+    diagnostics.gpuDrivenBindlessActive = m_gpuDrivenForward.active && m_gpuDrivenForward.bindless;
+    diagnostics.gpuDrivenIndirectCountSupported = m_gpuDrivenIndirectCountSupported;
+    diagnostics.gpuDrivenItems = (m_gpuDrivenForward.active ? m_gpuDrivenForward.itemCount : 0u) +
+                                 (m_gpuDrivenGbuffer.active ? m_gpuDrivenGbuffer.itemCount : 0u) +
+                                 (m_gpuDrivenTransparent.active ? m_gpuDrivenTransparent.itemCount : 0u);
+    diagnostics.gpuDrivenPrepassItems =
+        m_gpuDrivenPrepass.active ? m_gpuDrivenPrepass.itemCount : 0u;
+    diagnostics.gpuDrivenBatches = (m_gpuDrivenForward.active ? m_gpuDrivenForward.batchCount : 0u) +
+                                   (m_gpuDrivenGbuffer.active ? m_gpuDrivenGbuffer.batchCount : 0u) +
+                                   (m_gpuDrivenTransparent.active ? m_gpuDrivenTransparent.batchCount : 0u);
+    diagnostics.gpuDrivenCullingPasses = m_gpuDrivenCullingPasses;
     diagnostics.contactShadowsActive = contactShadowsActive();
     diagnostics.contactShadowWidth = m_contactShadowWidth;
     diagnostics.contactShadowHeight = m_contactShadowHeight;
@@ -3108,6 +3867,7 @@ ForwardRenderer::FrameDiagnostics ForwardRenderer::frameDiagnostics() const {
         diagnostics.vfxSystems = vfxDiagnostics.systems;
         diagnostics.vfxParticles = vfxDiagnostics.particles;
         diagnostics.vfxDraws = vfxDiagnostics.draws;
+        diagnostics.vfxShadowDraws = vfxDiagnostics.shadowDraws;
         diagnostics.vfxDispatches = vfxDiagnostics.dispatches;
         diagnostics.vfxSortPasses = vfxDiagnostics.sortPasses;
         diagnostics.vfxEvents = vfxDiagnostics.eventCount;
@@ -3148,8 +3908,62 @@ void ForwardRenderer::buildDrawLists(const RenderScene& scene) {
         desc.sortingCriteria = kTransparentSortingCriteria;
         desc.frustumCull = true;
         m_transparentDrawList.build(scene, m_viewState, desc);
+
+        if (m_pipelineSettings.supportTransparentBackface) {
+            desc.passTags = shaderPassMask(ShaderPass::TransparentBackface);
+            m_transparentBackfaceDrawList.build(scene, m_viewState, desc);
+        } else {
+            m_transparentBackfaceDrawList.clear();
+        }
+
+        if (motionVectorsActive()) {
+            desc.passTags = kMotionVectorsPassMask;
+            m_transparentMotionVectorDrawList.build(scene, m_viewState, desc);
+        } else {
+            m_transparentMotionVectorDrawList.clear();
+        }
+
+        if (m_pipelineSettings.supportTransparentDepthPrepass &&
+            m_frameSettings.isEnabled(FrameSettingsField::TransparentPrepass)) {
+            desc.passTags = shaderPassMask(ShaderPass::TransparentDepthPrepass);
+            m_transparentDepthPrepassDrawList.build(scene, m_viewState, desc);
+        } else {
+            m_transparentDepthPrepassDrawList.clear();
+        }
+
+        if (m_pipelineSettings.supportTransparentRefraction &&
+            m_frameSettings.isEnabled(FrameSettingsField::Refraction)) {
+            desc.passTags = kForwardPassMask;
+            desc.queueRange = kRenderQueueRangePreRefraction;
+            m_transparentPreRefractionDrawList.build(scene, m_viewState, desc);
+            desc.queueRange = kRenderQueueRangeTransparentWithLowRes;
+            m_transparentRefractionDrawList.build(scene, m_viewState, desc);
+            if (m_pipelineSettings.supportTransparentDepthPrepass &&
+                m_frameSettings.isEnabled(FrameSettingsField::TransparentPrepass)) {
+                desc.passTags = shaderPassMask(ShaderPass::TransparentDepthPrepass);
+                desc.queueRange = kRenderQueueRangePreRefraction;
+                m_transparentPreRefractionDepthPrepassDrawList.build(scene, m_viewState, desc);
+                desc.queueRange = kRenderQueueRangeTransparentWithLowRes;
+                m_transparentRefractionDepthPrepassDrawList.build(scene, m_viewState, desc);
+            } else {
+                m_transparentPreRefractionDepthPrepassDrawList.clear();
+                m_transparentRefractionDepthPrepassDrawList.clear();
+            }
+        } else {
+            m_transparentPreRefractionDrawList.clear();
+            m_transparentRefractionDrawList.clear();
+            m_transparentPreRefractionDepthPrepassDrawList.clear();
+            m_transparentRefractionDepthPrepassDrawList.clear();
+        }
     } else {
         m_transparentDrawList.clear();
+        m_transparentPreRefractionDrawList.clear();
+        m_transparentRefractionDrawList.clear();
+        m_transparentBackfaceDrawList.clear();
+        m_transparentDepthPrepassDrawList.clear();
+        m_transparentPreRefractionDepthPrepassDrawList.clear();
+        m_transparentRefractionDepthPrepassDrawList.clear();
+        m_transparentMotionVectorDrawList.clear();
     }
 
     if (m_frameSettings.isEnabled(FrameSettingsField::OpaqueObjects)) {
@@ -4040,6 +4854,86 @@ void ForwardRenderer::addPrepassPass(RenderGraph& graph, RenderGraphTextureHandl
     });
 }
 
+void ForwardRenderer::addGpuDrivenPrepassPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                               RenderGraphTextureHandle normal, RenderGraphTextureHandle depth,
+                                               RenderGraphBufferHandle indirect, const RenderScene& scene,
+                                               bool depthOnly, bool clearColor, const char* name) {
+    if (!data.active || !indirect.valid() || !depth.valid()) {
+        return;
+    }
+    RenderGraphBuilder pass = graph.addRasterPass(name);
+    if (!depthOnly && normal.valid()) {
+        pass.setColorAttachment(normal);
+    }
+    pass.readBuffer(indirect);
+    pass.readTexture(depth);
+    pass.setDepthAttachment(depth);
+    pass.allowCulling(false);
+    pass.setRenderFunc([this, &scene, data, depthOnly, clearColor](RenderGraphContext& context) {
+        renderGpuDrivenPrepass(context.encoder(), context.viewId(), context.frameBuffer(), scene, data, depthOnly,
+                               clearColor);
+    });
+}
+
+void ForwardRenderer::renderGpuDrivenPrepass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                             gfx::FrameBufferHandle frameBuffer, const RenderScene& scene,
+                                             const GpuDrivenDrawData& data, bool depthOnly, bool clearColor) {
+    if (!m_frameSettings.isEnabled(FrameSettingsField::OpaqueObjects) || m_prepassDrawList.empty()) {
+        return;
+    }
+    if (!data.active || !data.indirect.valid()) {
+        renderPrepass(encoder, view, frameBuffer, scene, depthOnly);
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewTransform(view, m_viewState.constants().view.data(), m_viewState.constants().proj.data());
+    encoder.setViewClear(view, clearColor && !depthOnly ? BGFX_CLEAR_COLOR : BGFX_CLEAR_NONE, 0x000000ff, 1.0f, 0);
+    encoder.touch(view);
+
+    m_globalBinder.upload(m_globalUniforms);
+    const std::vector<GpuMesh>& meshes = m_materialSystem.meshes();
+    const std::vector<DrawItem>& items = m_prepassDrawList.items();
+    for (uint32_t itemIndex = 0; itemIndex < data.itemCount && itemIndex < items.size(); ++itemIndex) {
+        const DrawItem& item = items[itemIndex];
+        if (item.meshIndex >= meshes.size() || item.materialIndex >= m_materialSystem.materials().size() ||
+            item.materialIndex >= scene.materials.size()) {
+            continue;
+        }
+        const GpuMesh& mesh = meshes[item.meshIndex];
+        const GpuMaterial& material = m_materialSystem.materials()[item.materialIndex];
+        const asset::Material& sourceMaterial = scene.materials[item.materialIndex];
+        if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+            continue;
+        }
+        if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+            continue;
+        }
+
+        const gfx::ProgramHandle program =
+            m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Prepass, material.variantKey, 0});
+        if (!program.valid()) {
+            if (m_frameIndex == 0) {
+                HBG_LOGW("prepass program invalid for material variant {}", material.variantKey);
+            }
+            continue;
+        }
+
+        encoder.setState(depthOnly ? prepassDepthState(sourceMaterial) : prepassState(sourceMaterial));
+        encoder.setTransform(item.world.data());
+        m_materialBinder.upload(material.uniforms);
+        encoder.setTexture(0, m_materialSamplers.baseColorMap, material.baseColorTexture);
+        encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, material.metallicRoughnessTexture);
+        encoder.setTexture(2, m_materialSamplers.normalMap, material.normalTexture);
+        encoder.setTexture(3, m_materialSamplers.occlusionMap, material.occlusionTexture);
+        encoder.setTexture(4, m_materialSamplers.emissiveMap, material.emissiveTexture);
+        encoder.setVertexBuffer(0, mesh.vertexBuffer);
+        encoder.setIndexBuffer(mesh.indexBuffer);
+        encoder.submitIndirect(view, program, data.indirect, itemIndex, 1);
+    }
+}
+
 void ForwardRenderer::addObjectsMotionVectorsPass(RenderGraph& graph, RenderGraphTextureHandle motionVector,
                                                   RenderGraphTextureHandle depth, const RenderScene& scene) {
     if (!objectMotionVectorsActive() || m_motionVectorDrawList.empty()) {
@@ -4052,6 +4946,172 @@ void ForwardRenderer::addObjectsMotionVectorsPass(RenderGraph& graph, RenderGrap
     pass.allowCulling(false);
     pass.setRenderFunc([this, &scene](RenderGraphContext& context) {
         renderObjectsMotionVectors(context.encoder(), context.viewId(), context.frameBuffer(), scene);
+    });
+}
+
+void ForwardRenderer::addTransparentDepthPrepass(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                                 const RenderScene& scene) {
+    if (!transparentDepthPrepassActive() || !depth.valid()) {
+        return;
+    }
+    addTransparentDepthPrepass(graph, depth, scene, m_transparentDepthPrepassDrawList,
+                               "Transparent Pre-Color Depth Prepass");
+}
+
+void ForwardRenderer::addTransparentDepthPrepass(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                                 const RenderScene& scene, const DrawList& list,
+                                                 const char* passName) {
+    if (!m_pipelineSettings.supportTransparentDepthPrepass ||
+        !m_frameSettings.isEnabled(FrameSettingsField::TransparentPrepass) ||
+        !m_frameSettings.isEnabled(FrameSettingsField::TransparentObjects) || list.empty() || !depth.valid() ||
+        !m_shaderLibrary.program(shader::ProgramKey{shader::PassId::TransparentMotionVectors, 0, 0}).valid()) {
+        return;
+    }
+    RenderGraphBuilder pass = graph.addRasterPass(passName != nullptr ? passName : "Transparent Depth Prepass");
+    pass.setDepthAttachment(depth);
+    pass.allowCulling(false);
+    pass.setRenderFunc([this, &scene, &list](RenderGraphContext& context) {
+        renderTransparentDepthPrepass(context.encoder(), context.viewId(), context.frameBuffer(), scene, list);
+    });
+}
+
+void ForwardRenderer::addTransparentPreRefractionCompositePass(RenderGraph& graph,
+                                                               const FramePassResources& resources) {
+    if (!resources.color.valid() || !resources.transparentPreRefractionColor.valid() ||
+        !m_bakedIndirectSampler.valid() || !m_refractionSourceDepthSampler.valid() ||
+        !m_refractionPreColorSampler.valid() || !m_bakedGICompositeModeUniform.valid() ||
+        !m_fullscreenVertexBuffer.valid()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::BakedGIForwardComposite, 0, 0});
+    if (!program.valid()) {
+        return;
+    }
+    RenderGraphBuilder pass = graph.addRasterPass("Transparent PreRefraction Composite");
+    pass.setColorAttachment(resources.color);
+    pass.readTexture(resources.transparentPreRefractionColor);
+    if (resources.transparentPreRefractionDepth.valid()) {
+        pass.readTexture(resources.transparentPreRefractionDepth);
+    }
+    pass.allowCulling(false);
+    const RenderGraphTextureHandle source = resources.transparentPreRefractionColor;
+    const RenderGraphTextureHandle sourceDepth = resources.transparentPreRefractionDepth;
+    pass.setRenderFunc([this, program, source, sourceDepth](RenderGraphContext& context) {
+        gfx::Encoder& encoder = context.encoder();
+        const bgfx::ViewId view = context.viewId();
+        encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+        encoder.setViewFrameBuffer(view, context.frameBuffer());
+        const float mode = 1.0f;
+        encoder.setUniform(m_bakedGICompositeModeUniform, &mode, 1);
+        encoder.setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+                         BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA));
+        encoder.setTexture(13, m_bakedIndirectSampler, context.texture(source),
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(0, m_refractionSourceDepthSampler,
+                           sourceDepth.valid() ? context.texture(sourceDepth) : m_bakedIndirectFallback,
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(1, m_refractionPreColorSampler, m_bakedIndirectFallback,
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+        encoder.submit(view, program);
+    });
+}
+
+void ForwardRenderer::addTransparentRefractionSourcePass(RenderGraph& graph,
+                                                         const FramePassResources& resources) {
+    if (!resources.color.valid() || !resources.transparentRefractionSourceColor.valid() ||
+        !resources.transparentPreRefractionColor.valid() ||
+        !resources.transparentPreRefractionDepth.valid() ||
+        !m_bakedIndirectSampler.valid() || !m_refractionSourceDepthSampler.valid() ||
+        !m_refractionPreColorSampler.valid() || !m_bakedGICompositeModeUniform.valid() ||
+        !m_fullscreenVertexBuffer.valid()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::BakedGIForwardComposite, 0, 0});
+    if (!program.valid()) {
+        return;
+    }
+    RenderGraphBuilder pass = graph.addRasterPass("Transparent Refraction Source");
+    pass.setColorAttachment(resources.transparentRefractionSourceColor);
+    pass.readTexture(resources.color);
+    pass.readTexture(resources.transparentPreRefractionColor);
+    pass.readTexture(resources.transparentPreRefractionDepth);
+    pass.allowCulling(false);
+    const RenderGraphTextureHandle source = resources.color;
+    const RenderGraphTextureHandle sourceColor = resources.transparentPreRefractionColor;
+    const RenderGraphTextureHandle sourceDepth = resources.transparentPreRefractionDepth;
+    pass.setRenderFunc([this, program, source, sourceColor, sourceDepth](RenderGraphContext& context) {
+        gfx::Encoder& encoder = context.encoder();
+        const bgfx::ViewId view = context.viewId();
+        encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+        encoder.setViewFrameBuffer(view, context.frameBuffer());
+        m_globalBinder.upload(m_globalUniforms);
+        const Vec4 mode(3.0f, m_pipelineSettings.supportRefractionDepthRejection ? 1.0f : 0.0f, 0.0f,
+                        0.0f);
+        encoder.setUniform(m_bakedGICompositeModeUniform, &mode, 1);
+        encoder.setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+        encoder.setTexture(13, m_bakedIndirectSampler, context.texture(source),
+                           BGFX_SAMPLER_UVW_CLAMP);
+        encoder.setTexture(1, m_refractionPreColorSampler, context.texture(sourceColor),
+                           BGFX_SAMPLER_UVW_CLAMP);
+        encoder.setTexture(0, m_refractionSourceDepthSampler, context.texture(sourceDepth),
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+        encoder.submit(view, program);
+    });
+}
+
+void ForwardRenderer::addTransparentDepthCopyPass(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                                  RenderGraphTextureHandle destination) {
+    if (!depth.valid() || !destination.valid() || !m_fullscreenVertexBuffer.valid() ||
+        !m_shadowCopySampler.valid() || !m_shadowCopyParamsUniform.valid()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::ShadowCopyDepth, 0, 0});
+    if (!program.valid()) {
+        return;
+    }
+    const Vec4 copyParams(static_cast<float>(m_viewState.renderWidth()),
+                          static_cast<float>(m_viewState.renderHeight()),
+                          1.0f / static_cast<float>(m_viewState.renderWidth()),
+                          1.0f / static_cast<float>(m_viewState.renderHeight()));
+    RenderGraphBuilder pass = graph.addRasterPass("Transparent PreRefraction Depth Copy");
+    pass.readTexture(depth);
+    pass.setDepthAttachment(destination);
+    pass.allowCulling(false);
+    pass.setRenderFunc([this, depth, program, copyParams](RenderGraphContext& context) {
+        gfx::Encoder& encoder = context.encoder();
+        const bgfx::ViewId view = context.viewId();
+        encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+        encoder.setViewFrameBuffer(view, context.frameBuffer());
+        encoder.setViewClear(view, BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
+        encoder.touch(view);
+        encoder.setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_ALWAYS);
+        encoder.setUniform(m_shadowCopyParamsUniform, &copyParams.x);
+        encoder.setTexture(0, m_shadowCopySampler, context.texture(depth),
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
+        encoder.submit(view, program);
+    });
+}
+
+void ForwardRenderer::addTransparentMotionVectorsPass(RenderGraph& graph, RenderGraphTextureHandle motionVector,
+                                                      RenderGraphTextureHandle depth, const RenderScene& scene) {
+    if (!transparentMotionVectorsActive() || !motionVector.valid() || !depth.valid()) {
+        return;
+    }
+    const bool objectMotion = m_frameSettings.isEnabled(FrameSettingsField::TransparentsWriteMotionVector);
+    RenderGraphBuilder pass = graph.addRasterPass("Transparent Motion Vectors");
+    pass.setColorAttachment(motionVector);
+    pass.readTexture(depth);
+    pass.setDepthAttachment(depth, 0, true);
+    pass.allowCulling(false);
+    pass.setRenderFunc([this, &scene, objectMotion](RenderGraphContext& context) {
+        renderTransparentMotionVectors(context.encoder(), context.viewId(), context.frameBuffer(), scene,
+                                       objectMotion);
     });
 }
 
@@ -4085,6 +5145,69 @@ void ForwardRenderer::addDepthPyramidPasses(RenderGraph& graph, RenderGraphTextu
     const uint16_t renderWidth = m_viewState.renderWidth();
     const uint16_t renderHeight = m_viewState.renderHeight();
     m_depthPyramidMipCount = depthPyramidMipCount(renderWidth, renderHeight);
+
+    const gfx::ProgramHandle computeProgram =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DepthPyramidCompute, 0, 0});
+    if (m_depthPyramidComputeActive && computeProgram.valid()) {
+        for (uint16_t mip = 0; mip < m_depthPyramidMipCount; ++mip) {
+            const uint16_t targetWidth = depthPyramidMipDimension(renderWidth, static_cast<uint8_t>(mip));
+            const uint16_t targetHeight = depthPyramidMipDimension(renderHeight, static_cast<uint8_t>(mip));
+            const uint8_t sourceMip = mip > 0 ? static_cast<uint8_t>(mip - 1) : 0;
+            const uint16_t sourceWidth =
+                depthPyramidMipDimension(renderWidth, sourceMip);
+            const uint16_t sourceHeight =
+                depthPyramidMipDimension(renderHeight, sourceMip);
+            const uint32_t groupsX = (static_cast<uint32_t>(targetWidth) + 7u) / 8u;
+            const uint32_t groupsY = (static_cast<uint32_t>(targetHeight) + 7u) / 8u;
+
+            RenderGraphBuilder pass =
+                graph.addComputePass(mip == 0 ? "Depth Pyramid Copy Compute"
+                                               : "Depth Pyramid Mip " + std::to_string(mip));
+            if (mip == 0) {
+                pass.readTexture(depth);
+            } else {
+                pass.readTexture(depthPyramid);
+            }
+            pass.writeTexture(depthPyramid);
+            pass.setViewSize(targetWidth, targetHeight);
+            pass.allowCulling(false);
+            pass.setRenderFunc([this, depth, depthPyramid, computeProgram, mip, sourceMip, sourceWidth,
+                                sourceHeight, targetWidth, targetHeight, groupsX, groupsY](
+                                   RenderGraphContext& context) {
+                gfx::Encoder& encoder = context.encoder();
+                const bgfx::ViewId view = context.viewId();
+                encoder.setViewRect(view, 0, 0, targetWidth, targetHeight);
+                encoder.setViewFrameBuffer(view, {});
+
+                m_prepassUniforms = {};
+                m_prepassUniforms.depthPyramidParams =
+                    Vec4(1.0f / static_cast<float>(sourceWidth),
+                         1.0f / static_cast<float>(sourceHeight),
+                         static_cast<float>(sourceWidth), static_cast<float>(sourceHeight));
+                m_prepassBinder.upload(m_prepassUniforms);
+
+                if (mip == 0) {
+                    encoder.setTexture(0, m_depthSourceSampler, context.texture(depth),
+                                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                } else {
+                    encoder.setTextureMip(0, m_depthSourceSampler, context.texture(depthPyramid), sourceMip, 1,
+                                          BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                }
+                encoder.setImage(1, context.texture(depthPyramid), static_cast<uint8_t>(mip),
+                                 bgfx::Access::Write, gfx::TextureFormat::R32F);
+                encoder.dispatch(view, computeProgram, groupsX, groupsY, 1);
+            });
+        }
+        return;
+    }
+
+    if (m_depthPyramidComputeActive) {
+        if (!m_depthPyramidComputeWarningLogged) {
+            HBG_LOGW("depth pyramid compute program is unavailable; falling back to the raster path");
+            m_depthPyramidComputeWarningLogged = true;
+        }
+        m_depthPyramidComputeActive = false;
+    }
 
     for (uint16_t mip = 0; mip < m_depthPyramidMipCount; ++mip) {
         const uint16_t targetWidth = depthPyramidMipDimension(renderWidth, static_cast<uint8_t>(mip));
@@ -4136,6 +5259,228 @@ void ForwardRenderer::addDepthPyramidPasses(RenderGraph& graph, RenderGraphTextu
             renderDepthPyramidMip(context.encoder(), context.viewId(), context.frameBuffer(), context.texture(scratch),
                                   sourceWidth, sourceHeight, targetWidth, targetHeight, 0, false);
         });
+    }
+}
+
+void ForwardRenderer::addDepthPyramidMaxPasses(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                                RenderGraphTextureHandle depthPyramidMax) {
+    if (!m_depthPyramidMaxComputeActive || !depth.valid() || !depthPyramidMax.valid()) {
+        return;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::DepthPyramidMaxCompute, 0, 0});
+    if (!program.valid()) {
+        if (!m_depthPyramidMaxWarningLogged) {
+            HBG_LOGW("Hi-Z depth pyramid compute program is unavailable; disabling GPU-driven geometry");
+            m_depthPyramidMaxWarningLogged = true;
+        }
+        m_depthPyramidMaxComputeActive = false;
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+        return;
+    }
+
+    const uint16_t renderWidth = m_viewState.renderWidth();
+    const uint16_t renderHeight = m_viewState.renderHeight();
+    m_depthPyramidMipCount = depthPyramidMipCount(renderWidth, renderHeight);
+    for (uint16_t mip = 0; mip < m_depthPyramidMipCount; ++mip) {
+        const uint16_t targetWidth = depthPyramidMipDimension(renderWidth, static_cast<uint8_t>(mip));
+        const uint16_t targetHeight = depthPyramidMipDimension(renderHeight, static_cast<uint8_t>(mip));
+        const uint8_t sourceMip = mip > 0 ? static_cast<uint8_t>(mip - 1) : 0;
+        const uint16_t sourceWidth = depthPyramidMipDimension(renderWidth, sourceMip);
+        const uint16_t sourceHeight = depthPyramidMipDimension(renderHeight, sourceMip);
+        const uint32_t groupsX = (static_cast<uint32_t>(targetWidth) + 7u) / 8u;
+        const uint32_t groupsY = (static_cast<uint32_t>(targetHeight) + 7u) / 8u;
+
+        RenderGraphBuilder pass = graph.addComputePass(
+            mip == 0 ? "Hi-Z Depth Pyramid Copy" : "Hi-Z Depth Pyramid Mip " + std::to_string(mip));
+        if (mip == 0) {
+            pass.readTexture(depth);
+        } else {
+            pass.readTexture(depthPyramidMax);
+        }
+        pass.writeTexture(depthPyramidMax);
+        pass.setViewSize(targetWidth, targetHeight);
+        pass.allowCulling(false);
+        pass.setRenderFunc([this, depth, depthPyramidMax, program, mip, sourceMip, sourceWidth, sourceHeight,
+                            targetWidth, targetHeight, groupsX, groupsY](RenderGraphContext& context) {
+            gfx::Encoder& encoder = context.encoder();
+            const bgfx::ViewId view = context.viewId();
+            encoder.setViewRect(view, 0, 0, targetWidth, targetHeight);
+            encoder.setViewFrameBuffer(view, {});
+            m_prepassUniforms = {};
+            m_prepassUniforms.depthPyramidParams =
+                Vec4(1.0f / static_cast<float>(sourceWidth), 1.0f / static_cast<float>(sourceHeight),
+                     static_cast<float>(sourceWidth), static_cast<float>(sourceHeight));
+            m_prepassBinder.upload(m_prepassUniforms);
+            if (mip == 0) {
+                encoder.setTexture(0, m_depthSourceSampler, context.texture(depth),
+                                   BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            } else {
+                encoder.setTextureMip(0, m_depthSourceSampler, context.texture(depthPyramidMax), sourceMip, 1,
+                                      BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+            }
+            encoder.setImage(1, context.texture(depthPyramidMax), static_cast<uint8_t>(mip),
+                             bgfx::Access::Write, gfx::TextureFormat::R32F);
+            encoder.dispatch(view, program, groupsX, groupsY, 1);
+        });
+    }
+}
+
+bool ForwardRenderer::addGpuDrivenCullingPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                               RenderGraphBufferHandle input, RenderGraphBufferHandle batches,
+                                               RenderGraphBufferHandle visible, RenderGraphBufferHandle indirect,
+                                               RenderGraphBufferHandle drawRecords, RenderGraphBufferHandle count,
+                                               RenderGraphTextureHandle hiZ,
+                                               RenderGraphBufferHandle previousIndirect, const char* name,
+                                               bool retestCulled) {
+    if (!data.active || !input.valid() || !batches.valid() || !visible.valid() || !indirect.valid() ||
+        !drawRecords.valid() || !count.valid() || !hiZ.valid() || !m_gpuDrivenParamsUniform.valid() ||
+        !m_gpuDrivenCullModeUniform.valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GpuDrivenCull, 0, 0});
+    if (!program.valid()) {
+        return false;
+    }
+
+    const Vec4 params(static_cast<float>(m_viewState.renderWidth()),
+                      static_cast<float>(m_viewState.renderHeight()),
+                      static_cast<float>(m_depthPyramidMipCount), 1.0e-4f);
+    const bool hasPrevious = previousIndirect.valid();
+    const Vec4 cullMode(retestCulled ? 1.0f : 0.0f, data.bindless ? 1.0f : 0.0f, 0.0f, 0.0f);
+    RenderGraphBuilder pass = graph.addComputePass(name);
+    pass.readTexture(hiZ)
+        .readBuffer(input)
+        .readBuffer(batches)
+        .writeBuffer(visible)
+        .writeBuffer(indirect)
+        .writeBuffer(drawRecords)
+        .writeBuffer(count)
+        .allowCulling(false);
+    if (hasPrevious) {
+        pass.readBuffer(previousIndirect);
+    }
+    pass.setRenderFunc([this, data, program, params, cullMode, input, batches, visible, indirect, drawRecords,
+                        count, hiZ, previousIndirect, hasPrevious](RenderGraphContext& context) {
+        gfx::Encoder& encoder = context.encoder();
+        const bgfx::ViewId view = context.viewId();
+        encoder.setViewRect(view, 0, 0, 1, 1);
+        encoder.setViewFrameBuffer(view, {});
+        m_globalBinder.upload(m_globalUniforms);
+        encoder.setUniform(m_gpuDrivenParamsUniform, &params.x, 1);
+        encoder.setUniform(m_gpuDrivenCullModeUniform, &cullMode.x, 1);
+        encoder.setTexture(0, m_depthPyramidSampler, context.texture(hiZ),
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setStorageBuffer(1, context.buffer(input), bgfx::Access::Read);
+        encoder.setStorageBuffer(2, context.buffer(batches), bgfx::Access::Read);
+        encoder.setStorageBuffer(3, context.buffer(visible), bgfx::Access::Write);
+        encoder.setStorageBuffer(4, context.buffer(indirect), bgfx::Access::Write);
+        encoder.setStorageBuffer(5, hasPrevious ? context.buffer(previousIndirect) : context.buffer(indirect),
+                                 bgfx::Access::Read);
+        encoder.setStorageBuffer(6, context.buffer(count), bgfx::Access::Write);
+        encoder.setStorageBuffer(7, context.buffer(drawRecords), bgfx::Access::Write);
+        encoder.dispatch(view, program, data.batchCount, 1, 1);
+    });
+    ++m_gpuDrivenCullingPasses;
+    return true;
+}
+
+bool ForwardRenderer::addGpuDrivenTransparentSortPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                                       RenderGraphBufferHandle input,
+                                                       RenderGraphBufferHandle visible,
+                                                       RenderGraphBufferHandle drawRecords,
+                                                       RenderGraphBufferHandle count,
+                                                       RenderGraphBufferHandle sortedVisible,
+                                                       RenderGraphBufferHandle sortedIndirect) {
+    if (!data.active || !data.sorted || !data.bindless || data.itemCount == 0 || !input.valid() ||
+        !visible.valid() || !drawRecords.valid() || !count.valid() || !sortedVisible.valid() ||
+        !sortedIndirect.valid() || !m_gpuSortParamsUniform.valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GpuDrivenTransparentSort, 0, 0});
+    if (!program.valid()) {
+        return false;
+    }
+
+    const Vec4 params(static_cast<float>(data.itemCount), 0.0f, 0.0f, 0.0f);
+    const uint32_t groups = (data.itemCount + 63u) / 64u;
+    RenderGraphBuilder pass = graph.addComputePass("GPU-Driven Transparent Sort");
+    pass.readBuffer(input)
+        .readBuffer(visible)
+        .readBuffer(drawRecords)
+        .readBuffer(count)
+        .writeBuffer(sortedVisible)
+        .writeBuffer(sortedIndirect)
+        .allowCulling(false);
+    pass.setRenderFunc([this, program, params, groups, input, visible, drawRecords, count, sortedVisible,
+                        sortedIndirect](RenderGraphContext& context) {
+        gfx::Encoder& encoder = context.encoder();
+        const bgfx::ViewId view = context.viewId();
+        encoder.setViewRect(view, 0, 0, 1, 1);
+        encoder.setViewFrameBuffer(view, {});
+        encoder.setUniform(m_gpuSortParamsUniform, &params.x, 1);
+        encoder.setStorageBuffer(1, context.buffer(input), bgfx::Access::Read);
+        encoder.setStorageBuffer(2, context.buffer(visible), bgfx::Access::Read);
+        encoder.setStorageBuffer(3, context.buffer(count), bgfx::Access::Read);
+        encoder.setStorageBuffer(4, context.buffer(drawRecords), bgfx::Access::Read);
+        encoder.setStorageBuffer(5, context.buffer(sortedVisible), bgfx::Access::Write);
+        encoder.setStorageBuffer(6, context.buffer(sortedIndirect), bgfx::Access::Write);
+        encoder.dispatch(view, program, groups, 1, 1);
+    });
+    return true;
+}
+
+void ForwardRenderer::addGpuDrivenCullingPasses(RenderGraph& graph,
+                                                 const FramePassResources& resources) {
+    m_gpuDrivenTransparentSortActive = false;
+    if (!m_depthPyramidMaxComputeActive || !resources.hiZDepthPyramid.valid() ||
+        !m_gpuDrivenParamsUniform.valid() || !m_gpuDrivenCullModeUniform.valid()) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+        return;
+    }
+    if (!m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GpuDrivenCull, 0, 0}).valid()) {
+        releaseGpuDrivenDrawData(m_gpuDrivenForward);
+        releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+        releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+        releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+        return;
+    }
+
+    addGpuDrivenCullingPass(graph, m_gpuDrivenForward, resources.gpuDrivenForwardInput,
+                            resources.gpuDrivenForwardBatches, resources.gpuDrivenForwardVisible,
+                            resources.gpuDrivenForwardIndirect, resources.gpuDrivenForwardDrawRecords,
+                            resources.gpuDrivenForwardCount,
+                            resources.hiZDepthPyramid, {}, "GPU-Driven Forward Culling", false);
+    addGpuDrivenCullingPass(graph, m_gpuDrivenGbuffer, resources.gpuDrivenGbufferInput,
+                            resources.gpuDrivenGbufferBatches, resources.gpuDrivenGbufferVisible,
+                            resources.gpuDrivenGbufferIndirect, resources.gpuDrivenGbufferDrawRecords,
+                            resources.gpuDrivenGbufferCount,
+                            resources.hiZDepthPyramid, {}, "GPU-Driven GBuffer Culling", false);
+    addGpuDrivenCullingPass(graph, m_gpuDrivenTransparent, resources.gpuDrivenTransparentInput,
+                            resources.gpuDrivenTransparentBatches, resources.gpuDrivenTransparentVisible,
+                            resources.gpuDrivenTransparentIndirect, resources.gpuDrivenTransparentDrawRecords,
+                            resources.gpuDrivenTransparentCount,
+                            resources.hiZDepthPyramid, {}, "GPU-Driven Transparent Culling", false);
+    if (m_gpuDrivenTransparent.sorted) {
+        m_gpuDrivenTransparentSortActive =
+            addGpuDrivenTransparentSortPass(graph, m_gpuDrivenTransparent,
+                                            resources.gpuDrivenTransparentInput,
+                                            resources.gpuDrivenTransparentVisible,
+                                            resources.gpuDrivenTransparentDrawRecords,
+                                            resources.gpuDrivenTransparentCount,
+                                            resources.gpuDrivenTransparentSortedVisible,
+                                            resources.gpuDrivenTransparentSortedIndirect);
     }
 }
 
@@ -4452,20 +5797,34 @@ void ForwardRenderer::addGBufferPass(RenderGraph& graph, const FramePassResource
 
     const bool decals = std::all_of(resources.decal.begin(), resources.decal.end(),
                                     [](RenderGraphTextureHandle texture) { return texture.valid(); });
+    const bool gpuDriven = m_gpuDrivenGbuffer.active && resources.gpuDrivenGbufferVisible.valid() &&
+                           resources.gpuDrivenGbufferIndirect.valid() && !decals;
     RenderGraphBuilder pass = graph.addRasterPass(decals ? "GBuffer + Decals" : "GBuffer");
     for (std::size_t index = 0; index < resources.gbuffer.size(); ++index) {
         pass.setColorAttachment(resources.gbuffer[index], static_cast<uint8_t>(index));
     }
     pass.readTexture(resources.depth);
     pass.setDepthAttachment(resources.depth);
+    const RenderGraphTextureHandle graphSceneDepth = resources.depthPyramid;
+    if (graphSceneDepth.valid()) {
+        pass.readTexture(graphSceneDepth);
+    }
     if (decals) {
         for (RenderGraphTextureHandle decal : resources.decal) {
             pass.readTexture(decal);
         }
     }
+    if (gpuDriven) {
+        pass.readBuffer(resources.gpuDrivenGbufferVisible);
+        pass.readBuffer(resources.gpuDrivenGbufferIndirect);
+    }
     pass.allowCulling(false);
-    pass.setRenderFunc([this, &scene, decals](RenderGraphContext& context) {
-        renderGBufferPass(context.encoder(), context.viewId(), context.frameBuffer(), scene, decals);
+    pass.setRenderFunc([this, &scene, decals, gpuDriven,
+                        graphSceneDepth](RenderGraphContext& context) {
+        const gfx::TextureHandle sceneDepth =
+            graphSceneDepth.valid() ? context.texture(graphSceneDepth) : gfx::TextureHandle{};
+        renderGBufferPass(context.encoder(), context.viewId(), context.frameBuffer(), scene, decals,
+                          gpuDriven, sceneDepth);
     });
 }
 
@@ -5156,12 +6515,16 @@ bool ForwardRenderer::replaceVfxRuntime(VfxInstanceRuntime& runtime,
         return false;
     }
 
+    const VfxInstance* primary = runtime.instance;
+    if (primary == nullptr && !runtime.instances.empty()) {
+        primary = runtime.instances.front();
+    }
     ::vfx::EffectDesc desc;
-    desc.transform = runtime.instance != nullptr ? toVfxMatrix(vfxInstanceWorld(*runtime.instance))
-                                                  : ::vfx::Mat4::identity();
+    desc.transform = primary != nullptr ? toVfxMatrix(vfxInstanceWorld(*primary)) : ::vfx::Mat4::identity();
     desc.playOnAwake = runtime.playing;
     desc.playRate = runtime.playRate;
     desc.randomSeed = runtime.randomSeed;
+    desc.instanceBatchLimit = m_pipelineSettings.vfxInstanceBatchSize;
     ::vfx::Effect* replacement =
         runtime.effect != nullptr
             ? m_vfxRuntime->reloadEffect(runtime.effect, *asset, desc, &localError)
@@ -5180,13 +6543,16 @@ bool ForwardRenderer::replaceVfxRuntime(VfxInstanceRuntime& runtime,
         replacement->play();
     }
 
-    if (runtime.instance != nullptr) {
-        for (const VfxPropertyValue& property : runtime.instance->properties) {
+    if (primary != nullptr) {
+        for (const VfxPropertyValue& property : primary->properties) {
             if (!replacement->setProperty(property.name, toVfxProperty(property))) {
-                HBG_LOGW("VFX effect '{}': property '{}' was not applied", runtime.instance->name,
-                         property.name);
+                HBG_LOGW("VFX effect '{}': property '{}' was not applied", primary->name, property.name);
             }
         }
+    }
+    if (runtime.instances.size() > 1u && !replacement->supportsEffectInstancing()) {
+        HBG_LOGW("VFX instancing group '{}' no longer supports grouped rendering; recreate the scene",
+                 primary != nullptr ? primary->name : std::string("<preview>"));
     }
     return true;
 }
@@ -5199,13 +6565,30 @@ void ForwardRenderer::ensureVfx(const RenderScene& scene) {
         return;
     }
     m_vfxSceneInitialized = true;
+    m_vfxTransparentSortLogged = false;
 
     for (const VfxInstance& instance : scene.vfxInstances) {
         if (!instance.enabled) {
             continue;
         }
+        if (m_pipelineSettings.supportVFXInstancing && !m_vfxInstanceRuntimes.empty()) {
+            VfxInstanceRuntime& group = m_vfxInstanceRuntimes.back();
+            if (!group.preview && group.effect != nullptr && !group.instances.empty() &&
+                group.effect->supportsEffectInstancing()) {
+                const VfxInstance& first = *group.instances.front();
+                if (equivalentPath(first.asset, instance.asset) &&
+                    first.randomSeed == instance.randomSeed &&
+                    std::abs(first.playRate - instance.playRate) <= 1.0e-6f &&
+                    first.playOnAwake == instance.playOnAwake &&
+                    sameVfxProperties(first, instance)) {
+                    group.instances.push_back(&instance);
+                    continue;
+                }
+            }
+        }
         VfxInstanceRuntime runtime;
         runtime.instance = &instance;
+        runtime.instances.push_back(&instance);
         runtime.assetPath = instance.asset;
         runtime.playRate = instance.playRate;
         runtime.randomSeed = instance.randomSeed;
@@ -5221,7 +6604,13 @@ void ForwardRenderer::ensureVfx(const RenderScene& scene) {
     m_vfxActive = !m_vfxInstanceRuntimes.empty();
     m_vfxHasLitOutputs = m_vfxRuntime->hasLitOutputs();
     if (m_vfxActive) {
-        HBG_LOGI("VFX runtime: active effects={}", m_vfxInstanceRuntimes.size());
+        std::size_t instanceCount = 0;
+        for (const VfxInstanceRuntime& runtime : m_vfxInstanceRuntimes) {
+            instanceCount += runtime.instances.empty() ? 1u : runtime.instances.size();
+        }
+        HBG_LOGI("VFX runtime: active effects={} instances={} instancing={}",
+                 m_vfxInstanceRuntimes.size(), instanceCount,
+                 m_pipelineSettings.supportVFXInstancing ? "true" : "false");
     }
 }
 
@@ -5421,7 +6810,8 @@ ForwardRenderer::VfxPlaybackStatus ForwardRenderer::vfxPlaybackStatus(
         status.available = true;
         status.paused = status.paused || runtime.paused || !runtime.playing;
         status.preview = status.preview || runtime.preview;
-        ++status.instances;
+        status.instances +=
+            static_cast<std::uint32_t>(runtime.instances.empty() ? 1u : runtime.instances.size());
         if (runtime.effect != nullptr) {
             const ::vfx::Bounds bounds = runtime.effect->bounds();
             if (bounds.valid) {
@@ -5434,6 +6824,8 @@ ForwardRenderer::VfxPlaybackStatus ForwardRenderer::vfxPlaybackStatus(
 }
 
 void ForwardRenderer::releaseVfx() {
+    m_vfxTransparentSegments.clear();
+    m_vfxTransparentSortLogged = false;
     m_vfxInstanceRuntimes.clear();
     m_vfxRuntime.reset();
     m_vfxBackend.reset();
@@ -5449,9 +6841,26 @@ void ForwardRenderer::updateVfx(const RenderScene& scene, float deltaSeconds) {
     if (m_vfxRuntime == nullptr) {
         return;
     }
+    const std::array<Vec4, 6>& frustumPlanes = m_viewState.constants().frustumPlanes;
+    std::vector<::vfx::Mat4> transforms;
     for (VfxInstanceRuntime& runtime : m_vfxInstanceRuntimes) {
-        if (runtime.instance != nullptr && runtime.effect != nullptr) {
-            runtime.effect->setTransform(toVfxMatrix(vfxInstanceWorld(*runtime.instance)));
+        if (runtime.effect == nullptr) {
+            continue;
+        }
+        if (runtime.instances.empty()) {
+            runtime.effect->setCulled(
+                !intersectsFrustum(frustumPlanes, toRenderBounds(runtime.effect->bounds())));
+            continue;
+        }
+        transforms.clear();
+        transforms.reserve(runtime.instances.size());
+        for (const VfxInstance* instance : runtime.instances) {
+            transforms.push_back(toVfxMatrix(vfxInstanceWorld(*instance)));
+        }
+        runtime.effect->setInstanceTransforms(transforms);
+        for (std::size_t i = 0; i < runtime.effect->instanceCount(); ++i) {
+            runtime.effect->setInstanceCulled(
+                i, !intersectsFrustum(frustumPlanes, toRenderBounds(runtime.effect->instanceBounds(i))));
         }
     }
     m_vfxDeltaSeconds = deltaSeconds;
@@ -5586,11 +6995,13 @@ void ForwardRenderer::addVfxSimulationPass(RenderGraph& graph) {
     });
 }
 
-void ForwardRenderer::addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources) {
+void ForwardRenderer::addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources,
+                                       ::vfx::Effect* effect, const char* passName,
+                                       std::uint32_t batchIndex) {
     if (m_vfxRuntime == nullptr || !m_vfxActive || !resources.color.valid() || !resources.depth.valid()) {
         return;
     }
-    RenderGraphBuilder pass = graph.addRasterPass("VFX Output");
+    RenderGraphBuilder pass = graph.addRasterPass(passName != nullptr ? passName : "VFX Output");
     pass.setColorAttachment(resources.color);
     pass.readTexture(resources.depth);
     pass.setDepthAttachment(resources.depth, 0, true);
@@ -5616,7 +7027,7 @@ void ForwardRenderer::addVfxOutputPass(RenderGraph& graph, const FramePassResour
         pass.readTexture(resources.contactShadow);
     }
     pass.allowCulling(false);
-    pass.setRenderFunc([this, resources](RenderGraphContext& context) {
+    pass.setRenderFunc([this, resources, effect, batchIndex](RenderGraphContext& context) {
         context.encoder().setViewRect(context.viewId(), 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
         context.encoder().setViewFrameBuffer(context.viewId(), context.frameBuffer());
         m_vfxBackend->begin(context.encoder(), context.viewId());
@@ -5644,9 +7055,241 @@ void ForwardRenderer::addVfxOutputPass(RenderGraph& graph, const FramePassResour
             lighting.clusterUniforms.depthParams.w = 0.0f;
         }
         frame.lighting = &lighting;
-        m_vfxRuntime->encodeOutput(*m_vfxBackend, frame);
+        if (effect != nullptr) {
+            if (batchIndex == 0xffffffffu) {
+                m_vfxRuntime->encodeOutputEffect(*m_vfxBackend, frame, *effect);
+            } else {
+                m_vfxRuntime->encodeOutputEffectBatch(*m_vfxBackend, frame, *effect, batchIndex);
+            }
+        } else {
+            m_vfxRuntime->encodeOutput(*m_vfxBackend, frame);
+        }
         m_vfxBackend->end();
     });
+}
+
+void ForwardRenderer::addVfxMotionVectorsPass(RenderGraph& graph, const FramePassResources& resources) {
+    if (m_vfxRuntime == nullptr || !m_vfxActive || !motionVectorsActive() ||
+        !resources.motionVector.valid() || !resources.depth.valid()) {
+        return;
+    }
+    RenderGraphBuilder pass = graph.addRasterPass("VFX Motion Vectors");
+    pass.setColorAttachment(resources.motionVector);
+    pass.readTexture(resources.depth);
+    pass.setDepthAttachment(resources.depth, 0, true);
+    pass.allowCulling(false);
+    pass.setRenderFunc([this, resources](RenderGraphContext& context) {
+        context.encoder().setViewRect(context.viewId(), 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+        context.encoder().setViewFrameBuffer(context.viewId(), context.frameBuffer());
+        m_globalBinder.upload(m_globalUniforms);
+        m_vfxBackend->begin(context.encoder(), context.viewId());
+        const ::vfx::FrameContext frame = makeVfxFrameContext(context, resources);
+        m_vfxRuntime->encodeMotionVectors(*m_vfxBackend, frame);
+        m_vfxBackend->end();
+    });
+}
+
+void ForwardRenderer::addTransparentFramePasses(RenderGraph& graph, const RenderScene& scene,
+                                                FramePassResources& resources, bool vfxVisible) {
+    const auto addTransparent = [&](const DrawList* list, RenderGraphTextureHandle depthOverride,
+                                    const char* passName) {
+        addForwardPass(graph, resources, resources.color, resources.depth, resources.lightData,
+                       resources.lightList, resources.clusterLightList, resources.lightFptlBuffer,
+                       resources.lightClusterBuffer, resources.directionalShadow, resources.punctualShadow,
+                       resources.areaShadow, resources.shadowContext, resources.contactShadow, scene, true,
+                       false, list, depthOverride, passName);
+    };
+
+    m_vfxTransparentSegments.clear();
+    const bool sortVfx = vfxVisible && m_pipelineSettings.supportVFXTransparentSort && m_vfxActive &&
+                         m_vfxRuntime != nullptr && !m_transparentDrawList.empty() &&
+                         !transparentRefractionActive() && !transparentBackfaceActive();
+    if (!sortVfx) {
+        if (vfxVisible) {
+            addVfxOutputPass(graph, resources);
+            addVfxMotionVectorsPass(graph, resources);
+        }
+        if (transparentRefractionActive()) {
+            addTransparentDepthPrepass(graph, resources.depth, scene,
+                                       m_transparentPreRefractionDepthPrepassDrawList,
+                                       "Transparent PreRefraction Depth Prepass");
+            addTransparentDepthCopyPass(graph, resources.depth, resources.transparentPreRefractionDepth);
+            addTransparentDepthPrepass(graph, resources.depth, scene,
+                                       m_transparentRefractionDepthPrepassDrawList,
+                                       "Transparent Refraction Depth Prepass");
+            addForwardPass(graph, resources, resources.transparentPreRefractionColor, resources.depth,
+                           resources.lightData, resources.lightList, resources.clusterLightList,
+                           resources.lightFptlBuffer, resources.lightClusterBuffer,
+                           resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
+                           resources.shadowContext, resources.contactShadow, scene, true, false,
+                           &m_transparentPreRefractionDrawList, resources.transparentPreRefractionDepth,
+                           "Forward PreRefraction");
+            addTransparentRefractionSourcePass(graph, resources);
+            addTransparent(&m_transparentRefractionDrawList, {}, "Forward Refraction");
+            addTransparentPreRefractionCompositePass(graph, resources);
+        } else {
+            addTransparentDepthPrepass(graph, resources.depth, scene);
+            addTransparent(nullptr, {}, nullptr);
+        }
+        addTransparentMotionVectorsPass(graph, resources.motionVector, resources.depth, scene);
+        return;
+    }
+
+    constexpr std::uint32_t kEffectLevelBatch = 0xffffffffu;
+    struct Submission {
+        ::vfx::Effect* effect = nullptr;
+        std::uint32_t batchIndex = kEffectLevelBatch;
+        DrawSortKey key;
+    };
+    std::vector<Submission> submissions;
+    submissions.reserve(m_vfxInstanceRuntimes.size());
+    std::vector<std::uint32_t> activeInstances;
+    std::size_t effectCount = 0;
+    const Vec3 cameraPosition = m_viewState.cameraPosition();
+    const auto boundsCenter = [&](const ::vfx::Bounds& bounds,
+                                  const VfxInstanceRuntime& runtime,
+                                  std::size_t instanceIndex) {
+        if (bounds.valid) {
+            return Vec3{(bounds.min.x + bounds.max.x) * 0.5f,
+                        (bounds.min.y + bounds.max.y) * 0.5f,
+                        (bounds.min.z + bounds.max.z) * 0.5f};
+        }
+        if (instanceIndex < runtime.instances.size() && runtime.instances[instanceIndex] != nullptr) {
+            return runtime.instances[instanceIndex]->position;
+        }
+        return runtime.instance != nullptr ? runtime.instance->position : cameraPosition;
+    };
+    const auto appendSubmission = [&](const VfxInstanceRuntime& runtime, std::uint32_t batchIndex,
+                                      const Vec3& center) {
+        Submission submission;
+        submission.effect = runtime.effect;
+        submission.batchIndex = batchIndex;
+        submission.key.renderQueue = kRenderQueueTransparent;
+        submission.key.distance = length(cameraPosition - center);
+        submission.key.quantizedDistance = quantizeDrawDistance(submission.key.distance);
+        submission.key.sequence =
+            static_cast<uint32_t>(m_transparentDrawList.size() + submissions.size());
+        submissions.push_back(submission);
+    };
+    for (const VfxInstanceRuntime& runtime : m_vfxInstanceRuntimes) {
+        if (runtime.effect == nullptr || runtime.effect->isCulled()) {
+            continue;
+        }
+        const std::uint32_t batchCount = runtime.effect->outputBatchCount();
+        if (batchCount > 1u) {
+            const std::uint32_t batchSize = std::max(runtime.effect->outputBatchSize(), 1u);
+            activeInstances.clear();
+            const std::size_t instanceCount = runtime.effect->instanceCount();
+            for (std::size_t i = 0; i < instanceCount; ++i) {
+                if (!runtime.effect->isInstanceCulled(i)) {
+                    activeInstances.push_back(static_cast<std::uint32_t>(i));
+                }
+            }
+            bool added = false;
+            for (std::uint32_t batch = 0; batch < batchCount; ++batch) {
+                const std::size_t first = static_cast<std::size_t>(batch) * batchSize;
+                if (first >= activeInstances.size()) {
+                    break;
+                }
+                const std::size_t last = std::min(first + batchSize, activeInstances.size());
+                ::vfx::Bounds batchBounds;
+                for (std::size_t i = first; i < last; ++i) {
+                    const ::vfx::Bounds instance = runtime.effect->instanceBounds(activeInstances[i]);
+                    if (!instance.valid) {
+                        continue;
+                    }
+                    if (!batchBounds.valid) {
+                        batchBounds = instance;
+                    } else {
+                        batchBounds.min.x = std::min(batchBounds.min.x, instance.min.x);
+                        batchBounds.min.y = std::min(batchBounds.min.y, instance.min.y);
+                        batchBounds.min.z = std::min(batchBounds.min.z, instance.min.z);
+                        batchBounds.max.x = std::max(batchBounds.max.x, instance.max.x);
+                        batchBounds.max.y = std::max(batchBounds.max.y, instance.max.y);
+                        batchBounds.max.z = std::max(batchBounds.max.z, instance.max.z);
+                    }
+                }
+                appendSubmission(runtime, batch, boundsCenter(batchBounds, runtime, activeInstances[first]));
+                added = true;
+            }
+            if (added) {
+                ++effectCount;
+            }
+            continue;
+        }
+        const ::vfx::Bounds bounds = runtime.effect->visibleBounds();
+        appendSubmission(runtime, kEffectLevelBatch, boundsCenter(bounds, runtime, 0u));
+        ++effectCount;
+    }
+    std::stable_sort(submissions.begin(), submissions.end(),
+                     [](const Submission& lhs, const Submission& rhs) {
+                         return drawSortKeyLess(lhs.key, rhs.key, kTransparentSortingCriteria);
+                     });
+    if (submissions.empty()) {
+        if (vfxVisible) {
+            addVfxMotionVectorsPass(graph, resources);
+        }
+        addTransparentDepthPrepass(graph, resources.depth, scene);
+        addTransparent(nullptr, {}, nullptr);
+        addTransparentMotionVectorsPass(graph, resources.motionVector, resources.depth, scene);
+        return;
+    }
+
+    m_vfxRuntime->beginOutputFrame();
+    addTransparentDepthPrepass(graph, resources.depth, scene);
+    const std::vector<DrawItem>& items = m_transparentDrawList.items();
+    uint32_t segmentStart = 0;
+    uint32_t cursor = 0;
+    std::size_t segmentCount = 0;
+    std::size_t effectIndex = 0;
+    for (const Submission& submission : submissions) {
+        while (cursor < items.size() &&
+               !drawSortKeyLess(submission.key, items[cursor].sortKey, kTransparentSortingCriteria)) {
+            ++cursor;
+        }
+        if (cursor > segmentStart) {
+            auto segment = std::make_unique<DrawList>();
+            segment->buildRange(m_transparentDrawList, segmentStart, cursor - segmentStart);
+            DrawList* segmentPtr = segment.get();
+            m_vfxTransparentSegments.push_back(std::move(segment));
+            const std::string name = "Forward Transparent " + std::to_string(segmentCount++);
+            addTransparent(segmentPtr, {}, name.c_str());
+            segmentStart = cursor;
+        }
+        std::string name = "VFX Output " + std::to_string(effectIndex++);
+        if (submission.batchIndex != kEffectLevelBatch) {
+            name += " Batch " + std::to_string(submission.batchIndex);
+        }
+        addVfxOutputPass(graph, resources, submission.effect, name.c_str(),
+                         submission.batchIndex);
+    }
+    if (segmentStart < items.size()) {
+        auto segment = std::make_unique<DrawList>();
+        segment->buildRange(m_transparentDrawList, segmentStart,
+                            static_cast<uint32_t>(items.size() - segmentStart));
+        DrawList* segmentPtr = segment.get();
+        m_vfxTransparentSegments.push_back(std::move(segment));
+        const std::string name = "Forward Transparent " + std::to_string(segmentCount++);
+        addTransparent(segmentPtr, {}, name.c_str());
+    }
+    if (!m_vfxTransparentSortLogged) {
+        HBG_LOGI("VFX transparent order: effects={} batches={} segments={}", effectCount,
+                 submissions.size(), segmentCount);
+        m_vfxTransparentSortLogged = true;
+    }
+    addVfxMotionVectorsPass(graph, resources);
+    addTransparentMotionVectorsPass(graph, resources.motionVector, resources.depth, scene);
+}
+
+void ForwardRenderer::renderVfxShadow(gfx::Encoder& encoder, bgfx::ViewId view,
+                                      const ShadowRequest& request) {
+    if (m_vfxRuntime == nullptr || !m_vfxActive || !m_vfxHasShadowCasters) {
+        return;
+    }
+    m_globalBinder.upload(m_globalUniforms);
+    m_vfxBackend->begin(encoder, view);
+    m_vfxRuntime->encodeShadow(*m_vfxBackend, toVfxMatrix(request.viewProj));
+    m_vfxBackend->end();
 }
 
 void ForwardRenderer::recordForwardFrame(RenderGraph& graph, FramePassResources& resources,
@@ -5662,25 +7305,18 @@ void ForwardRenderer::recordForwardFrame(RenderGraph& graph, FramePassResources&
         return;
     }
     addSkyPass(graph, resources.color, resources.skyEnvironment);
-    if (debugMode == DebugDisplayMode::None) {
-        addVfxSimulationPass(graph);
-    }
+    const bool vfxVisible =
+        debugMode == DebugDisplayMode::None || debugMode == DebugDisplayMode::MotionVectors;
     resources.contactShadow = addContactShadowPass(graph, resources, false);
     m_bakedGIActive = !m_deferredActive && m_depthPrepassActive && m_lightmapSet.valid() &&
                       !m_bakedGIDrawList.empty() && bakedGIProgramsReady();
     m_passUniforms.lightmapParams2.w = m_bakedGIActive ? 1.0f : 0.0f;
     addBakedGIDrawPass(graph, resources, scene, m_bakedGIDrawList);
-    addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
+    addForwardPass(graph, resources, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
                    resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
                    resources.shadowContext, resources.contactShadow, scene, false);
-    if (debugMode == DebugDisplayMode::None) {
-        addVfxOutputPass(graph, resources);
-    }
-    addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
-                   resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
-                   resources.shadowContext, resources.contactShadow, scene, true);
+    addTransparentFramePasses(graph, scene, resources, vfxVisible);
     addBakedGIForwardCompositePass(graph, resources);
     addWireframePass(graph, resources.color, resources.depth, scene);
 }
@@ -5740,9 +7376,8 @@ void ForwardRenderer::recordDeferredFrame(RenderGraph& graph, FramePassResources
              m_litVariantTileActive ? 1.0f : 0.0f, static_cast<float>(kLightTileSize));
 
     addSkyPass(graph, resources.color, resources.skyEnvironment);
-    if (debugMode == DebugDisplayMode::None) {
-        addVfxSimulationPass(graph);
-    }
+    const bool vfxVisible =
+        debugMode == DebugDisplayMode::None || debugMode == DebugDisplayMode::MotionVectors;
     addDecalPasses(graph, resources, scene);
     addGBufferClearPass(graph, resources.gbuffer, resources.depth, resources.fullscreen);
     addGBufferPass(graph, resources, scene);
@@ -5755,17 +7390,11 @@ void ForwardRenderer::recordDeferredFrame(RenderGraph& graph, FramePassResources
     addSSGIPasses(graph, resources);
     addBakedGICompensatePass(graph, resources);
     addSSRPasses(graph, resources);
-    addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
+    addForwardPass(graph, resources, resources.color, resources.depth, resources.lightData, resources.lightList,
                    resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
                    resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
                    resources.shadowContext, resources.contactShadow, scene, false, true);
-    if (debugMode == DebugDisplayMode::None) {
-        addVfxOutputPass(graph, resources);
-    }
-    addForwardPass(graph, resources.color, resources.depth, resources.lightData, resources.lightList,
-                   resources.clusterLightList, resources.lightFptlBuffer, resources.lightClusterBuffer,
-                   resources.directionalShadow, resources.punctualShadow, resources.areaShadow,
-                   resources.shadowContext, resources.contactShadow, scene, true);
+    addTransparentFramePasses(graph, scene, resources, vfxVisible);
     addWireframePass(graph, resources.color, resources.depth, scene);
 }
 
@@ -5791,7 +7420,8 @@ void ForwardRenderer::renderBakedGIDraws(gfx::Encoder& encoder, bgfx::ViewId vie
         const GpuMesh& mesh = meshes[batch.meshIndex];
         const GpuMaterial& material = materials[batch.materialIndex];
         const asset::Material& sourceMaterial = scene.materials[batch.materialIndex];
-        if (sourceMaterial.type != asset::MaterialType::Lit) {
+        if (sourceMaterial.type != asset::MaterialType::Lit ||
+            m_graphMaterialSystem.hasMaterial(batch.materialIndex)) {
             continue;
         }
         const gfx::ProgramHandle program =
@@ -5898,15 +7528,23 @@ void ForwardRenderer::renderBakedGIForwardCompositePass(gfx::Encoder& encoder, b
                                                         gfx::TextureHandle bakedIndirect) {
     const gfx::ProgramHandle program =
         m_shaderLibrary.program(shader::ProgramKey{shader::PassId::BakedGIForwardComposite, 0, 0});
-    if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !bakedIndirect.valid()) {
+    if (!program.valid() || !m_fullscreenVertexBuffer.valid() || !bakedIndirect.valid() ||
+        !m_refractionSourceDepthSampler.valid() || !m_refractionPreColorSampler.valid() ||
+        !m_bakedGICompositeModeUniform.valid()) {
         return;
     }
 
     encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
     encoder.setViewFrameBuffer(view, frameBuffer);
     encoder.setViewClear(view, BGFX_CLEAR_NONE, 0, 1.0f, 0);
+    const float mode = 0.0f;
+    encoder.setUniform(m_bakedGICompositeModeUniform, &mode, 1);
     encoder.setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ADD | BGFX_STATE_MSAA);
     encoder.setTexture(13, m_bakedIndirectSampler, bakedIndirect,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(0, m_refractionSourceDepthSampler, m_bakedIndirectFallback,
+                       BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+    encoder.setTexture(1, m_refractionPreColorSampler, m_bakedIndirectFallback,
                        BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
     encoder.setVertexBuffer(0, m_fullscreenVertexBuffer);
     encoder.submit(view, program);
@@ -5979,7 +7617,8 @@ void ForwardRenderer::addBakedGIForwardCompositePass(RenderGraph& graph,
     });
 }
 
-void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
+void ForwardRenderer::addForwardPass(RenderGraph& graph, const FramePassResources& resources,
+                                     RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
                                      RenderGraphTextureHandle lightData, RenderGraphTextureHandle lightList,
                                      RenderGraphTextureHandle clusterLightList,
                                      RenderGraphBufferHandle lightFptlBuffer,
@@ -5987,18 +7626,42 @@ void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandl
                                      RenderGraphTextureHandle directionalShadow,
                                      RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                                      RenderGraphBufferHandle shadowContext, RenderGraphTextureHandle contactShadow,
-                                     const RenderScene& scene, bool transparent, bool forwardOnly) {
+                                     const RenderScene& scene, bool transparent, bool forwardOnly,
+                                     const DrawList* listOverride, RenderGraphTextureHandle depthOverride,
+                                     const char* passName) {
     const FrameSettingsField visibility =
         transparent ? FrameSettingsField::TransparentObjects : FrameSettingsField::OpaqueObjects;
-    const DrawList& list = forwardOnly ? m_forwardOpaqueDrawList : forwardDrawList(transparent);
+    const DrawList& list =
+        listOverride != nullptr ? *listOverride
+                                : (forwardOnly ? m_forwardOpaqueDrawList : forwardDrawList(transparent));
     if (!m_frameSettings.isEnabled(visibility) || list.empty()) {
         return;
     }
+    const GpuDrivenDrawData& gpuDrivenData = transparent ? m_gpuDrivenTransparent : m_gpuDrivenForward;
+    const bool transparentSorted = transparent && gpuDrivenData.sorted && m_gpuDrivenTransparentSortActive;
+    const RenderGraphBufferHandle gpuDrivenVisible =
+        transparentSorted ? resources.gpuDrivenTransparentSortedVisible
+                          : (transparent ? resources.gpuDrivenTransparentVisible
+                                         : resources.gpuDrivenForwardVisible);
+    const RenderGraphBufferHandle gpuDrivenIndirect =
+        transparentSorted ? resources.gpuDrivenTransparentSortedIndirect
+                          : (transparent ? resources.gpuDrivenTransparentIndirect
+                                         : resources.gpuDrivenForwardIndirect);
+    const RenderGraphBufferHandle gpuDrivenCount =
+        transparent ? resources.gpuDrivenTransparentCount : resources.gpuDrivenForwardCount;
+    const bool gpuDriven = listOverride == nullptr && gpuDrivenData.active && gpuDrivenVisible.valid() &&
+                           gpuDrivenIndirect.valid() && (!transparentSorted || gpuDrivenCount.valid());
     RenderGraphBuilder pass = graph.addRasterPass(
-        transparent ? "Forward Transparent" : (forwardOnly ? "Forward Only Opaque" : "Forward Opaque"));
+        passName != nullptr ? passName
+                            : (transparent ? "Forward Transparent"
+                                           : (forwardOnly ? "Forward Only Opaque" : "Forward Opaque")));
     pass.setColorAttachment(color);
     pass.readTexture(depth);
-    pass.setDepthAttachment(depth);
+    pass.setDepthAttachment(depthOverride.valid() ? depthOverride : depth);
+    const RenderGraphTextureHandle graphSceneDepth = resources.depthPyramid;
+    if (graphSceneDepth.valid()) {
+        pass.readTexture(graphSceneDepth);
+    }
     pass.readTexture(lightData);
     if (m_gpuLightListBufferActive && lightFptlBuffer.valid()) {
         pass.readBuffer(lightFptlBuffer);
@@ -6028,9 +7691,29 @@ void ForwardRenderer::addForwardPass(RenderGraph& graph, RenderGraphTextureHandl
     if (contactShadow.valid()) {
         pass.readTexture(contactShadow);
     }
-    pass.setRenderFunc([this, &scene, transparent, forwardOnly, contactShadow](RenderGraphContext& context) {
+    const bool refractionSourceEnabled =
+        listOverride == &m_transparentRefractionDrawList && resources.transparentRefractionSourceColor.valid();
+    const RenderGraphTextureHandle graphRefractionSource =
+        refractionSourceEnabled ? resources.transparentRefractionSourceColor : RenderGraphTextureHandle{};
+    if (graphRefractionSource.valid()) {
+        pass.readTexture(graphRefractionSource);
+    }
+    if (gpuDriven) {
+        pass.readBuffer(gpuDrivenVisible);
+        pass.readBuffer(gpuDrivenIndirect);
+        if (gpuDrivenCount.valid()) {
+            pass.readBuffer(gpuDrivenCount);
+        }
+    }
+    pass.setRenderFunc([this, &scene, transparent, forwardOnly, contactShadow, graphSceneDepth,
+                        graphRefractionSource, gpuDriven, listOverride](RenderGraphContext& context) {
+        const gfx::TextureHandle sceneDepth =
+            graphSceneDepth.valid() ? context.texture(graphSceneDepth) : gfx::TextureHandle{};
+        const gfx::TextureHandle refractionSource =
+            graphRefractionSource.valid() ? context.texture(graphRefractionSource) : gfx::TextureHandle{};
         renderForwardPass(context.encoder(), context.viewId(), context.frameBuffer(), scene, transparent,
-                          forwardOnly, context.texture(contactShadow));
+                          forwardOnly, context.texture(contactShadow), sceneDepth, refractionSource, gpuDriven,
+                          listOverride);
     });
 }
 
@@ -6306,7 +7989,8 @@ bool ForwardRenderer::drawShadowBatch(gfx::Encoder& encoder, bgfx::ViewId view, 
         return false;
     }
     const DrawItem& first = list.items()[batch.firstItem];
-    if (first.meshIndex >= m_materialSystem.meshes().size() ||
+    if (m_graphMaterialSystem.hasMaterial(first.materialIndex) ||
+        first.meshIndex >= m_materialSystem.meshes().size() ||
         first.materialIndex >= m_materialSystem.materials().size() || first.materialIndex >= scene.materials.size() ||
         first.indexCount == 0) {
         return false;
@@ -6362,7 +8046,8 @@ bool ForwardRenderer::renderGpuShadowPass(gfx::Encoder& encoder, bgfx::ViewId vi
             return false;
         }
         const DrawItem& first = items[batch.firstItem];
-        if (first.meshIndex >= m_materialSystem.meshes().size() ||
+        if (m_graphMaterialSystem.hasMaterial(first.materialIndex) ||
+            first.meshIndex >= m_materialSystem.meshes().size() ||
             first.materialIndex >= m_materialSystem.materials().size() ||
             first.materialIndex >= scene.materials.size() || first.indexCount == 0) {
             return false;
@@ -6411,7 +8096,8 @@ bool ForwardRenderer::drawForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
         return false;
     }
     const DrawItem& first = list.items()[batch.firstItem];
-    if (first.transparent || first.meshIndex >= m_materialSystem.meshes().size() ||
+    if (m_graphMaterialSystem.hasMaterial(first.materialIndex) || first.transparent ||
+        first.meshIndex >= m_materialSystem.meshes().size() ||
         first.materialIndex >= m_materialSystem.materials().size() || first.materialIndex >= scene.materials.size() ||
         first.indexCount == 0 || batch.lightmapAtlas != first.lightmapAtlas) {
         return false;
@@ -6485,13 +8171,15 @@ void ForwardRenderer::renderShadowPass(gfx::Encoder& encoder, bgfx::ViewId view,
         return;
     }
     const gfx::ProgramHandle shadowProgram = m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Shadow, 0, 0});
-    if (!shadowProgram.valid()) {
+    const bool vfxShadowActive = m_vfxActive && m_vfxHasShadowCasters;
+    if (!shadowProgram.valid() && !vfxShadowActive) {
         return;
     }
 
     const ShadowRequest& request = m_shadowManager.requests()[requestIndex];
     if (m_shadowGpuCullingActive && m_shadowGpuIndirectActive && clearDepth &&
         renderGpuShadowPass(encoder, view, frameBuffer, scene, request, requestIndex)) {
+        renderVfxShadow(encoder, view, request);
         return;
     }
     m_passUniforms.shadowMatrix = request.worldToShadow;
@@ -6515,6 +8203,21 @@ void ForwardRenderer::renderShadowPass(gfx::Encoder& encoder, bgfx::ViewId view,
             const GpuMesh& mesh = meshes[item.meshIndex];
             const GpuMaterial& gpuMaterial = m_materialSystem.materials()[item.materialIndex];
             const asset::Material& material = scene.materials[item.materialIndex];
+            if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+                const gfx::ProgramHandle graphProgram =
+                    m_graphMaterialSystem.program(item.materialIndex, graph::PassKind::Shadow);
+                if (!graphProgram.valid()) {
+                    continue;
+                }
+                encoder.setState(shadowState(material));
+                m_passBinder.upload(m_passUniforms);
+                m_graphMaterialSystem.bind(item.materialIndex, encoder, item.world);
+                encoder.setTransform(item.world.data());
+                encoder.setVertexBuffer(0, mesh.vertexBuffer);
+                encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
+                encoder.submit(view, graphProgram);
+                continue;
+            }
             const gfx::ProgramHandle itemProgram =
                 m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Shadow, gpuMaterial.variantKey, 0});
             if (!itemProgram.valid()) {
@@ -6530,6 +8233,7 @@ void ForwardRenderer::renderShadowPass(gfx::Encoder& encoder, bgfx::ViewId view,
             encoder.submit(view, itemProgram);
         }
     }
+    renderVfxShadow(encoder, view, request);
 }
 
 void ForwardRenderer::renderGBufferClear(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -7182,6 +8886,21 @@ void ForwardRenderer::renderPrepass(gfx::Encoder& encoder, bgfx::ViewId view, gf
             continue;
         }
 
+        if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+            const gfx::ProgramHandle graphProgram =
+                m_graphMaterialSystem.program(item.materialIndex, graph::PassKind::Depth);
+            if (!graphProgram.valid()) {
+                continue;
+            }
+            encoder.setState(depthOnly ? prepassDepthState(sourceMaterial) : prepassState(sourceMaterial));
+            encoder.setTransform(item.world.data());
+            m_graphMaterialSystem.bind(item.materialIndex, encoder, item.world);
+            encoder.setVertexBuffer(0, mesh.vertexBuffer);
+            encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
+            encoder.submit(view, graphProgram);
+            continue;
+        }
+
         const gfx::ProgramHandle program =
             m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Prepass, material.variantKey, 0});
         if (!program.valid()) {
@@ -7245,6 +8964,109 @@ void ForwardRenderer::renderObjectsMotionVectors(gfx::Encoder& encoder, bgfx::Vi
         encoder.setVertexBuffer(0, mesh.vertexBuffer);
         encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
         encoder.submit(view, program);
+    }
+}
+
+void ForwardRenderer::renderTransparentDepthPrepass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                    gfx::FrameBufferHandle frameBuffer,
+                                                    const RenderScene& scene) {
+    renderTransparentDepthPrepass(encoder, view, frameBuffer, scene, m_transparentDepthPrepassDrawList);
+}
+
+void ForwardRenderer::renderTransparentDepthPrepass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                    gfx::FrameBufferHandle frameBuffer, const RenderScene& scene,
+                                                    const DrawList& list) {
+    if (list.empty()) {
+        return;
+    }
+
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::TransparentMotionVectors, 0, 0});
+    if (!program.valid()) {
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewTransform(view, m_viewState.constants().view.data(), m_viewState.constants().proj.data());
+    encoder.setViewClear(view, BGFX_CLEAR_NONE, 0, 1.0f, 0);
+    encoder.touch(view);
+
+    m_globalBinder.upload(m_globalUniforms);
+    const std::vector<GpuMesh>& meshes = m_materialSystem.meshes();
+    for (const DrawItem& item : list.items()) {
+        if (item.meshIndex >= meshes.size() || item.materialIndex >= scene.materials.size() ||
+            item.materialIndex >= m_materialSystem.materials().size()) {
+            continue;
+        }
+        const GpuMesh& mesh = meshes[item.meshIndex];
+        const GpuMaterial& gpuMaterial = m_materialSystem.materials()[item.materialIndex];
+        const asset::Material& material = scene.materials[item.materialIndex];
+        if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+            continue;
+        }
+
+        encoder.setState(prepassDepthState(material));
+        encoder.setTransform(item.world.data());
+        m_objectUniforms.prevModel = item.world;
+        const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+        m_objectUniforms.lightmapST = lightmap.st;
+        m_objectUniforms.lightmapParams = lightmap.params;
+        m_objectBinder.upload(m_objectUniforms);
+        m_materialBinder.upload(gpuMaterial.uniforms);
+        encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
+        encoder.setVertexBuffer(0, mesh.vertexBuffer);
+        encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
+        encoder.submit(view, program);
+    }
+}
+
+void ForwardRenderer::renderTransparentMotionVectors(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                     gfx::FrameBufferHandle frameBuffer,
+                                                     const RenderScene& scene, bool objectMotion) {
+    if (!transparentMotionVectorsActive()) {
+        return;
+    }
+
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::TransparentMotionVectors, 0, 0});
+    if (!program.valid()) {
+        return;
+    }
+
+    encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
+    encoder.setViewFrameBuffer(view, frameBuffer);
+    encoder.setViewTransform(view, m_viewState.constants().view.data(), m_viewState.constants().proj.data());
+    encoder.setViewClear(view, BGFX_CLEAR_NONE, 0, 1.0f, 0);
+    encoder.touch(view);
+
+    m_globalBinder.upload(m_globalUniforms);
+    const std::vector<GpuMesh>& meshes = m_materialSystem.meshes();
+    for (const DrawItem& item : m_transparentMotionVectorDrawList.items()) {
+        if (item.meshIndex >= meshes.size() || item.materialIndex >= scene.materials.size() ||
+            item.materialIndex >= m_materialSystem.materials().size()) {
+            continue;
+        }
+        const GpuMesh& mesh = meshes[item.meshIndex];
+        const GpuMaterial& gpuMaterial = m_materialSystem.materials()[item.materialIndex];
+        const asset::Material& material = scene.materials[item.materialIndex];
+        if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+            continue;
+        }
+
+        encoder.setState(transparentMotionVectorState(material));
+        encoder.setTransform(item.world.data());
+        m_objectUniforms.prevModel = objectMotion ? item.prevWorld : item.world;
+        const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+        m_objectUniforms.lightmapST = lightmap.st;
+        m_objectUniforms.lightmapParams = lightmap.params;
+        m_objectBinder.upload(m_objectUniforms);
+        m_materialBinder.upload(gpuMaterial.uniforms);
+        encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
+        encoder.setVertexBuffer(0, mesh.vertexBuffer);
+        encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
+        encoder.submit(view, program,
+                       static_cast<uint32_t>(transparentDepth(item.distance) & 0xffffffffu));
     }
 }
 
@@ -7317,8 +9139,64 @@ void ForwardRenderer::renderSkyPass(gfx::Encoder& encoder, bgfx::ViewId view, gf
     encoder.submit(view, program);
 }
 
+bool ForwardRenderer::drawGpuDrivenGBufferBatch(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                   const DrawList& list, const DrawBatch& batch,
+                                                   uint32_t batchIndex, const RenderScene& scene) {
+    if (!m_gpuDrivenGbuffer.active || batchIndex >= m_gpuDrivenGbuffer.batchCount || batch.itemCount == 0 ||
+        batch.firstItem + batch.itemCount > list.items().size()) {
+        return false;
+    }
+    const DrawItem& first = list.items()[batch.firstItem];
+    if (m_graphMaterialSystem.hasMaterial(first.materialIndex) ||
+        first.meshIndex >= m_materialSystem.meshes().size() ||
+        first.materialIndex >= m_materialSystem.materials().size() ||
+        first.materialIndex >= scene.materials.size() || first.indexCount == 0 ||
+        m_deferredLightLayersActive) {
+        return false;
+    }
+    const GpuMesh& mesh = m_materialSystem.meshes()[first.meshIndex];
+    const GpuMaterial& gpuMaterial = m_materialSystem.materials()[first.materialIndex];
+    const asset::Material& sourceMaterial = scene.materials[first.materialIndex];
+    if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program =
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::GBufferInstanced,
+                                                    gpuMaterial.variantKey, 0});
+    if (!program.valid()) {
+        return false;
+    }
+
+    encoder.setState(gbufferState(sourceMaterial));
+    if (m_litVariantsActive) {
+        const uint32_t variant = litVariantForMaterial(gpuMaterial.features, m_litLightFlags);
+        m_usedLitVariantMask |= 1u << variant;
+        const uint32_t stencil = litVariantStencilWrite(variant);
+        encoder.setStencil(stencil, stencil);
+    } else {
+        encoder.setStencil(gfx::state::kGBufferStencil, gfx::state::kGBufferStencil);
+    }
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 127.0f, 0.0f, 0.0f);
+    const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, first.objectIndex);
+    m_objectUniforms.lightmapST = lightmap.st;
+    m_objectUniforms.lightmapParams = lightmap.params;
+    m_objectBinder.upload(m_objectUniforms);
+    m_materialBinder.upload(gpuMaterial.uniforms);
+    encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
+    encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, gpuMaterial.metallicRoughnessTexture);
+    encoder.setTexture(2, m_materialSamplers.normalMap, gpuMaterial.normalTexture);
+    encoder.setTexture(3, m_materialSamplers.occlusionMap, gpuMaterial.occlusionTexture);
+    encoder.setTexture(4, m_materialSamplers.emissiveMap, gpuMaterial.emissiveTexture);
+    encoder.setVertexBuffer(0, mesh.vertexBuffer);
+    encoder.setIndexBuffer(mesh.indexBuffer);
+    encoder.setInstanceDataBuffer(m_gpuDrivenGbuffer.visible, batch.firstItem, batch.itemCount);
+    encoder.submitIndirect(view, program, m_gpuDrivenGbuffer.indirect, batchIndex, 1);
+    return true;
+}
+
 void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                                        const RenderScene& scene, bool decals) {
+                                        const RenderScene& scene, bool decals, bool gpuDriven,
+                                        gfx::TextureHandle sceneDepth) {
     if (!m_frameSettings.isEnabled(FrameSettingsField::OpaqueObjects) || m_gbufferDrawList.empty()) {
         return;
     }
@@ -7330,16 +9208,69 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
 
     const std::vector<GpuMesh>& meshes = m_materialSystem.meshes();
     const std::vector<GpuMaterial>& materials = m_materialSystem.materials();
-    for (const DrawItem& item : m_gbufferDrawList.items()) {
+    const auto drawItem = [&](const DrawItem& item) {
         if (item.meshIndex >= meshes.size() || item.materialIndex >= materials.size() ||
             item.materialIndex >= scene.materials.size()) {
-            continue;
+            return;
         }
         const GpuMesh& mesh = meshes[item.meshIndex];
         const GpuMaterial& gpuMaterial = materials[item.materialIndex];
         const asset::Material& sourceMaterial = scene.materials[item.materialIndex];
         if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
-            continue;
+            return;
+        }
+
+        if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+            const gfx::ProgramHandle graphProgram =
+                m_graphMaterialSystem.program(item.materialIndex, graph::PassKind::GBuffer);
+            if (!graphProgram.valid()) {
+                return;
+            }
+            encoder.setState(gbufferState(sourceMaterial));
+            if (m_litVariantsActive) {
+                const uint32_t variant = litVariantForMaterial(gpuMaterial.features, m_litLightFlags);
+                m_usedLitVariantMask |= 1u << variant;
+                const uint32_t stencil = litVariantStencilWrite(variant);
+                encoder.setStencil(stencil, stencil);
+            } else {
+                encoder.setStencil(gfx::state::kGBufferStencil, gfx::state::kGBufferStencil);
+            }
+            encoder.setTransform(item.world.data());
+            uint32_t objectLayerMask = kRenderingLayersMask;
+            uint32_t objectDecalMask = 0x7fu;
+            if (item.objectIndex < scene.objects.size()) {
+                objectDecalMask = scene.objects[item.objectIndex].decalLayerMask;
+                if (m_deferredLightLayersActive) {
+                    objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+                }
+            }
+            m_objectUniforms.lightLayerMask =
+                Vec4(static_cast<float>(objectLayerMask), static_cast<float>(objectDecalMask), 0.0f,
+                     m_deferredLightLayersActive ? 1.0f : 0.0f);
+            const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+            m_objectUniforms.lightmapST = lightmap.st;
+            m_objectUniforms.lightmapParams = lightmap.params;
+            m_objectBinder.upload(m_objectUniforms);
+            m_environmentBinder.upload(m_environmentUniforms);
+            m_probeBinder.upload(m_probeUniforms);
+            const gfx::TextureHandle graphEnvironment =
+                m_skyManager.valid() ? m_skyManager.texture() : m_environmentFallback;
+            if (m_environmentSampler.valid() && graphEnvironment.valid()) {
+                encoder.setTexture(10, m_environmentSampler, graphEnvironment, BGFX_SAMPLER_V_CLAMP);
+            }
+            const gfx::TextureHandle graphProbeArray = m_probeManager.textureArray();
+            if (m_probeArraySampler.valid()) {
+                encoder.setTexture(14, m_probeArraySampler,
+                                   graphProbeArray.valid() ? graphProbeArray : m_probeArrayFallback,
+                                   BGFX_SAMPLER_V_CLAMP);
+            }
+            m_fogBinder.upload(m_fogUniforms);
+            m_graphMaterialSystem.bind(item.materialIndex, encoder, item.world,
+                                       gfx::TextureHandle{}, sceneDepth);
+            encoder.setVertexBuffer(0, mesh.vertexBuffer);
+            encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
+            encoder.submit(view, graphProgram);
+            return;
         }
 
         const uint64_t pipelineKey = m_deferredLightLayersActive ? shader::kLightLayersProgramKey : 0;
@@ -7350,7 +9281,7 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
             if (m_frameIndex == 0) {
                 HBG_LOGW("gbuffer program invalid for material variant {}", gpuMaterial.variantKey);
             }
-            continue;
+            return;
         }
 
         encoder.setState(gbufferState(sourceMaterial));
@@ -7393,20 +9324,354 @@ void ForwardRenderer::renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view
         encoder.setVertexBuffer(0, mesh.vertexBuffer);
         encoder.setIndexBuffer(mesh.indexBuffer, item.indexOffset, item.indexCount);
         encoder.submit(view, program);
+    };
+
+    if (gpuDriven) {
+        const std::vector<DrawBatch>& batches = m_gbufferDrawList.batches();
+        for (uint32_t batchIndex = 0; batchIndex < batches.size(); ++batchIndex) {
+            const DrawBatch& batch = batches[batchIndex];
+            if (drawGpuDrivenGBufferBatch(encoder, view, m_gbufferDrawList, batch, batchIndex, scene)) {
+                continue;
+            }
+            if (batch.firstItem + batch.itemCount > m_gbufferDrawList.items().size()) {
+                continue;
+            }
+            for (uint32_t index = 0; index < batch.itemCount; ++index) {
+                drawItem(m_gbufferDrawList.items()[batch.firstItem + index]);
+            }
+        }
+        return;
     }
+
+    for (const DrawItem& item : m_gbufferDrawList.items()) {
+        drawItem(item);
+    }
+}
+
+bool ForwardRenderer::drawGpuDrivenForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                   const DrawList& list, const DrawBatch& batch,
+                                                   uint32_t batchIndex, const RenderScene& scene,
+                                                   gfx::TextureHandle contactShadow, bool clusterList) {
+    if (!m_gpuDrivenForward.active || m_gpuDrivenForward.bindless || batchIndex >= m_gpuDrivenForward.batchCount ||
+        m_advancedMaterialActive || m_pipelineSettings.supportLightLayers || batch.itemCount == 0 ||
+        batch.firstItem + batch.itemCount > list.items().size()) {
+        return false;
+    }
+    const DrawItem& first = list.items()[batch.firstItem];
+    if (m_graphMaterialSystem.hasMaterial(first.materialIndex) || first.transparent ||
+        first.meshIndex >= m_materialSystem.meshes().size() ||
+        first.materialIndex >= m_materialSystem.materials().size() ||
+        first.materialIndex >= scene.materials.size() || first.indexCount == 0 ||
+        batch.lightmapAtlas != first.lightmapAtlas) {
+        return false;
+    }
+    const GpuMesh& mesh = m_materialSystem.meshes()[first.meshIndex];
+    const GpuMaterial& material = m_materialSystem.materials()[first.materialIndex];
+    const asset::Material& sourceMaterial = scene.materials[first.materialIndex];
+    if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program = lightListProgram(shader::PassId::ForwardInstanced, material.variantKey);
+    if (!program.valid()) {
+        return false;
+    }
+
+    encoder.setState(forwardState(sourceMaterial, false, m_depthPrepassActive));
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, first.objectIndex);
+    m_objectUniforms.lightmapST = lightmap.st;
+    m_objectUniforms.lightmapParams = lightmap.params;
+    ForwardLightingContext lighting =
+        makeForwardLightingContext(m_objectUniforms, contactShadow, clusterList, contactShadowsActive());
+    lighting.passUniforms.lightColor.w = contactShadowsActive() ? 1.0f : 0.0f;
+    lighting.clusterUniforms.depthParams.w = clusterList ? 1.0f : 0.0f;
+    bindForwardLighting(encoder, lighting);
+    m_materialBinder.upload(material.uniforms);
+    encoder.setTexture(0, m_materialSamplers.baseColorMap, material.baseColorTexture);
+    encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, material.metallicRoughnessTexture);
+    encoder.setTexture(2, m_materialSamplers.normalMap, material.normalTexture);
+    encoder.setTexture(3, m_materialSamplers.occlusionMap, material.occlusionTexture);
+    encoder.setTexture(4, m_materialSamplers.emissiveMap, material.emissiveTexture);
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+    }
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaSamplingTexture()
+                                            : m_shadowManager.activePunctualTexture();
+    if (areaDepth.valid()) {
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
+    }
+    encoder.setVertexBuffer(0, mesh.vertexBuffer);
+    encoder.setIndexBuffer(mesh.indexBuffer);
+    encoder.setInstanceDataBuffer(m_gpuDrivenForward.visible, batch.firstItem, batch.itemCount);
+    encoder.submitIndirect(view, program, m_gpuDrivenForward.indirect, batchIndex, 1);
+    return true;
+}
+
+bool ForwardRenderer::drawGpuDrivenBindlessForward(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                    const DrawList& list, const RenderScene& scene,
+                                                    gfx::TextureHandle contactShadow, bool clusterList) {
+    if (!m_gpuDrivenForward.active || !m_gpuDrivenForward.bindless || list.empty() ||
+        m_advancedMaterialActive || m_pipelineSettings.supportLightLayers) {
+        return false;
+    }
+    const DrawItem& first = list.items().front();
+    if (first.materialIndex >= m_materialSystem.materials().size() ||
+        first.materialIndex >= scene.materials.size()) {
+        return false;
+    }
+    const asset::Material& sourceMaterial = scene.materials[first.materialIndex];
+    const GpuMaterialTextureArrays& textures = m_materialSystem.bindlessTextures();
+    if (!textures.valid() || !m_materialSystem.bindlessVertexBuffer().valid() ||
+        !m_materialSystem.bindlessIndexBuffer().valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program =
+        lightListProgram(shader::PassId::BindlessForwardInstanced, m_gpuDrivenForward.materialVariant);
+    if (!program.valid()) {
+        return false;
+    }
+
+    encoder.setState(forwardState(sourceMaterial, false, m_depthPrepassActive));
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    m_objectUniforms.lightmapST = Vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    m_objectUniforms.lightmapParams = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    ForwardLightingContext lighting =
+        makeForwardLightingContext(m_objectUniforms, contactShadow, clusterList, contactShadowsActive());
+    lighting.passUniforms.lightColor.w = contactShadowsActive() ? 1.0f : 0.0f;
+    lighting.clusterUniforms.depthParams.w = clusterList ? 1.0f : 0.0f;
+    bindForwardLighting(encoder, lighting);
+
+    std::vector<Vec4> materialData(32u * 12u, Vec4(0.0f, 0.0f, 0.0f, 0.0f));
+    const std::vector<GpuMaterial>& materials = m_materialSystem.materials();
+    for (std::size_t index = 0; index < materials.size() && index < 32u; ++index) {
+        const gfx::generated::MaterialUniforms& uniforms = materials[index].uniforms;
+        const std::size_t base = index * 12u;
+        materialData[base + 0u] = uniforms.baseColorFactor;
+        materialData[base + 1u] = uniforms.metallicRoughness;
+        materialData[base + 2u] = uniforms.emissiveFactor;
+        materialData[base + 3u] = uniforms.advanced0;
+        materialData[base + 4u] = uniforms.advanced1;
+        materialData[base + 5u] = uniforms.advanced2;
+        materialData[base + 6u] = Vec4(static_cast<float>(materials[index].variantKey & 3u),
+                                       static_cast<float>(materials[index].bindlessWrapBits),
+                                       materials[index].bindlessHeterogeneous ? 1.0f : 0.0f, 0.0f);
+        const std::array<Vec2, 5>& scales = materials[index].bindlessUvScale;
+        const std::array<Vec2, 5>& offsets = materials[index].bindlessUvOffset;
+        materialData[base + 7u] = Vec4(scales[0].x, scales[0].y, offsets[0].x, offsets[0].y);
+        materialData[base + 8u] = Vec4(scales[1].x, scales[1].y, offsets[1].x, offsets[1].y);
+        materialData[base + 9u] = Vec4(scales[2].x, scales[2].y, offsets[2].x, offsets[2].y);
+        materialData[base + 10u] = Vec4(scales[3].x, scales[3].y, offsets[3].x, offsets[3].y);
+        materialData[base + 11u] = Vec4(scales[4].x, scales[4].y, offsets[4].x, offsets[4].y);
+    }
+    encoder.setUniform(m_bindlessMaterialUniform, materialData.data(), static_cast<uint16_t>(materialData.size()));
+    encoder.setTexture(0, m_materialSamplers.baseColorMap, textures.baseColor);
+    encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, textures.metallicRoughness);
+    encoder.setTexture(2, m_materialSamplers.normalMap, textures.normal);
+    encoder.setTexture(3, m_materialSamplers.occlusionMap, textures.occlusion);
+    encoder.setTexture(4, m_materialSamplers.emissiveMap, textures.emissive);
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+    }
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaSamplingTexture()
+                                            : m_shadowManager.activePunctualTexture();
+    if (areaDepth.valid()) {
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
+    }
+
+    encoder.setVertexBuffer(0, m_materialSystem.bindlessVertexBuffer());
+    encoder.setIndexBuffer(m_materialSystem.bindlessIndexBuffer());
+    encoder.setInstanceDataBuffer(m_gpuDrivenForward.visible, 0, m_gpuDrivenForward.itemCount);
+    if (m_gpuDrivenIndirectCountSupported) {
+        encoder.submitIndirectCount(view, program, m_gpuDrivenForward.indirect, 0, m_gpuDrivenForward.count, 0,
+                                    m_gpuDrivenForward.itemCount, 0);
+    } else {
+        for (uint32_t record = 0; record < m_gpuDrivenForward.recordCount; ++record) {
+            encoder.submitIndirect(view, program, m_gpuDrivenForward.indirect, record, 1, 0, BGFX_DISCARD_NONE);
+        }
+        encoder.discard(BGFX_DISCARD_ALL);
+    }
+    return true;
+}
+
+bool ForwardRenderer::drawGpuDrivenBindlessTransparent(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                         const DrawList& list, const RenderScene& scene,
+                                                         gfx::TextureHandle contactShadow, bool clusterList) {
+    if (!m_gpuDrivenTransparent.active || !m_gpuDrivenTransparent.bindless || !m_gpuDrivenTransparent.sorted ||
+        list.empty() || m_advancedMaterialActive || m_pipelineSettings.supportLightLayers ||
+        !m_gpuDrivenTransparent.sortedVisible.valid() || !m_gpuDrivenTransparent.sortedIndirect.valid() ||
+        !m_gpuDrivenTransparent.count.valid()) {
+        return false;
+    }
+    const DrawItem& first = list.items().front();
+    if (first.materialIndex >= m_materialSystem.materials().size() ||
+        first.materialIndex >= scene.materials.size()) {
+        return false;
+    }
+    const asset::Material& sourceMaterial = scene.materials[first.materialIndex];
+    const GpuMaterialTextureArrays& textures = m_materialSystem.bindlessTextures();
+    if (!textures.valid() || !m_materialSystem.bindlessVertexBuffer().valid() ||
+        !m_materialSystem.bindlessIndexBuffer().valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program =
+        lightListProgram(shader::PassId::BindlessForwardInstanced, m_gpuDrivenTransparent.materialVariant);
+    if (!program.valid()) {
+        return false;
+    }
+
+    encoder.setState(forwardState(sourceMaterial, true, m_depthPrepassActive));
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    m_objectUniforms.lightmapST = Vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    m_objectUniforms.lightmapParams = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    ForwardLightingContext lighting =
+        makeForwardLightingContext(m_objectUniforms, contactShadow, clusterList, false);
+    lighting.passUniforms.lightColor.w = 0.0f;
+    lighting.clusterUniforms.depthParams.w = clusterList ? 1.0f : 0.0f;
+    bindForwardLighting(encoder, lighting);
+
+    std::vector<Vec4> materialData(32u * 12u, Vec4(0.0f, 0.0f, 0.0f, 0.0f));
+    const std::vector<GpuMaterial>& materials = m_materialSystem.materials();
+    for (std::size_t index = 0; index < materials.size() && index < 32u; ++index) {
+        const gfx::generated::MaterialUniforms& uniforms = materials[index].uniforms;
+        const std::size_t base = index * 12u;
+        materialData[base + 0u] = uniforms.baseColorFactor;
+        materialData[base + 1u] = uniforms.metallicRoughness;
+        materialData[base + 2u] = uniforms.emissiveFactor;
+        materialData[base + 3u] = uniforms.advanced0;
+        materialData[base + 4u] = uniforms.advanced1;
+        materialData[base + 5u] = uniforms.advanced2;
+        materialData[base + 6u] = Vec4(static_cast<float>(materials[index].variantKey & 3u),
+                                       static_cast<float>(materials[index].bindlessWrapBits),
+                                       materials[index].bindlessHeterogeneous ? 1.0f : 0.0f, 0.0f);
+        const std::array<Vec2, 5>& scales = materials[index].bindlessUvScale;
+        const std::array<Vec2, 5>& offsets = materials[index].bindlessUvOffset;
+        materialData[base + 7u] = Vec4(scales[0].x, scales[0].y, offsets[0].x, offsets[0].y);
+        materialData[base + 8u] = Vec4(scales[1].x, scales[1].y, offsets[1].x, offsets[1].y);
+        materialData[base + 9u] = Vec4(scales[2].x, scales[2].y, offsets[2].x, offsets[2].y);
+        materialData[base + 10u] = Vec4(scales[3].x, scales[3].y, offsets[3].x, offsets[3].y);
+        materialData[base + 11u] = Vec4(scales[4].x, scales[4].y, offsets[4].x, offsets[4].y);
+    }
+    encoder.setUniform(m_bindlessMaterialUniform, materialData.data(), static_cast<uint16_t>(materialData.size()));
+    encoder.setTexture(0, m_materialSamplers.baseColorMap, textures.baseColor);
+    encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, textures.metallicRoughness);
+    encoder.setTexture(2, m_materialSamplers.normalMap, textures.normal);
+    encoder.setTexture(3, m_materialSamplers.occlusionMap, textures.occlusion);
+    encoder.setTexture(4, m_materialSamplers.emissiveMap, textures.emissive);
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+    }
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaSamplingTexture()
+                                            : m_shadowManager.activePunctualTexture();
+    if (areaDepth.valid()) {
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
+    }
+
+    encoder.setVertexBuffer(0, m_materialSystem.bindlessVertexBuffer());
+    encoder.setIndexBuffer(m_materialSystem.bindlessIndexBuffer());
+    encoder.setInstanceDataBuffer(m_gpuDrivenTransparent.sortedVisible, 0, m_gpuDrivenTransparent.itemCount);
+    if (m_gpuDrivenIndirectCountSupported) {
+        encoder.submitIndirectCount(view, program, m_gpuDrivenTransparent.sortedIndirect, 0,
+                                    m_gpuDrivenTransparent.count, 0, m_gpuDrivenTransparent.itemCount, 0);
+    } else {
+        for (uint32_t record = 0; record < m_gpuDrivenTransparent.recordCount; ++record) {
+            encoder.submitIndirect(view, program, m_gpuDrivenTransparent.sortedIndirect, record, 1, record,
+                                   BGFX_DISCARD_NONE);
+        }
+        encoder.discard(BGFX_DISCARD_ALL);
+    }
+    return true;
+}
+
+bool ForwardRenderer::drawGpuDrivenTransparentItem(gfx::Encoder& encoder, bgfx::ViewId view,
+                                                       const DrawItem& item, uint32_t itemIndex,
+                                                       const RenderScene& scene,
+                                                       gfx::TextureHandle contactShadow, bool clusterList) {
+    if (!m_gpuDrivenTransparent.active || !item.transparent || itemIndex >= m_gpuDrivenTransparent.batchCount ||
+        m_advancedMaterialActive || m_pipelineSettings.supportLightLayers ||
+        m_graphMaterialSystem.hasMaterial(item.materialIndex) ||
+        item.meshIndex >= m_materialSystem.meshes().size() ||
+        item.materialIndex >= m_materialSystem.materials().size() ||
+        item.materialIndex >= scene.materials.size() || item.indexCount == 0) {
+        return false;
+    }
+    const GpuMesh& mesh = m_materialSystem.meshes()[item.meshIndex];
+    const GpuMaterial& gpuMaterial = m_materialSystem.materials()[item.materialIndex];
+    const asset::Material& sourceMaterial = scene.materials[item.materialIndex];
+    if (!mesh.vertexBuffer.valid() || !mesh.indexBuffer.valid()) {
+        return false;
+    }
+    const gfx::ProgramHandle program = lightListProgram(shader::PassId::ForwardInstanced, gpuMaterial.variantKey);
+    if (!program.valid()) {
+        return false;
+    }
+
+    encoder.setState(forwardState(sourceMaterial, true, m_depthPrepassActive));
+    m_objectUniforms.lightLayerMask = Vec4(static_cast<float>(kRenderingLayersMask), 0.0f, 0.0f, 0.0f);
+    const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+    m_objectUniforms.lightmapST = lightmap.st;
+    m_objectUniforms.lightmapParams = lightmap.params;
+    ForwardLightingContext lighting =
+        makeForwardLightingContext(m_objectUniforms, contactShadow, clusterList, false);
+    lighting.passUniforms.lightColor.w = 0.0f;
+    lighting.clusterUniforms.depthParams.w = clusterList ? 1.0f : 0.0f;
+    bindForwardLighting(encoder, lighting);
+    m_materialBinder.upload(gpuMaterial.uniforms);
+    encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
+    encoder.setTexture(1, m_materialSamplers.metallicRoughnessMap, gpuMaterial.metallicRoughnessTexture);
+    encoder.setTexture(2, m_materialSamplers.normalMap, gpuMaterial.normalTexture);
+    encoder.setTexture(3, m_materialSamplers.occlusionMap, gpuMaterial.occlusionTexture);
+    encoder.setTexture(4, m_materialSamplers.emissiveMap, gpuMaterial.emissiveTexture);
+    if (m_shadowManager.activeDirectionalTexture().valid()) {
+        bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+    }
+    const gfx::TextureHandle areaDepth = m_shadowManager.areaRequestCount() > 0
+                                            ? m_shadowManager.activeAreaSamplingTexture()
+                                            : m_shadowManager.activePunctualTexture();
+    if (areaDepth.valid()) {
+        const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                   ? BGFX_SAMPLER_UVW_CLAMP
+                                   : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(13, m_shadowPointPunctualSampler, areaDepth, flags);
+    }
+    encoder.setVertexBuffer(0, mesh.vertexBuffer);
+    encoder.setIndexBuffer(mesh.indexBuffer);
+    encoder.setInstanceDataBuffer(m_gpuDrivenTransparent.visible, itemIndex, 1);
+    const uint32_t depth = static_cast<uint32_t>(transparentDepth(item.distance) & 0xffffffffu);
+    encoder.submitIndirect(view, program, m_gpuDrivenTransparent.indirect, itemIndex, 1, depth);
+    return true;
 }
 
 void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                         const RenderScene& scene, bool transparent, bool forwardOnly,
-                                        gfx::TextureHandle contactShadow) {
+                                        gfx::TextureHandle contactShadow, gfx::TextureHandle sceneDepth,
+                                        gfx::TextureHandle refractionSource, bool gpuDriven,
+                                        const DrawList* listOverride) {
     const FrameSettingsField visibility =
         transparent ? FrameSettingsField::TransparentObjects : FrameSettingsField::OpaqueObjects;
     if (!m_frameSettings.isEnabled(visibility)) {
         return;
     }
+    const bool preRefraction = listOverride == &m_transparentPreRefractionDrawList;
+    const bool refractionSampling = !preRefraction && refractionSource.valid();
+    m_passUniforms.litVariantParams.w = m_pipelineSettings.supportRefractionRoughness ? 1.0f : 0.0f;
     encoder.setViewRect(view, 0, 0, m_viewState.renderWidth(), m_viewState.renderHeight());
     encoder.setViewFrameBuffer(view, frameBuffer);
     encoder.setViewTransform(view, m_viewState.constants().view.data(), m_viewState.constants().proj.data());
+    if (preRefraction) {
+        encoder.setViewClear(view, BGFX_CLEAR_COLOR, 0x00000000, 1.0f, 0);
+    }
     m_contactBinder.upload(m_contactUniforms);
 
     const bool clusterListAvailable =
@@ -7414,10 +9679,62 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
     const bool useCluster = m_lightClusterEnabled && (transparent || forwardOnly) && clusterListAvailable &&
                             m_clusterUniforms.depthParams.w > 0.5f;
 
-    const auto drawItem = [&](const DrawItem& item) {
+    const auto drawItem = [&](const DrawItem& item, bool backface) {
         const GpuMesh& gpuMesh = m_materialSystem.meshes()[item.meshIndex];
         const GpuMaterial& gpuMaterial = m_materialSystem.materials()[item.materialIndex];
         const asset::Material& material = scene.materials[item.materialIndex];
+
+        if (m_graphMaterialSystem.hasMaterial(item.materialIndex)) {
+            const gfx::ProgramHandle graphProgram =
+                m_graphMaterialSystem.program(item.materialIndex, graph::PassKind::Forward);
+            if (!graphProgram.valid()) {
+                return;
+            }
+            encoder.setState(backface ? transparentBackfaceState(material)
+                                      : (preRefraction ? preRefractionState(material)
+                                                       : forwardState(material, item.transparent, m_depthPrepassActive)));
+            encoder.setTransform(item.world.data());
+            uint32_t objectLayerMask = kRenderingLayersMask;
+            if (m_pipelineSettings.supportLightLayers && item.objectIndex < scene.objects.size()) {
+                objectLayerMask = scene.objects[item.objectIndex].lightLayerMask;
+            }
+            m_objectUniforms.lightLayerMask =
+                Vec4(static_cast<float>(objectLayerMask), 0.0f, 0.0f,
+                     m_pipelineSettings.supportLightLayers ? 1.0f : 0.0f);
+            const ObjectLightmapUniforms lightmap = objectLightmapUniforms(scene, item.objectIndex);
+            m_objectUniforms.lightmapST = lightmap.st;
+            m_objectUniforms.lightmapParams = lightmap.params;
+            ForwardLightingContext lighting =
+                makeForwardLightingContext(m_objectUniforms, contactShadow, useCluster,
+                                           contactShadowsActive() && !item.transparent, false);
+            lighting.passUniforms.lightColor.w = contactShadowsActive() && !item.transparent ? 1.0f : 0.0f;
+            lighting.clusterUniforms.depthParams.w = useCluster ? 1.0f : 0.0f;
+            bindForwardLighting(encoder, lighting);
+            if (m_shadowManager.activeDirectionalTexture().valid()) {
+                bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+            }
+            if (refractionSampling) {
+                encoder.setTexture(11, m_contactShadowSampler, refractionSource, BGFX_SAMPLER_UVW_CLAMP);
+            }
+            m_fogBinder.upload(m_fogUniforms);
+            m_graphMaterialSystem.bind(item.materialIndex, encoder, item.world,
+                                       gfx::TextureHandle{}, sceneDepth);
+            const gfx::TextureHandle graphAreaDepth = m_shadowManager.areaRequestCount() > 0
+                                                          ? m_shadowManager.activeAreaSamplingTexture()
+                                                          : m_shadowManager.activePunctualTexture();
+            if (graphAreaDepth.valid()) {
+                const uint32_t flags = m_shadowManager.areaEvsmBlurActive()
+                                           ? BGFX_SAMPLER_UVW_CLAMP
+                                           : (BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+                encoder.setTexture(13, m_shadowPointPunctualSampler, graphAreaDepth, flags);
+            }
+            encoder.setVertexBuffer(0, gpuMesh.vertexBuffer);
+            encoder.setIndexBuffer(gpuMesh.indexBuffer, item.indexOffset, item.indexCount);
+            const uint32_t depth =
+                item.transparent ? static_cast<uint32_t>(transparentDepth(item.distance) & 0xffffffffu) : 0;
+            encoder.submit(view, graphProgram, depth);
+            return;
+        }
 
         const gfx::ProgramHandle program = lightListProgram(
             m_advancedMaterialActive ? shader::PassId::ForwardAdvanced : shader::PassId::Forward,
@@ -7426,7 +9743,9 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
             return;
         }
 
-        encoder.setState(forwardState(material, item.transparent, m_depthPrepassActive));
+        encoder.setState(backface ? transparentBackfaceState(material)
+                                  : (preRefraction ? preRefractionState(material)
+                                                   : forwardState(material, item.transparent, m_depthPrepassActive)));
         encoder.setTransform(item.world.data());
         uint32_t objectLayerMask = kRenderingLayersMask;
         if (m_pipelineSettings.supportLightLayers && item.objectIndex < scene.objects.size()) {
@@ -7446,6 +9765,9 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
         bindForwardLighting(encoder, lighting);
         if (m_shadowManager.activeDirectionalTexture().valid()) {
             bindShadowMomentSat(encoder, m_shadowManager.activeDirectionalTexture());
+        }
+        if (refractionSampling) {
+            encoder.setTexture(11, m_contactShadowSampler, refractionSource, BGFX_SAMPLER_UVW_CLAMP);
         }
         m_materialBinder.upload(gpuMaterial.uniforms);
         encoder.setTexture(0, m_materialSamplers.baseColorMap, gpuMaterial.baseColorTexture);
@@ -7470,20 +9792,51 @@ void ForwardRenderer::renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view
         encoder.submit(view, program, depth);
     };
 
-    const DrawList& list = forwardOnly ? m_forwardOpaqueDrawList : forwardDrawList(transparent);
+    const DrawList& list =
+        listOverride != nullptr ? *listOverride
+                                : (forwardOnly ? m_forwardOpaqueDrawList : forwardDrawList(transparent));
     if (transparent) {
-        for (const DrawItem& item : list.items()) {
-            drawItem(item);
+        if (transparentBackfaceActive()) {
+            for (const DrawItem& item : m_transparentBackfaceDrawList.items()) {
+                drawItem(item, true);
+            }
+        }
+        if (gpuDriven && m_gpuDrivenTransparent.bindless && m_gpuDrivenTransparent.sorted &&
+            m_gpuDrivenTransparentSortActive &&
+            drawGpuDrivenBindlessTransparent(encoder, view, list, scene, contactShadow, useCluster)) {
+            return;
+        }
+        for (uint32_t itemIndex = 0; itemIndex < list.size(); ++itemIndex) {
+            const DrawItem& item = list.items()[itemIndex];
+            if (gpuDriven &&
+                drawGpuDrivenTransparentItem(encoder, view, item, itemIndex, scene, contactShadow, useCluster)) {
+                continue;
+            }
+            drawItem(item, false);
         }
         return;
     }
 
-    for (const DrawBatch& batch : list.batches()) {
+    if (gpuDriven && m_gpuDrivenForward.bindless &&
+        drawGpuDrivenBindlessForward(encoder, view, list, scene, contactShadow, useCluster)) {
+        return;
+    }
+
+    const std::vector<DrawBatch>& batches = list.batches();
+    for (uint32_t batchIndex = 0; batchIndex < batches.size(); ++batchIndex) {
+        const DrawBatch& batch = batches[batchIndex];
+        if (gpuDriven && drawGpuDrivenForwardBatch(encoder, view, list, batch, batchIndex, scene, contactShadow,
+                                                   useCluster)) {
+            continue;
+        }
         if (drawForwardBatch(encoder, view, list, batch, scene, contactShadow, useCluster)) {
             continue;
         }
+        if (batch.firstItem + batch.itemCount > list.items().size()) {
+            continue;
+        }
         for (uint32_t index = 0; index < batch.itemCount; ++index) {
-            drawItem(list.items()[batch.firstItem + index]);
+            drawItem(list.items()[batch.firstItem + index], false);
         }
     }
 }
@@ -7874,8 +10227,8 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
         encoder.setTexture(0, m_depthDebugSampler, depth, BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::DepthPyramid:
-        encoder.setTextureMip(0, m_depthPyramidSampler, depthPyramid, 0, 1,
-                              BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
+        encoder.setTexture(0, m_depthPyramidSampler, depthPyramid,
+                           BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT);
         break;
     case DebugDisplayMode::LightCluster: {
         const bool legacyFptl = m_debugLightClusterSlice == -2;
@@ -7973,6 +10326,7 @@ void ForwardRenderer::renderPresentation(gfx::Encoder& encoder, bgfx::ViewId vie
 }
 
 void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height, float time) {
+
     if (!m_valid || width == 0 || height == 0) {
         return;
     }
@@ -7988,7 +10342,28 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
     m_contactShadowHeight = 0;
     m_gpuLightListActive = false;
     m_gpuLightListPasses = 0;
+    m_gpuSkinningActive = false;
+    m_gpuSkinningMeshes = 0;
+    m_gpuSkinningVertices = 0;
+    m_gpuSkinningDispatches = 0;
+    const bgfx::Caps* caps = bgfx::getCaps();
+    const bool gpuSkinningUsable =
+        m_gpuSkinningEnabled && caps != nullptr && (caps->supported & BGFX_CAPS_COMPUTE) != 0 &&
+        m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Skinning, 0, 0}).valid() &&
+        m_skinParamsUniform.valid();
+    if (m_gpuSkinningEnabled && !gpuSkinningUsable && !m_gpuSkinningWarningLogged) {
+        HBG_LOGW("gpu skinning requested but compute support or the skinning shader is unavailable; using the CPU path");
+        m_gpuSkinningWarningLogged = true;
+    }
+    m_materialSystem.setGpuSkinningEnabled(gpuSkinningUsable);
     m_materialSystem.updateDeformedMeshes(scene);
+    if (m_resources != nullptr) {
+        m_graphMaterialSystem.poll(*m_resources, scene);
+    }
+    if (gpuSkinningUsable) {
+        m_gpuSkinningMeshes = static_cast<uint32_t>(m_materialSystem.gpuSkinMeshes().size());
+        m_gpuSkinningActive = m_gpuSkinningMeshes != 0;
+    }
     updateCamera(scene, width, height);
     ensureLightListTexture(m_viewState.renderWidth(), m_viewState.renderHeight());
     if (m_gpuLightListEnabled) {
@@ -7999,6 +10374,10 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         ensureLightListBuffers(m_viewState.renderWidth(), m_viewState.renderHeight());
     }
     ensureLitVariantTileResources(m_viewState.renderWidth(), m_viewState.renderHeight());
+    ensureVfx(scene);
+    m_vfxHasShadowCasters = m_vfxActive && m_vfxRuntime != nullptr && m_vfxRuntime->hasShadowOutputs();
+    m_shadowManager.setCacheSuppressed(m_vfxHasShadowCasters ||
+                                       m_debugDisplayMode == DebugDisplayMode::ShadowAtlasPunctual);
     updateLights(scene);
     const GpuLightData& selectedLightData = m_lightBuilder.data();
     m_litLightFlags = 0;
@@ -8019,7 +10398,6 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
     m_lastRenderTime = time;
     m_hasLastRenderTime = true;
     m_globalUniforms.time = Vec4(time, deltaTime, static_cast<float>(m_frameIndex), 0.0f);
-    ensureVfx(scene);
     updateVfx(scene, deltaTime);
     prepareVfxClusterLighting();
     buildDrawLists(scene);
@@ -8028,13 +10406,21 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         m_depthPrepassActive && m_shaderLibrary.program(shader::ProgramKey{shader::PassId::Prepass, 0, 0}).valid();
     if (m_frameIndex == 0) {
         HBG_LOGI("draw lists: opaque={} ({} batches, {} filtered, {} culled), forwardOnly={}, transparent={} "
-                 "({} batches, {} filtered, {} culled), prepass={}, gbuffer={}, motion={}, shadow={}, "
-                 "wireframe={}",
+                 "({} batches, {} filtered, {} culled), transparent_backface={}, prepass={}, gbuffer={}, motion={}, "
+                 "transparent_motion={}, transparent_prepass={}, shadow={}, wireframe={}",
                  m_opaqueDrawList.size(), m_opaqueDrawList.batches().size(), m_opaqueDrawList.filteredCount(),
                  m_opaqueDrawList.culledCount(), m_forwardOpaqueDrawList.size(), m_transparentDrawList.size(),
                  m_transparentDrawList.batches().size(), m_transparentDrawList.filteredCount(),
-                 m_transparentDrawList.culledCount(), m_prepassDrawList.size(), m_gbufferDrawList.size(),
-                 m_motionVectorDrawList.size(), m_shadowDrawList.size(), m_wireframeDrawList.size());
+                 m_transparentDrawList.culledCount(), m_transparentBackfaceDrawList.size(),
+                 m_prepassDrawList.size(), m_gbufferDrawList.size(), m_motionVectorDrawList.size(),
+                 m_transparentMotionVectorDrawList.size(), m_transparentDepthPrepassDrawList.size(),
+                 m_shadowDrawList.size(), m_wireframeDrawList.size());
+        HBG_LOGI("transparent queues: active={} pre_refraction={} refraction={} pre_prepass={} "
+                 "refraction_prepass={}",
+                 transparentRefractionActive() ? "true" : "false",
+                 m_transparentPreRefractionDrawList.size(), m_transparentRefractionDrawList.size(),
+                 m_transparentPreRefractionDepthPrepassDrawList.size(),
+                 m_transparentRefractionDepthPrepassDrawList.size());
     }
 
     const uint16_t renderWidth = m_viewState.renderWidth();
@@ -8105,6 +10491,26 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
     depthDesc.name = "forward.depth";
     const RenderGraphTextureHandle depth = m_renderGraph.createTexture(depthDesc, "Forward Depth");
 
+    RenderGraphTextureHandle transparentPreRefractionDepth;
+    RenderGraphTextureHandle transparentPreRefractionColor;
+    RenderGraphTextureHandle transparentRefractionSourceColor;
+    if (transparentRefractionActive()) {
+        gfx::TextureDesc preRefractionDepthDesc = depthDesc;
+        preRefractionDepthDesc.name = "forward.preRefractionDepth";
+        transparentPreRefractionDepth =
+            m_renderGraph.createTexture(preRefractionDepthDesc, "Transparent PreRefraction Depth");
+        gfx::TextureDesc preRefractionColorDesc = colorDesc;
+        preRefractionColorDesc.format = gfx::TextureFormat::RGBA16F;
+        preRefractionColorDesc.name = "forward.preRefractionColor";
+        transparentPreRefractionColor =
+            m_renderGraph.createTexture(preRefractionColorDesc, "Transparent PreRefraction Color");
+        gfx::TextureDesc refractionSourceDesc = colorDesc;
+        refractionSourceDesc.format = gfx::TextureFormat::RGBA16F;
+        refractionSourceDesc.name = "forward.refractionSourceColor";
+        transparentRefractionSourceColor =
+            m_renderGraph.createTexture(refractionSourceDesc, "Transparent Refraction Source Color");
+    }
+
     RenderGraphTextureHandle normal;
     if (depthPrepass && !deferred) {
         gfx::TextureDesc normalDesc;
@@ -8130,6 +10536,14 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
     }
 
     RenderGraphTextureHandle depthPyramid;
+    m_gpuDrivenRequested = m_pipelineSettings.supportGpuDrivenGeometry;
+    m_depthPyramidMipCount = depthPrepass ? depthPyramidMipCount(renderWidth, renderHeight) : 0;
+    m_depthPyramidComputeActive = depthPrepass && depthPyramidComputeSupported();
+    if (depthPrepass && m_pipelineSettings.supportDepthPyramidCompute && !m_depthPyramidComputeActive &&
+        !m_depthPyramidComputeWarningLogged) {
+        HBG_LOGW("depth pyramid compute is unsupported by the device or shader pack; using the raster path");
+        m_depthPyramidComputeWarningLogged = true;
+    }
     if (depthPrepass) {
         gfx::TextureDesc pyramidDesc;
         pyramidDesc.width = renderWidth;
@@ -8137,10 +10551,42 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         pyramidDesc.mipCount = depthPyramidMipCount(renderWidth, renderHeight);
         pyramidDesc.format = selectDepthPyramidFormat();
         pyramidDesc.renderTarget = true;
+        pyramidDesc.computeWrite = m_depthPyramidComputeActive;
         pyramidDesc.flags = BGFX_SAMPLER_UVW_CLAMP | BGFX_SAMPLER_POINT;
         pyramidDesc.name = "prepass.depthPyramid";
         depthPyramid = m_renderGraph.createTexture(pyramidDesc, "Depth Pyramid");
     }
+
+    RenderGraphTextureHandle hiZDepthPyramid;
+    RenderGraphTextureHandle hiZHistoryPyramid;
+    m_depthPyramidMaxComputeActive = depthPrepass && depthPyramidMaxComputeSupported() &&
+                                     selectDepthPyramidFormat() == gfx::TextureFormat::R32F;
+    if (m_depthPyramidMaxComputeActive &&
+        !ensureGpuDrivenHiZTextures(renderWidth, renderHeight, static_cast<uint8_t>(m_depthPyramidMipCount))) {
+        m_depthPyramidMaxComputeActive = false;
+    }
+    if (m_depthPyramidMaxComputeActive) {
+        hiZDepthPyramid = m_renderGraph.importTexture(
+            m_hiZPyramidTextures[m_hiZPyramidIndex], "Hi-Z Depth Pyramid");
+        if (m_hiZHistoryValid) {
+            hiZHistoryPyramid = m_renderGraph.importTexture(
+                m_hiZPyramidTextures[1u - m_hiZPyramidIndex], "Hi-Z Depth Pyramid History");
+        }
+        if (!hiZDepthPyramid.valid()) {
+            m_depthPyramidMaxComputeActive = false;
+            m_hiZHistoryValid = false;
+        }
+    } else {
+        m_hiZHistoryValid = false;
+        m_gpuDrivenPrepassActive = false;
+    }
+    if (m_gpuDrivenRequested && !m_depthPyramidMaxComputeActive && !m_gpuDrivenWarningLogged) {
+        HBG_LOGW("gpu-driven geometry: Hi-Z depth pyramid is unavailable; using CPU draw lists");
+        m_gpuDrivenWarningLogged = true;
+    }
+    updateGpuDrivenData(scene, deferred, depthPrepass);
+    m_gpuDrivenPrepassActive = m_depthPyramidMaxComputeActive && m_hiZHistoryValid &&
+                               m_gpuDrivenPrepass.active && m_gpuDrivenPrepassSecond.active;
 
     const RenderGraphTextureHandle lightData = m_renderGraph.importTexture(m_lightDataTexture, "Light Data");
     RenderGraphTextureHandle lightList;
@@ -8226,12 +10672,126 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         shadowStatsBuffer = m_renderGraph.importBuffer(m_shadowStatsBuffer, "Shadow Cull Stats");
     }
 
+    RenderGraphBufferHandle gpuDrivenForwardInput;
+    RenderGraphBufferHandle gpuDrivenForwardVisible;
+    RenderGraphBufferHandle gpuDrivenForwardBatches;
+    RenderGraphBufferHandle gpuDrivenForwardIndirect;
+    RenderGraphBufferHandle gpuDrivenForwardDrawRecords;
+    RenderGraphBufferHandle gpuDrivenForwardCount;
+    RenderGraphBufferHandle gpuDrivenGbufferInput;
+    RenderGraphBufferHandle gpuDrivenGbufferVisible;
+    RenderGraphBufferHandle gpuDrivenGbufferBatches;
+    RenderGraphBufferHandle gpuDrivenGbufferIndirect;
+    RenderGraphBufferHandle gpuDrivenGbufferDrawRecords;
+    RenderGraphBufferHandle gpuDrivenGbufferCount;
+    RenderGraphBufferHandle gpuDrivenTransparentInput;
+    RenderGraphBufferHandle gpuDrivenTransparentVisible;
+    RenderGraphBufferHandle gpuDrivenTransparentBatches;
+    RenderGraphBufferHandle gpuDrivenTransparentIndirect;
+    RenderGraphBufferHandle gpuDrivenTransparentDrawRecords;
+    RenderGraphBufferHandle gpuDrivenTransparentCount;
+    RenderGraphBufferHandle gpuDrivenTransparentSortedVisible;
+    RenderGraphBufferHandle gpuDrivenTransparentSortedIndirect;
+    RenderGraphBufferHandle gpuDrivenPrepassInput;
+    RenderGraphBufferHandle gpuDrivenPrepassVisible;
+    RenderGraphBufferHandle gpuDrivenPrepassBatches;
+    RenderGraphBufferHandle gpuDrivenPrepassIndirect;
+    RenderGraphBufferHandle gpuDrivenPrepassDrawRecords;
+    RenderGraphBufferHandle gpuDrivenPrepassCount;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondInput;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondVisible;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondBatches;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondIndirect;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondDrawRecords;
+    RenderGraphBufferHandle gpuDrivenPrepassSecondCount;
+    if (m_gpuDrivenForward.active) {
+        gpuDrivenForwardInput =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.input, "GPU-Driven Forward Input");
+        gpuDrivenForwardVisible =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.visible, "GPU-Driven Forward Visible");
+        gpuDrivenForwardBatches =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.batches, "GPU-Driven Forward Batches");
+        gpuDrivenForwardIndirect =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.indirect, "GPU-Driven Forward Indirect");
+        gpuDrivenForwardDrawRecords =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.drawRecords, "GPU-Driven Forward Draw Records");
+        gpuDrivenForwardCount =
+            m_renderGraph.importBuffer(m_gpuDrivenForward.count, "GPU-Driven Forward Count");
+    }
+    if (m_gpuDrivenGbuffer.active) {
+        gpuDrivenGbufferInput =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.input, "GPU-Driven GBuffer Input");
+        gpuDrivenGbufferVisible =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.visible, "GPU-Driven GBuffer Visible");
+        gpuDrivenGbufferBatches =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.batches, "GPU-Driven GBuffer Batches");
+        gpuDrivenGbufferIndirect =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.indirect, "GPU-Driven GBuffer Indirect");
+        gpuDrivenGbufferDrawRecords =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.drawRecords, "GPU-Driven GBuffer Draw Records");
+        gpuDrivenGbufferCount =
+            m_renderGraph.importBuffer(m_gpuDrivenGbuffer.count, "GPU-Driven GBuffer Count");
+    }
+    if (m_gpuDrivenTransparent.active) {
+        gpuDrivenTransparentInput =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.input, "GPU-Driven Transparent Input");
+        gpuDrivenTransparentVisible =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.visible, "GPU-Driven Transparent Visible");
+        gpuDrivenTransparentBatches =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.batches, "GPU-Driven Transparent Batches");
+        gpuDrivenTransparentIndirect =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.indirect, "GPU-Driven Transparent Indirect");
+        gpuDrivenTransparentDrawRecords =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.drawRecords, "GPU-Driven Transparent Draw Records");
+        gpuDrivenTransparentCount =
+            m_renderGraph.importBuffer(m_gpuDrivenTransparent.count, "GPU-Driven Transparent Count");
+        if (m_gpuDrivenTransparent.sorted) {
+            gpuDrivenTransparentSortedVisible = m_renderGraph.importBuffer(
+                m_gpuDrivenTransparent.sortedVisible, "GPU-Driven Transparent Sorted Visible");
+            gpuDrivenTransparentSortedIndirect = m_renderGraph.importBuffer(
+                m_gpuDrivenTransparent.sortedIndirect, "GPU-Driven Transparent Sorted Indirect");
+        }
+    }
+    if (m_gpuDrivenPrepass.active) {
+        gpuDrivenPrepassInput = m_renderGraph.importBuffer(m_gpuDrivenPrepass.input, "GPU-Driven Prepass Input");
+        gpuDrivenPrepassVisible =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepass.visible, "GPU-Driven Prepass Visible");
+        gpuDrivenPrepassBatches =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepass.batches, "GPU-Driven Prepass Batches");
+        gpuDrivenPrepassIndirect =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepass.indirect, "GPU-Driven Prepass Indirect");
+        gpuDrivenPrepassDrawRecords =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepass.drawRecords, "GPU-Driven Prepass Draw Records");
+        gpuDrivenPrepassCount =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepass.count, "GPU-Driven Prepass Count");
+    }
+    if (m_gpuDrivenPrepassSecond.active) {
+        gpuDrivenPrepassSecondInput =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.input, "GPU-Driven Prepass Retest Input");
+        gpuDrivenPrepassSecondVisible =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.visible, "GPU-Driven Prepass Retest Visible");
+        gpuDrivenPrepassSecondBatches =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.batches, "GPU-Driven Prepass Retest Batches");
+        gpuDrivenPrepassSecondIndirect =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.indirect, "GPU-Driven Prepass Retest Indirect");
+        gpuDrivenPrepassSecondDrawRecords =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.drawRecords,
+                                       "GPU-Driven Prepass Retest Draw Records");
+        gpuDrivenPrepassSecondCount =
+            m_renderGraph.importBuffer(m_gpuDrivenPrepassSecond.count, "GPU-Driven Prepass Retest Count");
+    }
+
     FramePassResources resources;
     resources.color = color;
     resources.depth = depth;
+    resources.transparentPreRefractionDepth = transparentPreRefractionDepth;
+    resources.transparentPreRefractionColor = transparentPreRefractionColor;
+    resources.transparentRefractionSourceColor = transparentRefractionSourceColor;
     resources.normal = normal;
     resources.motionVector = motionVector;
     resources.depthPyramid = depthPyramid;
+    resources.hiZDepthPyramid = hiZDepthPyramid;
+    resources.hiZHistoryPyramid = hiZHistoryPyramid;
     resources.lightData = lightData;
     resources.lightList = lightList;
     resources.clusterLightList = clusterLightList;
@@ -8250,6 +10810,38 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
     resources.shadowInstanceBuffer = shadowInstanceBuffer;
     resources.shadowIndirectBuffer = shadowIndirectBuffer;
     resources.shadowStatsBuffer = shadowStatsBuffer;
+    resources.gpuDrivenForwardInput = gpuDrivenForwardInput;
+    resources.gpuDrivenForwardVisible = gpuDrivenForwardVisible;
+    resources.gpuDrivenForwardBatches = gpuDrivenForwardBatches;
+    resources.gpuDrivenForwardIndirect = gpuDrivenForwardIndirect;
+    resources.gpuDrivenForwardDrawRecords = gpuDrivenForwardDrawRecords;
+    resources.gpuDrivenForwardCount = gpuDrivenForwardCount;
+    resources.gpuDrivenGbufferInput = gpuDrivenGbufferInput;
+    resources.gpuDrivenGbufferVisible = gpuDrivenGbufferVisible;
+    resources.gpuDrivenGbufferBatches = gpuDrivenGbufferBatches;
+    resources.gpuDrivenGbufferIndirect = gpuDrivenGbufferIndirect;
+    resources.gpuDrivenGbufferDrawRecords = gpuDrivenGbufferDrawRecords;
+    resources.gpuDrivenGbufferCount = gpuDrivenGbufferCount;
+    resources.gpuDrivenTransparentInput = gpuDrivenTransparentInput;
+    resources.gpuDrivenTransparentVisible = gpuDrivenTransparentVisible;
+    resources.gpuDrivenTransparentBatches = gpuDrivenTransparentBatches;
+    resources.gpuDrivenTransparentIndirect = gpuDrivenTransparentIndirect;
+    resources.gpuDrivenTransparentDrawRecords = gpuDrivenTransparentDrawRecords;
+    resources.gpuDrivenTransparentCount = gpuDrivenTransparentCount;
+    resources.gpuDrivenTransparentSortedVisible = gpuDrivenTransparentSortedVisible;
+    resources.gpuDrivenTransparentSortedIndirect = gpuDrivenTransparentSortedIndirect;
+    resources.gpuDrivenPrepassInput = gpuDrivenPrepassInput;
+    resources.gpuDrivenPrepassVisible = gpuDrivenPrepassVisible;
+    resources.gpuDrivenPrepassBatches = gpuDrivenPrepassBatches;
+    resources.gpuDrivenPrepassIndirect = gpuDrivenPrepassIndirect;
+    resources.gpuDrivenPrepassDrawRecords = gpuDrivenPrepassDrawRecords;
+    resources.gpuDrivenPrepassCount = gpuDrivenPrepassCount;
+    resources.gpuDrivenPrepassSecondInput = gpuDrivenPrepassSecondInput;
+    resources.gpuDrivenPrepassSecondVisible = gpuDrivenPrepassSecondVisible;
+    resources.gpuDrivenPrepassSecondBatches = gpuDrivenPrepassSecondBatches;
+    resources.gpuDrivenPrepassSecondIndirect = gpuDrivenPrepassSecondIndirect;
+    resources.gpuDrivenPrepassSecondDrawRecords = gpuDrivenPrepassSecondDrawRecords;
+    resources.gpuDrivenPrepassSecondCount = gpuDrivenPrepassSecondCount;
     resources.directionalShadow = directionalShadow;
     resources.punctualShadow = punctualShadow;
     resources.areaShadow = areaShadow;
@@ -8651,16 +11243,53 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         addShadowAtlasClearPass(m_renderGraph, punctualShadow, m_shadowManager.punctualAtlasSize());
     }
     const bool clearShadowAtlases = m_frameIndex == 0;
+    addGpuSkinningPass(m_renderGraph);
     addShadowAtlasClearPass(m_renderGraph, directionalShadow, m_shadowManager.directionalAtlasSize(), clearShadowAtlases);
     addShadowAtlasClearPass(m_renderGraph, punctualShadow, m_shadowManager.punctualAtlasSize(), clearShadowAtlases);
     addShadowAtlasClearPass(m_renderGraph, areaShadow, m_shadowManager.areaAtlasSize(), clearShadowAtlases);
     addGpuShadowCullPass(m_renderGraph, resources);
+    addVfxSimulationPass(m_renderGraph);
     addShadowPass(m_renderGraph, directionalShadow, cachedDirectionalShadow, punctualShadow, areaShadow, scene);
     addAreaEvsmMomentPasses(m_renderGraph, areaShadow);
     addShadowMomentPasses(m_renderGraph, directionalShadow);
     addClearPass(m_renderGraph, color, depth, materialDebug || (deferred && isGbufferDebug(debugMode)));
-    addPrepassPass(m_renderGraph, normal, depth, scene, deferred);
+    const bool gpuPrepass =
+        m_gpuDrivenPrepassActive && resources.hiZDepthPyramid.valid() &&
+        resources.hiZHistoryPyramid.valid() && resources.gpuDrivenPrepassInput.valid() &&
+        resources.gpuDrivenPrepassBatches.valid() && resources.gpuDrivenPrepassVisible.valid() &&
+        resources.gpuDrivenPrepassIndirect.valid() && resources.gpuDrivenPrepassDrawRecords.valid() &&
+        resources.gpuDrivenPrepassCount.valid() && resources.gpuDrivenPrepassSecondInput.valid() &&
+        resources.gpuDrivenPrepassSecondBatches.valid() && resources.gpuDrivenPrepassSecondVisible.valid() &&
+        resources.gpuDrivenPrepassSecondIndirect.valid() &&
+        resources.gpuDrivenPrepassSecondDrawRecords.valid() && resources.gpuDrivenPrepassSecondCount.valid();
+    m_gpuDrivenPrepassActive = gpuPrepass;
+    if (gpuPrepass) {
+        addGpuDrivenCullingPass(m_renderGraph, m_gpuDrivenPrepass, resources.gpuDrivenPrepassInput,
+                                resources.gpuDrivenPrepassBatches, resources.gpuDrivenPrepassVisible,
+                                resources.gpuDrivenPrepassIndirect, resources.gpuDrivenPrepassDrawRecords,
+                                resources.gpuDrivenPrepassCount, resources.hiZHistoryPyramid,
+                                resources.gpuDrivenPrepassSecondIndirect,
+                                "GPU-Driven Prepass Culling", false);
+        addGpuDrivenPrepassPass(m_renderGraph, m_gpuDrivenPrepass, normal, depth,
+                                resources.gpuDrivenPrepassIndirect, scene, deferred, true,
+                                "Forward Depth Prepass First Phase");
+        addDepthPyramidMaxPasses(m_renderGraph, depth, hiZDepthPyramid);
+        addGpuDrivenCullingPass(m_renderGraph, m_gpuDrivenPrepassSecond,
+                                resources.gpuDrivenPrepassSecondInput, resources.gpuDrivenPrepassSecondBatches,
+                                resources.gpuDrivenPrepassSecondVisible, resources.gpuDrivenPrepassSecondIndirect,
+                                resources.gpuDrivenPrepassSecondDrawRecords,
+                                resources.gpuDrivenPrepassSecondCount, resources.hiZDepthPyramid,
+                                resources.gpuDrivenPrepassIndirect, "GPU-Driven Prepass Retest Culling", true);
+        addGpuDrivenPrepassPass(m_renderGraph, m_gpuDrivenPrepassSecond, normal, depth,
+                                resources.gpuDrivenPrepassSecondIndirect, scene, deferred, false,
+                                "Forward Depth Prepass Second Phase");
+        addDepthPyramidMaxPasses(m_renderGraph, depth, hiZDepthPyramid);
+    } else {
+        addPrepassPass(m_renderGraph, normal, depth, scene, deferred);
+        addDepthPyramidMaxPasses(m_renderGraph, depth, hiZDepthPyramid);
+    }
     addDepthPyramidPasses(m_renderGraph, depth, depthPyramid);
+    addGpuDrivenCullingPasses(m_renderGraph, resources);
     addObjectsMotionVectorsPass(m_renderGraph, motionVector, depth, scene);
     addCameraMotionVectorsPass(m_renderGraph, motionVector, depth, depthPyramid);
     addGpuLightListPasses(m_renderGraph, resources);
@@ -8732,6 +11361,7 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         postProcessInputs.targetWidth = width;
         postProcessInputs.targetHeight = height;
         postProcessInputs.renderScale = m_renderScale;
+        postProcessInputs.taaJitter = m_viewState.taaJitter();
         postProcessInputs.deltaSeconds = deltaTime;
         postProcessInputs.frameIndex = m_frameIndex;
         postProcessInputs.historyValid = m_viewState.historyValid();
@@ -8769,7 +11399,7 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
         debugMode = DebugDisplayMode::None;
     }
 
-    if (debugMode == DebugDisplayMode::None && postProcessOutput.usedUber) {
+    if (debugMode == DebugDisplayMode::None && (postProcessOutput.usedUber || postProcessOutput.requiresFinalCopy)) {
         if (!m_postProcessChain.addFinalPass(m_renderGraph, presentationColor, resources.fullscreen, width,
                                              height)) {
             HBG_LOGE("forward renderer: failed to add the Uber final pass");
@@ -8861,6 +11491,13 @@ void ForwardRenderer::render(RenderScene& scene, uint16_t width, uint16_t height
 
     if (graphExecuted) {
         submitClusterStatsReadback();
+        if (m_depthPyramidMaxComputeActive && m_hiZPyramidTextures[0].valid() &&
+            m_hiZPyramidTextures[1].valid()) {
+            m_hiZPyramidIndex ^= 1u;
+            m_hiZHistoryValid = true;
+        } else {
+            m_hiZHistoryValid = false;
+        }
     }
     m_postProcessChain.endFrame();
     ++m_frameIndex;
@@ -8885,12 +11522,19 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     releaseDecalTextures();
     releaseLitVariantTileResources();
     releaseShadowGpuBuffers();
+    releaseGpuDrivenDrawData(m_gpuDrivenForward);
+    releaseGpuDrivenDrawData(m_gpuDrivenGbuffer);
+    releaseGpuDrivenDrawData(m_gpuDrivenTransparent);
+    releaseGpuDrivenDrawData(m_gpuDrivenPrepass);
+    releaseGpuDrivenDrawData(m_gpuDrivenPrepassSecond);
+    releaseGpuDrivenHiZTextures();
     m_lightmapSet.destroy(resources);
     if (m_lightmapSampler.valid()) {
         resources.destroyUniform(m_lightmapSampler);
         m_lightmapSampler = {};
     }
     m_shaderLibrary.shutdown(resources);
+    m_graphMaterialSystem.shutdown(resources);
     m_materialSystem.shutdown(resources);
     m_shadowManager.shutdown(resources);
     m_skyManager.shutdown(resources);
@@ -8947,6 +11591,18 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     if (m_bakedIndirectSampler.valid()) {
         resources.destroyUniform(m_bakedIndirectSampler);
         m_bakedIndirectSampler = {};
+    }
+    if (m_refractionSourceDepthSampler.valid()) {
+        resources.destroyUniform(m_refractionSourceDepthSampler);
+        m_refractionSourceDepthSampler = {};
+    }
+    if (m_refractionPreColorSampler.valid()) {
+        resources.destroyUniform(m_refractionPreColorSampler);
+        m_refractionPreColorSampler = {};
+    }
+    if (m_bakedGICompositeModeUniform.valid()) {
+        resources.destroyUniform(m_bakedGICompositeModeUniform);
+        m_bakedGICompositeModeUniform = {};
     }
     if (m_contactShadowSampler.valid()) {
         resources.destroyUniform(m_contactShadowSampler);
@@ -9061,6 +11717,26 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
         resources.destroyUniform(m_shadowMomentParamsUniform);
         m_shadowMomentParamsUniform = {};
     }
+    if (m_skinParamsUniform.valid()) {
+        resources.destroyUniform(m_skinParamsUniform);
+        m_skinParamsUniform = {};
+    }
+    if (m_gpuDrivenParamsUniform.valid()) {
+        resources.destroyUniform(m_gpuDrivenParamsUniform);
+        m_gpuDrivenParamsUniform = {};
+    }
+    if (m_gpuDrivenCullModeUniform.valid()) {
+        resources.destroyUniform(m_gpuDrivenCullModeUniform);
+        m_gpuDrivenCullModeUniform = {};
+    }
+    if (m_gpuSortParamsUniform.valid()) {
+        resources.destroyUniform(m_gpuSortParamsUniform);
+        m_gpuSortParamsUniform = {};
+    }
+    if (m_bindlessMaterialUniform.valid()) {
+        resources.destroyUniform(m_bindlessMaterialUniform);
+        m_bindlessMaterialUniform = {};
+    }
     if (m_shadowMomentDepthSampler.valid()) {
         resources.destroyUniform(m_shadowMomentDepthSampler);
         m_shadowMomentDepthSampler = {};
@@ -9173,11 +11849,18 @@ void ForwardRenderer::shutdown(gfx::ResourceManager& resources) {
     m_forwardOpaqueDrawList.clear();
     m_bakedGIDrawList.clear();
     m_transparentDrawList.clear();
+    m_transparentPreRefractionDrawList.clear();
+    m_transparentRefractionDrawList.clear();
+    m_transparentBackfaceDrawList.clear();
     m_shadowDrawList.clear();
     m_shadowStaticDrawList.clear();
     m_shadowDynamicDrawList.clear();
     m_prepassDrawList.clear();
     m_motionVectorDrawList.clear();
+    m_transparentDepthPrepassDrawList.clear();
+    m_transparentPreRefractionDepthPrepassDrawList.clear();
+    m_transparentRefractionDepthPrepassDrawList.clear();
+    m_transparentMotionVectorDrawList.clear();
     m_wireframeDrawList.clear();
     m_resources = nullptr;
 }

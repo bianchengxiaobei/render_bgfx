@@ -58,6 +58,32 @@ void DrawList::buildCulled(const DrawList& source, const std::array<Vec4, 6>& pl
     }
 }
 
+void DrawList::buildRange(const DrawList& source, uint32_t firstItem, uint32_t itemCount) {
+    clear();
+    if (firstItem >= source.m_items.size()) {
+        return;
+    }
+    const uint32_t count = std::min(itemCount, static_cast<uint32_t>(source.m_items.size() - firstItem));
+    m_items.assign(source.m_items.begin() + firstItem, source.m_items.begin() + firstItem + count);
+    m_batches.reserve(m_items.size());
+    for (std::size_t index = 0; index < m_items.size(); ++index) {
+        const DrawItem& item = m_items[index];
+        if (m_batches.empty() || m_batches.back().stateKey != item.batchKey ||
+            m_batches.back().lightmapAtlas != item.lightmapAtlas) {
+            DrawBatch batch;
+            batch.firstItem = static_cast<uint32_t>(index);
+            batch.itemCount = 1;
+            batch.stateKey = item.batchKey;
+            batch.meshIndex = item.meshIndex;
+            batch.materialIndex = item.materialIndex;
+            batch.lightmapAtlas = item.lightmapAtlas;
+            m_batches.push_back(batch);
+        } else {
+            ++m_batches.back().itemCount;
+        }
+    }
+}
+
 void DrawList::build(const RenderScene& scene, const ViewState& viewState, const DrawListDesc& desc) {
     clear();
     m_items.reserve(scene.objects.size());

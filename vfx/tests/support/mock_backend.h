@@ -4,6 +4,7 @@
 #include "vfx/device.h"
 #include "vfx/shading.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -64,6 +65,7 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
         std::uint32_t updateCount = 0;
         std::uint32_t lastUpdateOffset = 0;
         std::size_t lastUpdateSize = 0;
+        std::vector<std::byte> lastUpdateData;
     };
 
     struct TextureSlot {
@@ -90,6 +92,12 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
     struct SamplerSlot {
         std::string name;
         bool alive = false;
+    };
+
+    struct ReadbackSlot {
+        std::vector<std::byte> data;
+        bool ready = false;
+        bool released = false;
     };
 
     BufferHandle createBuffer(const BufferDesc& desc) override {
@@ -119,8 +127,50 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
         }
         slot->lastUpdateOffset = offset;
         slot->lastUpdateSize = data.size();
+        slot->lastUpdateData.assign(data.begin(), data.end());
         slot->updateCount++;
         return true;
+    }
+
+    ReadbackHandle readBufferAsync(BufferHandle handle, std::uint32_t size) override {
+        BufferSlot* slot = bufferSlot(handle);
+        if (slot == nullptr || !slot->alive || size == 0u) {
+            return {};
+        }
+        const auto configured = m_readbackByBuffer.find(handle.index);
+        if (configured == m_readbackByBuffer.end() || configured->second.size() < size) {
+            return {};
+        }
+        ReadbackSlot readback;
+        readback.data.assign(configured->second.begin(), configured->second.begin() + size);
+        readback.ready = true;
+        m_readbacks.push_back(std::move(readback));
+        return ReadbackHandle{static_cast<Index>(m_readbacks.size() - 1)};
+    }
+
+    bool readbackReady(ReadbackHandle handle) const override {
+        return handle.valid() && handle.index < m_readbacks.size() && m_readbacks[handle.index].ready;
+    }
+
+    bool copyReadback(ReadbackHandle handle, std::span<std::byte> data) const override {
+        if (!readbackReady(handle) || data.size() < m_readbacks[handle.index].data.size()) {
+            return false;
+        }
+        std::copy(m_readbacks[handle.index].data.begin(), m_readbacks[handle.index].data.end(), data.begin());
+        return true;
+    }
+
+    void releaseReadback(ReadbackHandle handle) override {
+        if (handle.valid() && handle.index < m_readbacks.size()) {
+            m_readbacks[handle.index].released = true;
+        }
+    }
+
+    void setReadbackData(BufferHandle handle, std::span<const std::byte> data) {
+        if (!handle.valid()) {
+            return;
+        }
+        m_readbackByBuffer[handle.index] = std::vector<std::byte>(data.begin(), data.end());
     }
 
     TextureHandle createTexture(const TextureDesc& desc) override {
@@ -285,7 +335,11 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
         m_lastLitSettings = settings;
     }
 
-    ProgramHandle resolveProgram(const RenderOutputDesc&, ShaderBackend) override { return {}; }
+    void setOutputProgram(ProgramHandle program) { m_outputProgram = program; }
+
+    ProgramHandle resolveProgram(const RenderOutputDesc&, ShaderBackend) override {
+        return m_outputProgram;
+    }
 
     const std::vector<MockCommand>& commands() const { return m_commands; }
     void clearCommands() { m_commands.clear(); }
@@ -367,6 +421,8 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
     std::vector<ProgramSlot> m_programs;
     std::vector<UniformSlot> m_uniforms;
     std::vector<SamplerSlot> m_samplers;
+    std::vector<ReadbackSlot> m_readbacks;
+    std::unordered_map<std::uint32_t, std::vector<std::byte>> m_readbackByBuffer;
     Limits m_limits{16, 16};
     std::unordered_map<std::string, UniformHandle> m_uniformsByName;
     std::unordered_map<std::string, SamplerHandle> m_samplersByName;
@@ -375,6 +431,7 @@ class MockBackend final : public Device, public CommandSink, public ShadingProvi
     std::size_t m_destroyedPrograms = 0;
     std::uint32_t m_lightingBinds = 0;
     LitSettings m_lastLitSettings{};
+    ProgramHandle m_outputProgram{};
 };
 
 } // namespace vfx::test

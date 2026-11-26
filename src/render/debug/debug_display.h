@@ -48,6 +48,7 @@ struct DebugDisplaySettings {
     bool shadows = true;
     bool wireframe = false;
     bool gpuLightList = true;
+    bool gpuDrivenGeometry = false;
     bool freezeTime = false;
     bool showPanel = true;
     float renderScale = 1.0f;

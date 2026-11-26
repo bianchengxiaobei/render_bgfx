@@ -1,0 +1,10 @@
+﻿{
+  "lights": [
+    {
+      "name": "Sun",
+      "castShadows": true,
+      "lightSourceAngle": 10.0,
+      "shadowTranslucency": 0.25
+    }
+  ]
+}

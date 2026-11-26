@@ -48,6 +48,11 @@ class Device {
     virtual void destroyBuffer(BufferHandle handle) = 0;
     virtual bool updateBuffer(BufferHandle handle, std::span<const std::byte> data, std::uint32_t offset = 0) = 0;
 
+    virtual ReadbackHandle readBufferAsync(BufferHandle handle, std::uint32_t size) = 0;
+    virtual bool readbackReady(ReadbackHandle handle) const = 0;
+    virtual bool copyReadback(ReadbackHandle handle, std::span<std::byte> data) const = 0;
+    virtual void releaseReadback(ReadbackHandle handle) = 0;
+
     virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
     virtual void destroyTexture(TextureHandle handle) = 0;
     virtual bool updateTexture(TextureHandle handle, std::span<const std::byte> data, std::uint32_t rowPitch) = 0;

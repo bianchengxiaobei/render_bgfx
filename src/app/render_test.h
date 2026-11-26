@@ -2,6 +2,7 @@
 
 #include "gfx/resource_manager.h"
 #include "render/atmosphere/volumetric_fog_settings.h"
+#include "render/camera/dynamic_resolution.h"
 #include "render/debug/debug_display.h"
 #include "render/pipeline/frame_settings.h"
 #include "render/pipeline/pipeline_settings.h"
@@ -27,6 +28,7 @@ bool runRenderTest(gfx::ResourceManager& resources, const std::string& path, uin
                    const render::SsgiSettings& ssgiSettings,
                    const render::PostProcessProfile& postProcessProfile,
                    const render::VolumetricFogSettings& volumetricFogSettings, float renderScale,
+                   const render::DynamicResolutionSettings& dynamicResolutionSettings,
                    const std::string& skyPath, float skyIntensity, float skyRotation, bool resizeTest);
 
 } // namespace hbg

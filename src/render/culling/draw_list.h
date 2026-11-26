@@ -63,6 +63,7 @@ class DrawList {
   public:
     void build(const RenderScene& scene, const ViewState& viewState, const DrawListDesc& desc);
     void buildCulled(const DrawList& source, const std::array<Vec4, 6>& planes);
+    void buildRange(const DrawList& source, uint32_t firstItem, uint32_t itemCount);
     void clear();
 
     bool empty() const { return m_items.empty(); }

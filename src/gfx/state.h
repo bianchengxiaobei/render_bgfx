@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <bgfx/bgfx.h>
 
@@ -49,6 +49,9 @@ inline constexpr uint64_t kMotionVectors =
 
 inline constexpr uint64_t kMotionVectorsNoCull =
     BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_EQUAL;
+
+inline constexpr uint64_t kTransparentMotionVectors =
+    BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_CULL_CW;
 
 inline constexpr uint64_t kCameraMotionVectors =
     BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_EQUAL;

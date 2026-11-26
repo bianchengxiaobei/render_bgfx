@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace hbg::render {
 
@@ -29,6 +30,13 @@ enum class AntialiasingMode : uint8_t {
     None,
     Taa,
     Fxaa,
+};
+
+// Mirrors DynamicResolutionHandler.UpsamplerScheduleType used by HDRP.
+enum class TaaUpsampleInjection : uint8_t {
+    BeforePost,
+    AfterDepthOfField,
+    AfterPost,
 };
 
 struct BloomSettings {
@@ -93,8 +101,11 @@ struct VignetteSettings {
 
 struct TaaSettings {
     bool enabled = false;
+    bool upscale = false;
+    TaaUpsampleInjection upscaleInjection = TaaUpsampleInjection::BeforePost;
     uint32_t quality = 3;
     float motionVectorRejection = 0.1f;
+    float velocityRejection = 0.0f;
     float sharpening = 0.0f;
     float jitterScale = 1.0f;
 
@@ -229,13 +240,17 @@ const char* exposureModeName(ExposureMode mode);
 const char* tonemappingModeName(TonemappingMode mode);
 const char* meteringModeName(MeteringMode mode);
 const char* antialiasingModeName(AntialiasingMode mode);
+const char* taaUpsampleInjectionName(TaaUpsampleInjection injection);
 std::size_t exposureModeCount();
 std::size_t tonemappingModeCount();
 std::size_t meteringModeCount();
 std::size_t antialiasingModeCount();
+std::size_t taaUpsampleInjectionCount();
 ExposureMode exposureModeAt(std::size_t index);
 TonemappingMode tonemappingModeAt(std::size_t index);
 MeteringMode meteringModeAt(std::size_t index);
 AntialiasingMode antialiasingModeAt(std::size_t index);
+TaaUpsampleInjection taaUpsampleInjectionAt(std::size_t index);
+bool parseTaaUpsampleInjection(std::string_view text, TaaUpsampleInjection& injection);
 
 } // namespace hbg::render

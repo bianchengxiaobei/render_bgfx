@@ -37,7 +37,7 @@ class ViewState {
     void reset();
     void resetHistory();
     void update(const Camera& camera, uint16_t targetWidth, uint16_t targetHeight, float renderScale,
-                bool jitterEnabled, bool homogeneousDepth);
+                bool jitterEnabled, bool homogeneousDepth, bool preserveHistoryOnScaleChange = false);
 
     const ViewConstants& constants() const { return m_constants; }
     const ViewResolution& resolution() const { return m_resolution; }

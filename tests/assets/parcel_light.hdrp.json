@@ -1,0 +1,17 @@
+﻿{
+  "lights": [
+    {
+      "name": "Point",
+      "castShadows": true,
+      "indirectMultiplier": 0.25,
+      "range": 4.0,
+      "sourceRadius": 0.75,
+      "sourceLength": 1.25,
+      "cookie": "parcel_texture.png",
+      "shadowTranslucency": 0.5,
+      "enablePenumbra": true,
+      "penumbraTint": [0.1, 0.2, 0.3, 0.4],
+      "penumbraLuma": 0.75
+    }
+  ]
+}

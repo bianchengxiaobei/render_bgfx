@@ -128,6 +128,52 @@ TEST_CASE("hbg vfx backend creates and destroys buffers and programs without lea
     bgfx::shutdown();
 }
 
+TEST_CASE("hbg vfx backend reads back a storage buffer") {
+    bgfx::Init init;
+    init.type = bgfx::RendererType::Direct3D11;
+    init.vendorId = BGFX_PCI_ID_NONE;
+    init.swapChain.width = 1;
+    init.swapChain.height = 1;
+    if (!bgfx::init(init)) {
+        MESSAGE("Direct3D11 unavailable; skipping readback probe");
+        return;
+    }
+
+    {
+        hbg::gfx::ResourceManager resources;
+        resources.init();
+        {
+            hbg::vfxbridge::HbgVfxBackend backend(resources);
+            std::array<std::uint32_t, 6> initial = {0xffffffffu, 0u, 1u, 0x80000000u, 0x7f800000u, 0u};
+            vfx::BufferDesc desc;
+            desc.usage = vfx::BufferUsage::Storage;
+            desc.size = static_cast<std::uint32_t>(initial.size() * sizeof(std::uint32_t));
+            desc.initialData = initial.data();
+            desc.name = "vfx.readback.test";
+            const vfx::BufferHandle buffer = backend.createBuffer(desc);
+            REQUIRE(buffer.valid());
+            const vfx::ReadbackHandle readback = backend.readBufferAsync(buffer, desc.size);
+            REQUIRE(readback.valid());
+            for (std::uint32_t attempt = 0u; attempt < 8u && !backend.readbackReady(readback); ++attempt) {
+                bgfx::frame();
+                resources.endFrame();
+            }
+            CHECK(backend.readbackReady(readback));
+            std::array<std::uint32_t, 6> result{};
+            CHECK(backend.copyReadback(
+                readback,
+                std::span<std::byte>(reinterpret_cast<std::byte*>(result.data()), result.size() * sizeof(std::uint32_t))));
+            CHECK(result == initial);
+            backend.releaseReadback(readback);
+            backend.destroyBuffer(buffer);
+        }
+        resources.shutdown();
+        CHECK_FALSE(resources.hadLeaksAtShutdown());
+    }
+
+    bgfx::shutdown();
+}
+
 TEST_CASE("hbg vfx backend creates programs from a baked asset") {
     REQUIRE(initNoopRenderer());
 

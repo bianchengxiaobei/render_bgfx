@@ -1,0 +1,11 @@
+﻿{
+  "lights": [
+    {
+      "name": "Spot",
+      "castShadows": true,
+      "range": 6.0,
+      "sourceRadius": 0.4,
+      "sourceLength": 0.8
+    }
+  ]
+}

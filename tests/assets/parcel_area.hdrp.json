@@ -1,0 +1,16 @@
+﻿{
+  "lights": [
+    {
+      "name": "Area",
+      "type": "area",
+      "shape": "rectangle",
+      "width": 2.0,
+      "height": 2.0,
+      "castShadows": true,
+      "falloff": "bakery-fake",
+      "range": 5.0,
+      "barnDoorAngle": 45.0,
+      "barnDoorLength": 3.0
+    }
+  ]
+}

@@ -28,6 +28,7 @@ namespace hbg {
 namespace {
 
 constexpr std::uint32_t kReferenceFrames = 10u;
+constexpr std::uint32_t kParticlesPerDrawInstance = 2048u;
 constexpr float kReferenceDelta = 0.1f;
 constexpr float kReferenceEpsilon = 1.0e-3f;
 
@@ -149,7 +150,8 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
     hbg::gfx::Encoder encoder(resources);
     encoder.setViewRect(0, 0, 0, 64, 64);
     backend.begin(encoder, 0);
-    const vfx::FrameContext frame{};
+    vfx::FrameContext frame;
+    frame.cameraForward = vfx::Vec3{0.0f, 0.0f, -1.0f};
     const auto submitStart = std::chrono::steady_clock::now();
     std::vector<double> frameTimesMs;
     frameTimesMs.reserve(kReferenceFrames);
@@ -198,9 +200,13 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
     }
 
     const std::uint32_t kvpCount = renderKvp.size() >= 2u ? renderKvp[1] : 0u;
+    const std::uint32_t expectedVertices = std::min(spawnCapacity, kParticlesPerDrawInstance) * 6u;
+    const std::uint32_t expectedInstances =
+        (spawnCapacity + kParticlesPerDrawInstance - 1u) / kParticlesPerDrawInstance;
     ok = deadList.size() >= 2u && deadList[0] == 0u && deadList[1] == particleCapacity;
     ok = ok && renderCount[0] == spawnCapacity && kvpCount == renderCount[0] &&
-         kvpCount <= particleCapacity && indirect[0] == spawnCapacity * 6u && indirect[1] == 1u;
+         kvpCount <= particleCapacity && indirect[0] == expectedVertices &&
+         indirect[1] == expectedInstances;
     if (!ok) {
         HBG_LOGE("vfx reference: counters mismatch dead_list={}/{} render_count={} kvp_count={} indirect=[{} {}]",
                  deadList.size() > 0u ? deadList[0] : 0u, deadList.size() > 1u ? deadList[1] : 0u,
@@ -210,6 +216,9 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
     std::vector<bool> seen(spawnCapacity, false);
     std::vector<bool> drawn(particleCapacity, false);
     std::vector<float> expectedKey(particleCapacity, 0.0f);
+    const bool keyedSort = referenceSystem.sort.mode == vfx::SortMode::Distance ||
+                           referenceSystem.sort.mode == vfx::SortMode::CameraDepth ||
+                           referenceSystem.sort.mode == vfx::SortMode::YoungestInFront;
     std::uint32_t aliveCount = 0u;
     for (std::uint32_t particleIndex = 0; particleIndex < particleCapacity && ok; ++particleIndex) {
         vfx::AttributeWords words{};
@@ -290,7 +299,8 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
             ok = false;
             break;
         }
-        if (referenceSystem.sort.mode == vfx::SortMode::Distance) {
+        if (referenceSystem.sort.mode == vfx::SortMode::Distance ||
+            referenceSystem.sort.mode == vfx::SortMode::CameraDepth) {
             vfx::Vec3 worldPosition = expected.position;
             if (referenceSystem.space == vfx::SystemSpace::Local) {
                 const float* matrix = desc.transform.m.data();
@@ -305,8 +315,15 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
             const float dx = worldPosition.x - frame.cameraPosition.x;
             const float dy = worldPosition.y - frame.cameraPosition.y;
             const float dz = worldPosition.z - frame.cameraPosition.z;
-            const float key = dx * dx + dy * dy + dz * dz;
-            expectedKey[particleIndex] = key;
+            if (referenceSystem.sort.mode == vfx::SortMode::Distance) {
+                expectedKey[particleIndex] = dx * dx + dy * dy + dz * dz;
+            } else {
+                expectedKey[particleIndex] =
+                    dx * frame.cameraForward.x + dy * frame.cameraForward.y +
+                    dz * frame.cameraForward.z;
+            }
+        } else if (referenceSystem.sort.mode == vfx::SortMode::YoungestInFront) {
+            expectedKey[particleIndex] = expected.age;
         } else if (referenceSystem.sort.mode == vfx::SortMode::Custom) {
             HBG_LOGE("vfx reference: custom sort key readback is not supported");
             ok = false;
@@ -347,7 +364,7 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
             break;
         }
         kvpDrawn[particle] = true;
-        if (referenceSystem.sort.mode == vfx::SortMode::Distance) {
+        if (keyedSort) {
             const float actualKey = std::bit_cast<float>(renderKvp[2u + index * 2u]);
             if (!approx(actualKey, expectedKey[particle])) {
                 HBG_LOGE("vfx reference: KVP key mismatch at particle {} actual={} expected={}",
@@ -357,7 +374,7 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
             }
         }
     }
-    if (ok && referenceSystem.sort.mode == vfx::SortMode::Distance) {
+    if (ok && keyedSort) {
         std::vector<vfx::reference::SortKVP> gpuKvp;
         gpuKvp.reserve(kvpCount);
         for (std::uint32_t index = 0; index < kvpCount; ++index) {
@@ -394,6 +411,15 @@ bool runVfxReference(gfx::ResourceManager& resources, const std::string& assetPa
     }
     if (steadyFrameCount > 0u) {
         steadyFrameMs /= static_cast<double>(steadyFrameCount);
+    }
+    if (referenceSystem.bounds.mode == vfx::BoundsMode::Automatic) {
+        const vfx::Bounds bounds = effect->bounds();
+        const bool boundsValid = bounds.valid && std::isfinite(bounds.min.x) && std::isfinite(bounds.min.y) &&
+                                 std::isfinite(bounds.min.z) && std::isfinite(bounds.max.x) &&
+                                 std::isfinite(bounds.max.y) && std::isfinite(bounds.max.z);
+        HBG_LOGI("vfx reference automatic bounds: valid={} min=({},{},{}) max=({},{},{})", boundsValid,
+                 bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z);
+        ok = ok && boundsValid;
     }
     const vfx::Diagnostics diagnostics = runtime.diagnostics();
     HBG_LOGI("vfx reference performance: frames={} submit_ms_per_frame={:.3f} steady_ms_per_frame={:.3f} "

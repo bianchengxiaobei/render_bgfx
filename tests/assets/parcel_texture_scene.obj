@@ -1,0 +1,12 @@
+# Minimal OBJ with an external PNG material for the Parcel bridge test.
+mtllib parcel_texture_scene.mtl
+o Triangle
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl ParcelTexture
+f 1/1/1 2/2/1 3/3/1

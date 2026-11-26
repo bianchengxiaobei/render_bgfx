@@ -14,6 +14,7 @@ namespace detail {
 struct FieldSpec {
     const char* name;
     bool required;
+    const char* defaultJson = nullptr;
 };
 
 struct BlockSpec {

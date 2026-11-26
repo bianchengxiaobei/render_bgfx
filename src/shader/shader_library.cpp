@@ -147,6 +147,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto forward = backend->find("forward");
     const auto forwardAdvanced = backend->find("forwardAdvanced");
     const auto forwardInstanced = backend->find("forwardInstanced");
+    const auto bindlessForward = backend->find("bindlessForward");
     const auto bakedGI = backend->find("bakedGI");
     const auto bakedGICompensate = backend->find("bakedGICompensate");
     const auto bakedGIForwardComposite = backend->find("bakedGIForwardComposite");
@@ -180,6 +181,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto shadow = backend->find("shadow");
     const auto shadowInstanced = backend->find("shadowInstanced");
     const auto shadowCull = backend->find("shadowCull");
+    const auto gpuDrivenCull = backend->find("gpuDrivenCull");
+    const auto gpuDrivenTransparentSort = backend->find("gpuDrivenTransparentSort");
+    const auto skinning = backend->find("skinning");
     const auto shadowMoments = backend->find("shadowMoments");
     const auto shadowSatHorizontal = backend->find("shadowSatHorizontal");
     const auto shadowSatVertical = backend->find("shadowSatVertical");
@@ -188,9 +192,12 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto shadowCopyDepth = backend->find("shadowCopyDepth");
     const auto prepass = backend->find("prepass");
     const auto motionVectors = backend->find("motionVectors");
+    const auto transparentMotionVectors = backend->find("transparentMotionVectors");
     const auto cameraMotionVectors = backend->find("cameraMotionVectors");
     const auto depthPyramidCopy = backend->find("depthPyramidCopy");
     const auto depthPyramidDownsample = backend->find("depthPyramidDownsample");
+    const auto depthPyramidCompute = backend->find("depthPyramidCompute");
+    const auto depthPyramidMaxCompute = backend->find("depthPyramidMaxCompute");
     const auto sky = backend->find("sky");
     const auto volumetricFog = backend->find("volumetricFog");
     const auto volumetricFogComposite = backend->find("volumetricFogComposite");
@@ -208,6 +215,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     const auto debugGbuffer = backend->find("debugGbuffer");
     const auto wireframe = backend->find("wireframe");
     const auto gbuffer = backend->find("gbuffer");
+    const auto gbufferInstanced = backend->find("gbufferInstanced");
     const auto gbufferClear = backend->find("gbufferClear");
     const auto gbufferDecals = backend->find("gbufferDecals");
     const auto decal = backend->find("decal");
@@ -257,12 +265,15 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
         bakedGICompensate == backend->end() || bakedGIForwardComposite == backend->end() ||
         tonemap == backend->end() ||
         shadow == backend->end() || shadowInstanced == backend->end() || shadowCull == backend->end() ||
+        skinning == backend->end() ||
         shadowMoments == backend->end() || shadowSatHorizontal == backend->end() ||
         shadowSatVertical == backend->end() || shadowEvsmBlur == backend->end() ||
         shadowEvsmBlurMoments == backend->end() || shadowCopyDepth == backend->end() ||
         prepass == backend->end() ||
-        motionVectors == backend->end() || cameraMotionVectors == backend->end() ||
-        depthPyramidCopy == backend->end() || depthPyramidDownsample == backend->end() || sky == backend->end() ||
+        motionVectors == backend->end() || transparentMotionVectors == backend->end() ||
+        cameraMotionVectors == backend->end() ||
+        depthPyramidCopy == backend->end() || depthPyramidDownsample == backend->end() ||
+        sky == backend->end() ||
         volumetricFog == backend->end() || volumetricFogComposite == backend->end() ||
         debugLightData == backend->end() ||
         debugNormal == backend->end() || debugMotionVectors == backend->end() ||
@@ -301,6 +312,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.forward = readFiles(*forward, true);
     m_files.forwardAdvanced = readFiles(*forwardAdvanced, true);
     m_files.forwardInstanced = readFiles(*forwardInstanced, true);
+    if (bindlessForward != backend->end()) {
+        m_files.bindlessForward = readFiles(*bindlessForward, true);
+    }
     m_files.bakedGI = readFiles(*bakedGI, true);
     m_files.bakedGICompensate = readFiles(*bakedGICompensate, false);
     m_files.bakedGIForwardComposite = readFiles(*bakedGIForwardComposite, false);
@@ -386,6 +400,13 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.shadow = readFiles(*shadow, true);
     m_files.shadowInstanced = readFiles(*shadowInstanced, true);
     m_files.shadowCull = readCompute(*shadowCull);
+    m_files.skinning = readCompute(*skinning);
+    if (gpuDrivenCull != backend->end()) {
+        m_files.gpuDrivenCull = readCompute(*gpuDrivenCull);
+    }
+    if (gpuDrivenTransparentSort != backend->end()) {
+        m_files.gpuDrivenTransparentSort = readCompute(*gpuDrivenTransparentSort);
+    }
     m_files.shadowMoments = readCompute(*shadowMoments);
     m_files.shadowSatHorizontal = readCompute(*shadowSatHorizontal);
     m_files.shadowSatVertical = readCompute(*shadowSatVertical);
@@ -394,9 +415,16 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.shadowCopyDepth = readFiles(*shadowCopyDepth, false);
     m_files.prepass = readFiles(*prepass, true);
     m_files.motionVectors = readFiles(*motionVectors, false);
+    m_files.transparentMotionVectors = readFiles(*transparentMotionVectors, false);
     m_files.cameraMotionVectors = readFiles(*cameraMotionVectors, false);
     m_files.depthPyramidCopy = readFiles(*depthPyramidCopy, false);
     m_files.depthPyramidDownsample = readFiles(*depthPyramidDownsample, false);
+    if (depthPyramidCompute != backend->end()) {
+        m_files.depthPyramidCompute = readCompute(*depthPyramidCompute);
+    }
+    if (depthPyramidMaxCompute != backend->end()) {
+        m_files.depthPyramidMaxCompute = readCompute(*depthPyramidMaxCompute);
+    }
     m_files.sky = readFiles(*sky, false);
     m_files.volumetricFog = readFiles(*volumetricFog, false);
     m_files.volumetricFogComposite = readFiles(*volumetricFogComposite, false);
@@ -415,6 +443,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
     m_files.wireframe = readFiles(*wireframe, false);
     if (gbuffer != backend->end()) {
         m_files.gbuffer = readFiles(*gbuffer, true);
+    }
+    if (gbufferInstanced != backend->end()) {
+        m_files.gbufferInstanced = readFiles(*gbufferInstanced, true);
     }
     if (gbufferClear != backend->end()) {
         m_files.gbufferClear = readFiles(*gbufferClear, false);
@@ -481,7 +512,9 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.shadow.fragments.empty() && !m_files.shadowInstanced.vertex.empty() &&
               !m_files.shadowInstanced.fragments.empty() && !m_files.prepass.vertex.empty() &&
               !m_files.prepass.fragments.empty() && !m_files.motionVectors.vertex.empty() &&
-              !m_files.motionVectors.fragments.empty() && !m_files.cameraMotionVectors.vertex.empty() &&
+              !m_files.motionVectors.fragments.empty() && !m_files.transparentMotionVectors.vertex.empty() &&
+              !m_files.transparentMotionVectors.fragments.empty() &&
+              !m_files.cameraMotionVectors.vertex.empty() &&
               !m_files.cameraMotionVectors.fragments.empty() && !m_files.depthPyramidCopy.vertex.empty() &&
               !m_files.depthPyramidCopy.fragments.empty() && !m_files.depthPyramidDownsample.vertex.empty() &&
               !m_files.depthPyramidDownsample.fragments.empty() && !m_files.sky.vertex.empty() &&
@@ -533,6 +566,7 @@ bool ShaderLibrary::loadManifest(const std::filesystem::path& manifestPath) {
               !m_files.debugSsgi.fragments.empty() && !m_files.debugSsgiRaw.vertex.empty() &&
               !m_files.debugSsgiRaw.fragments.empty() && !m_files.contactShadows.compute.empty() &&
                !m_files.shadowCull.compute.empty() && !m_files.shadowMoments.compute.empty() &&
+               !m_files.skinning.compute.empty() &&
                !m_files.shadowSatHorizontal.compute.empty() && !m_files.shadowSatVertical.compute.empty() &&
                !m_files.shadowEvsmBlur.compute.empty() && !m_files.shadowEvsmBlurMoments.compute.empty() &&
               !m_files.shadowCopyDepth.vertex.empty() && !m_files.shadowCopyDepth.fragments.empty() &&
@@ -631,6 +665,9 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::ForwardInstanced:
         files = &m_files.forwardInstanced;
+        break;
+    case PassId::BindlessForwardInstanced:
+        files = &m_files.bindlessForward;
         break;
     case PassId::BakedGI:
         files = &m_files.bakedGI;
@@ -757,6 +794,18 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.shadowCull;
         variant = 0;
         break;
+    case PassId::GpuDrivenCull:
+        files = &m_files.gpuDrivenCull;
+        variant = 0;
+        break;
+    case PassId::GpuDrivenTransparentSort:
+        files = &m_files.gpuDrivenTransparentSort;
+        variant = 0;
+        break;
+    case PassId::Skinning:
+        files = &m_files.skinning;
+        variant = 0;
+        break;
     case PassId::ShadowMoments:
         files = &m_files.shadowMoments;
         variant = 0;
@@ -788,6 +837,10 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         files = &m_files.motionVectors;
         variant = 0;
         break;
+    case PassId::TransparentMotionVectors:
+        files = &m_files.transparentMotionVectors;
+        variant = 0;
+        break;
     case PassId::CameraMotionVectors:
         files = &m_files.cameraMotionVectors;
         variant = 0;
@@ -798,6 +851,14 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::DepthPyramidDownsample:
         files = &m_files.depthPyramidDownsample;
+        variant = 0;
+        break;
+    case PassId::DepthPyramidCompute:
+        files = &m_files.depthPyramidCompute;
+        variant = 0;
+        break;
+    case PassId::DepthPyramidMaxCompute:
+        files = &m_files.depthPyramidMaxCompute;
         variant = 0;
         break;
     case PassId::Sky:
@@ -864,6 +925,9 @@ gfx::ProgramHandle ShaderLibrary::program(PassId pass, uint64_t materialKey, uin
         break;
     case PassId::GBuffer:
         files = &m_files.gbuffer;
+        break;
+    case PassId::GBufferInstanced:
+        files = &m_files.gbufferInstanced;
         break;
     case PassId::GBufferClear:
         files = &m_files.gbufferClear;

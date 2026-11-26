@@ -49,6 +49,8 @@ class Window {
     void shutdown();
 
     bool pollEvents();
+    bool shouldClose() const;
+    void setShouldClose(bool shouldClose);
     void waitEvents(double seconds);
     bool takeResize();
     void sampleInput(WindowInput& input);

@@ -29,11 +29,20 @@ bool VfxEditorUI::preview(std::string& error) {
     return false;
 }
 
+bool VfxEditorUI::saveRecovery(std::string& error) {
+    error = "VFX editor is not available because HBG_BUILD_VFX=OFF";
+    return false;
+}
+
 bool VfxEditorUI::valid() const {
     return false;
 }
 bool VfxEditorUI::dirty() const {
     return false;
+}
+void VfxEditorUI::requestClose() {}
+bool VfxEditorUI::closeApproved() const {
+    return true;
 }
 void VfxEditorUI::draw() {}
 

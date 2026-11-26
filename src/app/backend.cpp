@@ -8,6 +8,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -42,6 +43,18 @@ bool parseDimension(std::string_view text, int& out) {
 
 bool parseInt(std::string_view text, int& out) {
     int value = 0;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, value);
+    if (ec != std::errc() || ptr != end) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool parseUInt(std::string_view text, std::uint32_t& out) {
+    std::uint32_t value = 0;
     const char* begin = text.data();
     const char* end = text.data() + text.size();
     const auto [ptr, ec] = std::from_chars(begin, end, value);
@@ -374,13 +387,28 @@ void applyPostProcessOverrides(const PostProcessOverrides& overrides, render::Po
         settings.taa.enabled = *overrides.taa;
         if (*overrides.taa) {
             settings.fxaa.enabled = false;
+        } else {
+            settings.taa.upscale = false;
         }
+    }
+    if (overrides.taaUpscale) {
+        settings.taa.upscale = *overrides.taaUpscale;
+        if (*overrides.taaUpscale) {
+            settings.taa.enabled = true;
+            settings.fxaa.enabled = false;
+        }
+    }
+    if (overrides.taaUpscaleInjection) {
+        settings.taa.upscaleInjection = *overrides.taaUpscaleInjection;
     }
     if (overrides.taaQuality) {
         settings.taa.quality = *overrides.taaQuality;
     }
     if (overrides.taaMotionRejection) {
         settings.taa.motionVectorRejection = *overrides.taaMotionRejection;
+    }
+    if (overrides.taaVelocityRejection) {
+        settings.taa.velocityRejection = *overrides.taaVelocityRejection;
     }
     if (overrides.taaSharpening) {
         settings.taa.sharpening = *overrides.taaSharpening;
@@ -392,6 +420,7 @@ void applyPostProcessOverrides(const PostProcessOverrides& overrides, render::Po
         settings.fxaa.enabled = *overrides.fxaa;
         if (*overrides.fxaa) {
             settings.taa.enabled = false;
+            settings.taa.upscale = false;
         }
     }
     if (overrides.bloom) {
@@ -666,6 +695,70 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.vfxSpike = true;
             continue;
         }
+        if (arg == "--sg-spike") {
+            result.options.sgSpike = true;
+            continue;
+        }
+        if (arg == "--sg-preview") {
+            result.options.sgSpike = true;
+            result.options.sgPreview = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-asset")) {
+            if (value->empty()) {
+                HBG_LOGE("--sg-asset requires a path");
+                result.ok = false;
+            } else {
+                result.options.sgAssetPath = std::string(*value);
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-token")) {
+            if (value->empty()) {
+                HBG_LOGE("--sg-token requires a value");
+                result.ok = false;
+            } else {
+                result.options.sgToken = std::string(*value);
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-port")) {
+            int port = 0;
+            if (!parseInt(*value, port) || port <= 0 || port > 65535) {
+                HBG_LOGE("invalid --sg-port value '{}'", *value);
+                result.ok = false;
+            } else {
+                result.options.sgPort = port;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-editor")) {
+            if (value->empty()) {
+                HBG_LOGE("--sg-editor requires a .sgraph.json path");
+                result.ok = false;
+            } else {
+                result.options.sgEditorPath = std::string(*value);
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-root")) {
+            if (value->empty()) {
+                HBG_LOGE("--sg-root requires a directory");
+                result.ok = false;
+            } else {
+                result.options.sgRoot = std::string(*value);
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--sg-web-root")) {
+            if (value->empty()) {
+                HBG_LOGE("--sg-web-root requires a directory");
+                result.ok = false;
+            } else {
+                result.options.sgWebRoot = std::string(*value);
+            }
+            continue;
+        }
         if (arg == "--vfx-cpu-event-reference") {
             result.options.vfxCpuEventReference = true;
             continue;
@@ -729,6 +822,24 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         if (arg == "--vfx" || arg == "--vfx-test") {
             result.options.vfx = true;
             result.options.vfxTest = arg == "--vfx-test";
+            continue;
+        }
+        if (arg == "--vfx-instancing") {
+            result.options.vfxInstancing = true;
+            continue;
+        }
+        if (arg == "--vfx-transparent-sort") {
+            result.options.vfxTransparentSort = true;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--vfx-instance-batch")) {
+            std::uint32_t batchSize = 0;
+            if (!parseUInt(*value, batchSize) || batchSize > 65535u) {
+                HBG_LOGE("invalid --vfx-instance-batch value '{}'", *value);
+                result.ok = false;
+            } else {
+                result.options.vfxInstanceBatchSize = batchSize;
+            }
             continue;
         }
         if (arg == "--no-vfx") {
@@ -1068,14 +1179,44 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (arg == "--taa") {
             result.options.postProcess.taa.enabled = true;
+            result.options.postProcess.taa.upscale = false;
             result.options.postProcess.fxaa.enabled = false;
             result.options.postProcessOverrides.taa = true;
+            result.options.postProcessOverrides.taaUpscale = false;
             result.options.postProcessOverrides.fxaa = false;
             continue;
         }
         if (arg == "--no-taa") {
             result.options.postProcess.taa.enabled = false;
+            result.options.postProcess.taa.upscale = false;
             result.options.postProcessOverrides.taa = false;
+            result.options.postProcessOverrides.taaUpscale = false;
+            continue;
+        }
+        if (arg == "--taa-upscale") {
+            result.options.postProcess.taa.enabled = true;
+            result.options.postProcess.taa.upscale = true;
+            result.options.postProcess.fxaa.enabled = false;
+            result.options.postProcessOverrides.taa = true;
+            result.options.postProcessOverrides.taaUpscale = true;
+            result.options.postProcessOverrides.fxaa = false;
+            continue;
+        }
+        if (arg == "--no-taa-upscale") {
+            result.options.postProcess.taa.upscale = false;
+            result.options.postProcessOverrides.taaUpscale = false;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--taa-upscale-injection")) {
+            render::TaaUpsampleInjection injection = render::TaaUpsampleInjection::BeforePost;
+            if (!render::parseTaaUpsampleInjection(*value, injection)) {
+                HBG_LOGE("invalid --taa-upscale-injection value '{}' (expected before-post, after-dof or after-post)",
+                         *value);
+                result.ok = false;
+            } else {
+                result.options.postProcess.taa.upscaleInjection = injection;
+                result.options.postProcessOverrides.taaUpscaleInjection = injection;
+            }
             continue;
         }
         if (const auto value = optionValue(arg, "--taa-quality")) {
@@ -1095,6 +1236,16 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
                 result.ok = false;
             } else {
                 result.options.postProcessOverrides.taaMotionRejection = rejection;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--taa-velocity-rejection")) {
+            float rejection = 0.0f;
+            if (!parseFloat(*value, rejection) || rejection < 0.0f || rejection > 1.0f) {
+                HBG_LOGE("invalid --taa-velocity-rejection value '{}' (expected 0..1)", *value);
+                result.ok = false;
+            } else {
+                result.options.postProcessOverrides.taaVelocityRejection = rejection;
             }
             continue;
         }
@@ -1120,8 +1271,10 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
         }
         if (arg == "--fxaa") {
             result.options.postProcess.taa.enabled = false;
+            result.options.postProcess.taa.upscale = false;
             result.options.postProcess.fxaa.enabled = true;
             result.options.postProcessOverrides.taa = false;
+            result.options.postProcessOverrides.taaUpscale = false;
             result.options.postProcessOverrides.fxaa = true;
             continue;
         }
@@ -1384,8 +1537,10 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
                 result.ok = false;
             } else {
                 result.options.postProcess.taa.enabled = taa;
+                result.options.postProcess.taa.upscale = false;
                 result.options.postProcess.fxaa.enabled = fxaa;
                 result.options.postProcessOverrides.taa = taa;
+                result.options.postProcessOverrides.taaUpscale = false;
                 result.options.postProcessOverrides.fxaa = fxaa;
             }
             continue;
@@ -1822,6 +1977,70 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             result.options.gpuLightListIndirect = false;
             continue;
         }
+        if (arg == "--gpu-skinning") {
+            result.options.gpuSkinning = true;
+            continue;
+        }
+        if (arg == "--no-gpu-skinning") {
+            result.options.gpuSkinning = false;
+            continue;
+        }
+        if (arg == "--depth-pyramid-compute") {
+            result.options.depthPyramidCompute = true;
+            continue;
+        }
+        if (arg == "--no-depth-pyramid-compute") {
+            result.options.depthPyramidCompute = false;
+            continue;
+        }
+        if (arg == "--gpu-driven") {
+            result.options.gpuDrivenGeometry = true;
+            continue;
+        }
+        if (arg == "--no-gpu-driven") {
+            result.options.gpuDrivenGeometry = false;
+            continue;
+        }
+        if (arg == "--transparent-backface") {
+            result.options.transparentBackface = true;
+            continue;
+        }
+        if (arg == "--no-transparent-backface") {
+            result.options.transparentBackface = false;
+            continue;
+        }
+        if (arg == "--transparent-prepass") {
+            result.options.transparentPrepass = true;
+            continue;
+        }
+        if (arg == "--no-transparent-prepass") {
+            result.options.transparentPrepass = false;
+            continue;
+        }
+        if (arg == "--transparent-refraction") {
+            result.options.transparentRefraction = true;
+            continue;
+        }
+        if (arg == "--no-transparent-refraction") {
+            result.options.transparentRefraction = false;
+            continue;
+        }
+        if (arg == "--refraction-depth-rejection") {
+            result.options.refractionDepthRejection = true;
+            continue;
+        }
+        if (arg == "--no-refraction-depth-rejection") {
+            result.options.refractionDepthRejection = false;
+            continue;
+        }
+        if (arg == "--refraction-roughness") {
+            result.options.refractionRoughness = true;
+            continue;
+        }
+        if (arg == "--no-refraction-roughness") {
+            result.options.refractionRoughness = false;
+            continue;
+        }
         if (arg == "--light-list-feature-flags") {
             result.options.lightListFeatureFlags = true;
             continue;
@@ -1959,6 +2178,59 @@ CommandLineResult parseCommandLine(int argc, const char* const* argv) {
             if (!parseRenderScale(*value, result.options.renderScale)) {
                 HBG_LOGE("invalid --render-scale value '{}' (expected 0.1..1.0)", *value);
                 result.ok = false;
+            }
+            continue;
+        }
+
+        if (arg == "--dynamic-resolution") {
+            result.options.dynamicResolutionSettings.enabled = true;
+            continue;
+        }
+        if (arg == "--no-dynamic-resolution") {
+            result.options.dynamicResolutionSettings.enabled = false;
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--dynamic-resolution-target-fps")) {
+            float fps = 0.0f;
+            if (!parseFloat(*value, fps) || fps < 1.0f || fps > 1000.0f) {
+                HBG_LOGE("invalid --dynamic-resolution-target-fps value '{}' (expected 1..1000)", *value);
+                result.ok = false;
+            } else {
+                result.options.dynamicResolutionSettings.targetFrameMs = 1000.0f / fps;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--dynamic-resolution-min-scale")) {
+            if (!parseRenderScale(*value, result.options.dynamicResolutionSettings.minScale)) {
+                HBG_LOGE("invalid --dynamic-resolution-min-scale value '{}' (expected 0.1..1.0)", *value);
+                result.ok = false;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--dynamic-resolution-max-scale")) {
+            if (!parseRenderScale(*value, result.options.dynamicResolutionSettings.maxScale)) {
+                HBG_LOGE("invalid --dynamic-resolution-max-scale value '{}' (expected 0.1..1.0)", *value);
+                result.ok = false;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--dynamic-resolution-step")) {
+            float step = 0.0f;
+            if (!parseFloat(*value, step) || step < 0.01f || step > 0.5f) {
+                HBG_LOGE("invalid --dynamic-resolution-step value '{}' (expected 0.01..0.5)", *value);
+                result.ok = false;
+            } else {
+                result.options.dynamicResolutionSettings.scaleStep = step;
+            }
+            continue;
+        }
+        if (const auto value = optionValue(arg, "--dynamic-resolution-interval")) {
+            int interval = 0;
+            if (!parseInt(*value, interval) || interval < 1 || interval > 1000) {
+                HBG_LOGE("invalid --dynamic-resolution-interval value '{}' (expected 1..1000)", *value);
+                result.ok = false;
+            } else {
+                result.options.dynamicResolutionSettings.evaluationFrames = static_cast<uint32_t>(interval);
             }
             continue;
         }
@@ -2151,8 +2423,11 @@ const char* usage() {
            "  --verbose                                         Enable debug logging (including bgfx trace)\n"
            "  --bgfx-debug                                      Enable bgfx debug/validation layers\n"
            "  --gfx-test                                        Run the M0.2 resource/draw smoke test and exit\n"
-           "  --vfx-spike                                       Run the VFX V0 GPU spike and exit\n  --vfx-reference[=<asset.vfxb>]                     Run the 1024-particle VFX GPU/CPU reference check and exit\n  --vfx-event-reference[=<asset.vfxb>]               Run the GPU event/prefix-sum reference check and exit\n  --vfx-cpu-event-reference[=<asset.vfxb>]           Run the CPU event attribute/prefix reference check and exit\n  --vfx-reference-graph=<effect.vfx.json>           Graph used by --vfx-reference for the CPU reference\n  --vfx-editor=<effect.vfx.json>                    Open the V2 graph editor with a loaded scene\n  --vfx-editor-compile                              Compile the editor graph and exit (CI smoke)\n  --vfx-editor-preview                              Compile unsaved graph to a preview .vfxb and exit\n  --vfx-shaderc=<path>                              shaderc used by editor compile (env: HBG_SHADERC)\n  --vfx-bgfx-src=<path>                             bgfx source root for editor compile (env: HBG_BGFX_SOURCE_DIR)\n  --vfx-shader-pack=<path>                          optional shader include root for editor compile\n"
+           "  --vfx-spike                                       Run the VFX V0 GPU spike and exit\n  --sg-spike                                        Run the Shader Graph SG-0 spike and exit\n  --sg-preview                                      Run SG-0 and serve the MJPEG preview\n  --sg-asset=<path>                                 SG-0 .sgb asset (default: tests/shadergraph/assets/spike.sgb)\n  --sg-token=<value>                                SG-0 preview token (default: random)\n  --sg-port=<port>                                  SG preview/editor port (default: 8777)\n  --sg-editor=<path>                                Open the SG-4 local editor host and serve HTTP\n  --sg-root=<dir>                                   Editor sandbox root (default: current directory)\n  --sg-web-root=<dir>                               Optional static editor frontend root\n  --vfx-reference[=<asset.vfxb>]                     Run the 1024-particle VFX GPU/CPU reference check and exit\n  --vfx-event-reference[=<asset.vfxb>]               Run the GPU event/prefix-sum reference check and exit\n  --vfx-cpu-event-reference[=<asset.vfxb>]           Run the CPU event attribute/prefix reference check and exit\n  --vfx-reference-graph=<effect.vfx.json>           Graph used by --vfx-reference for the CPU reference\n  --vfx-editor=<effect.vfx.json>                    Open the V2 graph editor with a loaded scene\n  --vfx-editor-compile                              Compile the editor graph and exit (CI smoke)\n  --vfx-editor-preview                              Compile unsaved graph to a preview .vfxb and exit\n  --vfx-shaderc=<path>                              shaderc used by editor compile (env: HBG_SHADERC)\n  --vfx-bgfx-src=<path>                             bgfx source root for editor compile (env: HBG_BGFX_SOURCE_DIR)\n  --vfx-shader-pack=<path>                          optional shader include root for editor compile\n"
            "  --vfx / --vfx-test / --no-vfx                     Enable/disable VFX runtime for the scene\n"
+           "  --vfx-instancing                                  Group compatible scene VFX instances onto one simulation and batch visible draws\n"
+           "  --vfx-instance-batch=<n>                          Split grouped VFX draws at n instances per indirect batch (0 = no split)\n"
+           "  --vfx-transparent-sort                            Interleave VFX effects with scene transparent objects\n"
            "  --debug-ui / --no-debug-ui                        Enable/disable the interactive debug panel\n"
            "  --debug-light-data                                Start with the GPU light-data debug view\n"
            "  --debug-lightmap-mask                             Show the binary lightmap mask instead of baked radiance\n"
@@ -2211,6 +2486,14 @@ const char* usage() {
             "  --gpu-light-list-path=<texture|buffer>            Select the GPU light-list storage path (default: buffer)\n"
             "  --gpu-light-list-buffers / --no-gpu-light-list-buffers  Enable/disable buffer storage (default: enabled)\n"
             "  --gpu-light-list-indirect / --no-gpu-light-list-indirect  Enable/disable indirect light-list dispatch\n"
+           "  --gpu-skinning / --no-gpu-skinning                Enable/disable compute GPU skinning (default: enabled)\n"
+           "  --depth-pyramid-compute / --no-depth-pyramid-compute  Enable/disable compute depth pyramid (default: enabled)\n"
+           "  --gpu-driven / --no-gpu-driven                    Enable/disable GPU-driven opaque culling and Hi-Z (default: disabled)\n"
+           "  --transparent-backface / --no-transparent-backface  Enable/disable transparent backface passes (default: disabled)\n"
+           "  --transparent-prepass / --no-transparent-prepass  Enable/disable the transparent depth prepass (default: disabled)\n"
+           "  --transparent-refraction / --no-transparent-refraction  Enable/disable pre-refraction/refraction transparent queues (default: disabled)\n"
+           "  --refraction-depth-rejection / --no-refraction-depth-rejection  Enable/disable refraction source depth rejection (default: enabled)\n"
+           "  --refraction-roughness / --no-refraction-roughness  Enable/disable HDRP-style screen-space Gaussian rough refraction (default: disabled)\n"
            "  --light-list-feature-flags / --no-light-list-feature-flags  Enable/disable tile feature-flag category gating (default: enabled)\n"
            "  --cookie-atlas / --no-cookie-atlas                Enable native cookie atlas / use legacy 8x8 tiles (default: enabled)\n"
            "  --cookie-atlas-size <512|1024|2048>               Cookie atlas resolution (default: 1024)\n"
@@ -2228,8 +2511,14 @@ const char* usage() {
            "  --frames=<count>                                  Render-test frames; with --scene, stop after count "
            "frames\n"
            "  --animation-time=<seconds>                        Evaluate glTF animation at a fixed time\n"
-           "  --render-scale=<0.1..1.0>                         Dynamic-resolution render scale (default: 1.0)\n"
-           "  --lit-shader-mode=<forward|deferred>              Override the lit shader mode\n"
+            "  --render-scale=<0.1..1.0>                         Initial render scale (default: 1.0)\n"
+            "  --dynamic-resolution / --no-dynamic-resolution    Enable/disable frame-time driven render scale (default: disabled)\n"
+            "  --dynamic-resolution-target-fps=<fps>             Target frame rate for dynamic resolution (default: 60)\n"
+            "  --dynamic-resolution-min-scale=<0.1..1.0>         Minimum dynamic resolution scale (default: 0.5)\n"
+            "  --dynamic-resolution-max-scale=<0.1..1.0>         Maximum dynamic resolution scale (default: 1.0)\n"
+            "  --dynamic-resolution-step=<0.01..0.5>             Scale change per evaluation (default: 0.05)\n"
+            "  --dynamic-resolution-interval=<frames>            Frames per scale evaluation (default: 30)\n"
+            "  --lit-shader-mode=<forward|deferred>              Override the lit shader mode\n"
            "  --lit-variants / --no-lit-variants                Enable/disable 29 deferred Lit feature variants\n"
            "  --lit-variants-tile / --no-lit-variants-tile      Use per-tile compute dispatch for 29 Lit variants\n"
            "  --deferred                                        Alias for --lit-shader-mode=deferred\n"
@@ -2264,8 +2553,12 @@ const char* usage() {
            "  --postprocess-profile=<path>                      Load a PostProcessProfile JSON\n"
            "  --aa=<off|taa|fxaa>                               Select post-process antialiasing\n"
            "  --taa / --no-taa                                  Enable/disable temporal antialiasing\n"
+           "  --taa-upscale / --no-taa-upscale                  Enable TAA temporal upsampling (requires render-scale < 1)\n"
+           "  --taa-upscale-injection=<before-post|after-dof|after-post>\n"
+           "                                                    TAAU injection point (default: before-post)\n"
            "  --taa-quality=<1..5>                              TAA quality; 3 is HDRP-like 0.875 history\n"
            "  --taa-motion-rejection=<0..1>                     TAA motion vector rejection\n"
+           "  --taa-velocity-rejection=<0..1>                   TAAU velocity-history rejection\n"
            "  --taa-sharpening=<0..1>                           Post-TAA sharpen strength\n"
            "  --taa-jitter-scale=<0..1>                         Scale the Halton jitter\n"
            "  --fxaa / --no-fxaa                                Enable/disable FXAA\n"

@@ -16,6 +16,7 @@ enum class TextureFormat : uint8_t {
     RGBA32F,
     RG16F,
     RG32F,
+    R16F,
     R8,
     RG8,
     R32U,
@@ -43,6 +44,7 @@ struct TextureDesc {
     uint16_t width = 1;
     uint16_t height = 1;
     uint16_t layers = 1;
+    uint16_t depth = 1;
     uint8_t mipCount = 1;
     uint8_t msaaSamples = 1;
     TextureFormat format = TextureFormat::RGBA8;
@@ -51,6 +53,7 @@ struct TextureDesc {
     bool depthStencil = false;
     bool computeWrite = false;
     bool cubeMap = false;
+    bool is3D = false;
     const void* data = nullptr;
     uint32_t dataSize = 0;
     std::string name;

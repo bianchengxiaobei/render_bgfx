@@ -17,19 +17,26 @@ fs::path sourceAsset() {
     return fs::path(VFX_SOURCE_DIR) / "tests" / "assets" / "minimal_unlit.vfx.json";
 }
 
+fs::path subgraphAsset() {
+    return fs::path(VFX_SOURCE_DIR) / "tests" / "assets" / "subgraph_visual.vfx.json";
+}
+
 struct TempAsset {
     fs::path path;
     fs::path layoutPath;
+    fs::path recoveryPath;
 
-    explicit TempAsset(const std::string& name) {
+    explicit TempAsset(const std::string& name, const fs::path& source = sourceAsset()) {
         static std::atomic<std::uint32_t> counter{0};
         path = fs::temp_directory_path() /
                ("hbg_vfx_editor_" + name + "_" + std::to_string(counter.fetch_add(1)) + ".vfx.json");
         layoutPath = vfx::editor::defaultLayoutPath(path);
+        recoveryPath = vfx::editor::defaultRecoveryPath(path);
         std::error_code error;
         fs::remove(path, error);
         fs::remove(layoutPath, error);
-        fs::copy_file(sourceAsset(), path, fs::copy_options::overwrite_existing, error);
+        fs::remove(recoveryPath, error);
+        fs::copy_file(source, path, fs::copy_options::overwrite_existing, error);
         REQUIRE_FALSE(error);
     }
 
@@ -37,6 +44,7 @@ struct TempAsset {
         std::error_code error;
         fs::remove(path, error);
         fs::remove(layoutPath, error);
+        fs::remove(recoveryPath, error);
     }
 
     TempAsset(const TempAsset&) = delete;
@@ -182,10 +190,16 @@ TEST_CASE("vfx editor edits systems, blocks, properties and outputs") {
     REQUIRE(document->setSystemCapacity(0, 128));
     REQUIRE(document->setSpawnerRate(0, 7.5f));
     REQUIRE(document->setSystemSort(0, vfx::SortMode::Distance, vfx::SortOrder::Descending));
+    REQUIRE(document->setOutputSortMode(0, 0, vfx::SortMode::YoungestInFront));
+    REQUIRE(document->setOutputSortOrder(0, 0, vfx::SortOrder::Ascending));
     REQUIRE(document->setSystemBounds(0, {1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}));
+    REQUIRE(document->setSystemBoundsPadding(0, {0.1f, 0.2f, 0.3f}));
     REQUIRE(document->setBlockEnabled(0, vfx::editor::ContextKind::Update, 1, false));
     REQUIRE(document->setOutputBlend(0, 0, vfx::BlendMode::Premultiply));
     REQUIRE(document->setOutputSoftParticles(0, 0, true));
+    REQUIRE(document->setOutputCastShadows(0, 0, true));
+    REQUIRE(document->setOutputGenerateMotionVector(0, 0, false));
+    REQUIRE(document->setOutputSortPriority(0, 0, -7));
     REQUIRE(document->setOutputSoftDistance(0, 0, 2.5f));
     REQUIRE(document->setOutputMetallic(0, 0, 0.25f));
     REQUIRE(document->setOutputRoughness(0, 0, 0.75f));
@@ -205,16 +219,54 @@ TEST_CASE("vfx editor edits systems, blocks, properties and outputs") {
     CHECK(static_cast<int>(system.sort.order) == static_cast<int>(vfx::SortOrder::Descending));
     CHECK(system.bounds.center.y == doctest::Approx(2.0f));
     CHECK(system.bounds.extents.z == doctest::Approx(6.0f));
+    CHECK(system.bounds.padding.x == doctest::Approx(0.1f));
+    CHECK(system.bounds.padding.y == doctest::Approx(0.2f));
+    CHECK(system.bounds.padding.z == doctest::Approx(0.3f));
     REQUIRE(system.updateBlocks.size() == 3);
     CHECK_FALSE(system.updateBlocks[1].enabled);
     CHECK(static_cast<int>(system.outputs[0].blend) == static_cast<int>(vfx::BlendMode::Premultiply));
     CHECK(system.outputs[0].softParticles);
     CHECK(system.outputs[0].softDistance == doctest::Approx(2.5f));
+    CHECK(system.outputs[0].castShadows);
+    CHECK_FALSE(system.outputs[0].generateMotionVector);
+    CHECK(system.outputs[0].sortPriority == -7);
+    REQUIRE(system.outputs[0].sort.has_value());
+    CHECK(static_cast<int>(system.outputs[0].sort->mode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+    REQUIRE(system.outputs[0].sortOrder.has_value());
+    CHECK(static_cast<int>(*system.outputs[0].sortOrder) ==
+          static_cast<int>(vfx::SortOrder::Ascending));
     CHECK(system.outputs[0].metallic == doctest::Approx(0.25f));
     CHECK(system.outputs[0].roughness == doctest::Approx(0.75f));
     REQUIRE(reloaded->graph().properties.size() == 2);
     CHECK(reloaded->graph().properties[1].defaultFloat[0] == doctest::Approx(0.65f));
     CHECK(reloaded->graph().properties[0].defaultFloat[2] == doctest::Approx(0.2f));
+}
+
+TEST_CASE("vfx editor preserves per-output sort criteria across system sort changes") {
+    const TempAsset asset("sort_override");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    REQUIRE(document->setSystemSort(0, vfx::SortMode::Distance, vfx::SortOrder::Ascending));
+    REQUIRE(document->setOutputSortMode(0, 0, vfx::SortMode::YoungestInFront));
+    REQUIRE(document->setSystemSort(0, vfx::SortMode::CameraDepth, vfx::SortOrder::Descending));
+    REQUIRE(document->save(error));
+    CHECK_FALSE(document->dirty());
+
+    const auto reloaded = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(reloaded != nullptr, error);
+    const vfx::SystemDesc& system = reloaded->graph().systems[0];
+    CHECK(static_cast<int>(system.sort.mode) == static_cast<int>(vfx::SortMode::CameraDepth));
+    REQUIRE(system.outputs[0].sort.has_value());
+    CHECK(static_cast<int>(system.outputs[0].sort->mode) ==
+          static_cast<int>(vfx::SortMode::YoungestInFront));
+
+    REQUIRE(reloaded->setSystemSort(0, vfx::SortMode::None, vfx::SortOrder::Ascending));
+    REQUIRE(reloaded->save(error));
+    const auto unsorted = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(unsorted != nullptr, error);
+    CHECK_FALSE(unsorted->graph().systems[0].outputs[0].sort.has_value());
 }
 
 TEST_CASE("vfx editor round-trips node and view layout") {
@@ -250,6 +302,47 @@ TEST_CASE("vfx editor round-trips node and view layout") {
     CHECK(reloaded->layoutStale());
     REQUIRE(reloaded->saveLayout(error));
     CHECK_FALSE(reloaded->layoutStale());
+}
+
+TEST_CASE("vfx editor toggles automatic system bounds") {
+    const TempAsset asset("automatic_bounds");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    REQUIRE(document->setSystemBoundsMode(0, vfx::BoundsMode::Automatic));
+    REQUIRE(document->setSystemBoundsPadding(0, {0.25f, 0.5f, 0.75f}));
+    REQUIRE(document->save(error));
+    const auto reloaded = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(reloaded != nullptr, error);
+    CHECK(reloaded->graph().systems[0].bounds.mode == vfx::BoundsMode::Automatic);
+    CHECK(reloaded->graph().systems[0].bounds.padding.x == doctest::Approx(0.25f));
+    REQUIRE(reloaded->setSystemBounds(0, {1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}));
+    CHECK(reloaded->graph().systems[0].bounds.mode == vfx::BoundsMode::Manual);
+    CHECK(reloaded->graph().systems[0].bounds.extents.z == doctest::Approx(6.0f));
+    CHECK(reloaded->graph().systems[0].bounds.padding.z == doctest::Approx(0.75f));
+}
+
+TEST_CASE("vfx editor edits asset culling flags") {
+    const TempAsset asset("culling");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    REQUIRE(document->setCullingFlags(vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+    CHECK(document->graph().cullingFlags ==
+          (vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+    REQUIRE(document->save(error));
+    const auto reloaded = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(reloaded != nullptr, error);
+    CHECK(reloaded->graph().cullingFlags ==
+          (vfx::kCullSimulation | vfx::kCullBoundsUpdate));
+
+    REQUIRE(reloaded->setSystemBoundsMode(0, vfx::BoundsMode::Automatic));
+    CHECK(reloaded->graph().cullingFlags == 0u);
+    CHECK_FALSE(reloaded->setCullingFlags(vfx::kCullSimulation));
+    CHECK_FALSE(reloaded->lastError().empty());
+    REQUIRE(reloaded->setSystemBoundsMode(0, vfx::BoundsMode::Manual));
+    REQUIRE(reloaded->setCullingFlags(vfx::kCullSimulation));
+    CHECK(reloaded->graph().cullingFlags == vfx::kCullSimulation);
 }
 
 TEST_CASE("vfx editor ignores a corrupt layout without blocking the graph") {
@@ -436,6 +529,200 @@ TEST_CASE("vfx editor undo and redo restore graph edits") {
     CHECK_FALSE(document->canRedo());
 }
 
+TEST_CASE("vfx editor copies, pastes and duplicates graph items") {
+    const TempAsset asset("clipboard");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    using vfx::editor::ContextKind;
+
+    REQUIRE(document->graph().systems[0].updateBlocks.size() == 3);
+    std::string blockJson;
+    REQUIRE(document->copyBlock(0, ContextKind::Update, 0, blockJson));
+    CHECK_FALSE(blockJson.empty());
+    std::uint32_t inserted = 99;
+    REQUIRE(document->pasteBlock(0, ContextKind::Update, 1, blockJson, inserted));
+    CHECK(inserted == 1);
+    REQUIRE(document->graph().systems[0].updateBlocks.size() == 4);
+    CHECK(document->graph().systems[0].updateBlocks[1].type == "integrate");
+
+    std::uint32_t duplicated = 0;
+    REQUIRE(document->duplicateBlock(0, ContextKind::Update, 0, duplicated));
+    CHECK(duplicated == 1);
+    REQUIRE(document->graph().systems[0].updateBlocks.size() == 5);
+    CHECK(document->graph().systems[0].updateBlocks[1].type == "integrate");
+    REQUIRE(document->undo());
+    CHECK(document->graph().systems[0].updateBlocks.size() == 4);
+
+    CHECK_FALSE(document->pasteBlock(0, ContextKind::Update, 0, "{}", inserted));
+    CHECK(document->graph().systems[0].updateBlocks.size() == 4);
+    CHECK_FALSE(document->lastError().empty());
+
+    std::string propertyJson;
+    REQUIRE(document->copyProperty("Tint", propertyJson));
+    std::string pastedProperty;
+    REQUIRE(document->pasteProperty(propertyJson, pastedProperty));
+    CHECK(pastedProperty == "Tint1");
+    REQUIRE(document->graph().properties.size() == 3);
+    std::string duplicatedProperty;
+    REQUIRE(document->duplicateProperty("Size", duplicatedProperty));
+    CHECK(duplicatedProperty == "Size1");
+    REQUIRE(document->graph().properties.size() == 4);
+
+    std::uint32_t duplicatedSystem = 0;
+    REQUIRE(document->duplicateSystem(0, duplicatedSystem));
+    CHECK(duplicatedSystem == 1);
+    REQUIRE(document->graph().systems.size() == 2);
+    CHECK(document->graph().systems[1].name == "Sparks 1");
+    CHECK(document->graph().systems[1].updateBlocks.size() == 4);
+
+    std::uint32_t duplicatedOutput = 0;
+    REQUIRE(document->duplicateOutput(0, 0, duplicatedOutput));
+    CHECK(duplicatedOutput == 1);
+    REQUIRE(document->graph().systems[0].outputs.size() == 2);
+    CHECK(static_cast<int>(document->graph().systems[0].outputs[1].type) == static_cast<int>(vfx::OutputType::Quad));
+}
+
+TEST_CASE("vfx editor inserts subgraph invocations") {
+    const TempAsset asset("subgraph_clipboard", subgraphAsset());
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    using vfx::editor::ContextKind;
+    REQUIRE(document->graph().subgraphs.size() == 2);
+    REQUIRE(document->graph().systems[0].initBlocks.size() == 1);
+    CHECK(document->graph().systems[0].initBlocks[0].type == "subgraph");
+
+    const auto names = document->subgraphNames(ContextKind::Init);
+    REQUIRE(std::find(names.begin(), names.end(), "SeedParticles") != names.end());
+    CHECK(document->subgraphNames(ContextKind::Update).empty());
+
+    const std::uint32_t before = static_cast<std::uint32_t>(document->graph().systems[0].initBlocks.size());
+    std::uint32_t inserted = 0;
+    REQUIRE(document->addSubgraphBlock(0, ContextKind::Init, "SeedParticles", vfx::editor::kAppend, inserted));
+    CHECK(inserted == before);
+    REQUIRE(document->graph().systems[0].initBlocks.size() == before + 1);
+    const vfx::Block& invocation = document->graph().systems[0].initBlocks.back();
+    CHECK(invocation.type == "subgraph");
+    const vfx::Value* name = invocation.parameter("name");
+    REQUIRE(name != nullptr);
+    CHECK(name->string == "SeedParticles");
+    const vfx::Value* args = invocation.parameter("args");
+    REQUIRE(args != nullptr);
+    CHECK(args->kind == vfx::Value::Kind::Object);
+
+    CHECK_FALSE(document->addSubgraphBlock(0, ContextKind::Init, "Tint", vfx::editor::kAppend, inserted));
+    CHECK(document->graph().systems[0].initBlocks.size() == before + 1);
+    CHECK_FALSE(document->addSubgraphBlock(0, ContextKind::Init, "Missing", vfx::editor::kAppend, inserted));
+}
+
+TEST_CASE("vfx editor edits block expressions as JSON") {
+    const TempAsset asset("expression");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    using vfx::editor::ContextKind;
+
+    std::uint32_t colorBlock = 0;
+    for (std::uint32_t i = 0; i < document->graph().systems[0].initBlocks.size(); ++i) {
+        if (document->graph().systems[0].initBlocks[i].type == "set_color") {
+            colorBlock = i;
+            break;
+        }
+    }
+    REQUIRE(document->graph().systems[0].initBlocks[colorBlock].type == "set_color");
+    std::string colorJson;
+    REQUIRE(document->blockParameterJson(0, ContextKind::Init, colorBlock, "color", colorJson));
+    CHECK(colorJson.find("\"op\"") != std::string::npos);
+    REQUIRE(document->setBlockParameterJson(0, ContextKind::Init, colorBlock, "color",
+                                            R"({"op":"attr","name":"color"})"));
+    const vfx::Value* color = document->graph().systems[0].initBlocks[colorBlock].parameter("color");
+    REQUIRE(color != nullptr);
+    REQUIRE(color->isExpression());
+    CHECK(color->expression->op == "attr");
+
+    CHECK_FALSE(document->setBlockParameterJson(0, ContextKind::Init, colorBlock, "color",
+                                                R"({"op":"missing"})"));
+    const vfx::Value* after = document->graph().systems[0].initBlocks[colorBlock].parameter("color");
+    REQUIRE(after != nullptr);
+    REQUIRE(after->isExpression());
+    CHECK(after->expression->op == "attr");
+    CHECK_FALSE(document->setBlockParameterJson(0, ContextKind::Init, colorBlock, "type", R"("x")"));
+}
+
+TEST_CASE("vfx editor saves and restores recovery snapshots") {
+    const TempAsset asset("recovery");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    REQUIRE(document->recoveryPath() == asset.recoveryPath);
+    REQUIRE(document->renameSystem(0, "RecoveredSparks"));
+    REQUIRE(document->saveRecovery(error));
+    CHECK(fs::exists(asset.recoveryPath));
+
+    const auto clean = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(clean != nullptr, error);
+    CHECK(clean->graph().systems[0].name == "Sparks");
+    REQUIRE(clean->loadRecovery(error));
+    CHECK(clean->graph().systems[0].name == "RecoveredSparks");
+    CHECK(clean->dirty());
+    clean->clearRecovery();
+    CHECK_FALSE(fs::exists(asset.recoveryPath));
+
+    REQUIRE(document->saveRecovery(error));
+    CHECK(fs::exists(asset.recoveryPath));
+    REQUIRE(document->save(error));
+    CHECK_FALSE(fs::exists(asset.recoveryPath));
+}
+
+TEST_CASE("vfx editor exposes and adds optional block parameters") {
+    const TempAsset asset("optional");
+    std::string error;
+    const auto document = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(document != nullptr, error);
+    using vfx::editor::ContextKind;
+
+    REQUIRE(document->addBlock(0, ContextKind::Init, "set_velocity_random"));
+    const std::uint32_t velocityBlock =
+        static_cast<std::uint32_t>(document->graph().systems[0].initBlocks.size() - 1);
+    auto optional = document->optionalBlockParameters(0, ContextKind::Init, velocityBlock);
+    CHECK(std::find(optional.begin(), optional.end(), "direction") != optional.end());
+    CHECK(std::find(optional.begin(), optional.end(), "coneAngle") != optional.end());
+
+    REQUIRE(document->addOptionalBlockParameter(0, ContextKind::Init, velocityBlock, "direction"));
+    const vfx::Value* direction =
+        document->graph().systems[0].initBlocks[velocityBlock].parameter("direction");
+    REQUIRE(direction != nullptr);
+    REQUIRE(direction->kind == vfx::Value::Kind::Array);
+    REQUIRE(direction->array.size() == 3);
+    CHECK(direction->array[1].number == doctest::Approx(1.0));
+    optional = document->optionalBlockParameters(0, ContextKind::Init, velocityBlock);
+    CHECK(std::find(optional.begin(), optional.end(), "direction") == optional.end());
+    CHECK(std::find(optional.begin(), optional.end(), "coneAngle") != optional.end());
+    CHECK_FALSE(document->addOptionalBlockParameter(0, ContextKind::Init, velocityBlock, "direction"));
+    CHECK_FALSE(document->lastError().empty());
+
+    REQUIRE(document->undo());
+    CHECK(document->graph().systems[0].initBlocks[velocityBlock].parameter("direction") == nullptr);
+
+    REQUIRE(document->addBlock(0, ContextKind::Init, "set_position_sphere"));
+    const std::uint32_t sphereBlock =
+        static_cast<std::uint32_t>(document->graph().systems[0].initBlocks.size() - 1);
+    REQUIRE(document->addOptionalBlockParameter(0, ContextKind::Init, sphereBlock, "surface"));
+    const vfx::Value* surface = document->graph().systems[0].initBlocks[sphereBlock].parameter("surface");
+    REQUIRE(surface != nullptr);
+    REQUIRE(surface->kind == vfx::Value::Kind::Bool);
+    CHECK_FALSE(surface->boolean);
+    CHECK_FALSE(document->addOptionalBlockParameter(0, ContextKind::Init, sphereBlock, "missing"));
+
+    REQUIRE(document->save(error));
+    const auto reloaded = vfx::editor::Document::load(asset.path, error);
+    REQUIRE_MESSAGE(reloaded != nullptr, error);
+    const vfx::Block& reloadedSphere = reloaded->graph().systems[0].initBlocks[sphereBlock];
+    REQUIRE(reloadedSphere.parameter("surface") != nullptr);
+    CHECK_FALSE(reloadedSphere.parameter("surface")->boolean);
+}
+
 TEST_CASE("vfx editor block catalog defaults are valid") {
     const TempAsset asset("catalog");
     std::string error;
@@ -448,8 +735,14 @@ TEST_CASE("vfx editor block catalog defaults are valid") {
         }
         INFO("init block: " << type);
         REQUIRE(document->addBlock(0, vfx::editor::ContextKind::Init, type));
-        REQUIRE(document->removeBlock(0, vfx::editor::ContextKind::Init,
-                                      static_cast<std::uint32_t>(document->graph().systems[0].initBlocks.size() - 1)));
+        const std::uint32_t block =
+            static_cast<std::uint32_t>(document->graph().systems[0].initBlocks.size() - 1);
+        for (const std::string& parameter :
+             document->optionalBlockParameters(0, vfx::editor::ContextKind::Init, block)) {
+            INFO("init optional parameter: " << parameter);
+            REQUIRE(document->addOptionalBlockParameter(0, vfx::editor::ContextKind::Init, block, parameter));
+        }
+        REQUIRE(document->removeBlock(0, vfx::editor::ContextKind::Init, block));
     }
     for (const std::string& type : vfx::editor::blockTypes(vfx::editor::ContextKind::Update)) {
         if (type == "subgraph" || type == "trigger_event" || type == "color_over_life" || type == "alpha_over_life" ||
@@ -458,8 +751,13 @@ TEST_CASE("vfx editor block catalog defaults are valid") {
         }
         INFO("update block: " << type);
         REQUIRE(document->addBlock(0, vfx::editor::ContextKind::Update, type));
-        REQUIRE(
-            document->removeBlock(0, vfx::editor::ContextKind::Update,
-                                  static_cast<std::uint32_t>(document->graph().systems[0].updateBlocks.size() - 1)));
+        const std::uint32_t block =
+            static_cast<std::uint32_t>(document->graph().systems[0].updateBlocks.size() - 1);
+        for (const std::string& parameter :
+             document->optionalBlockParameters(0, vfx::editor::ContextKind::Update, block)) {
+            INFO("update optional parameter: " << parameter);
+            REQUIRE(document->addOptionalBlockParameter(0, vfx::editor::ContextKind::Update, block, parameter));
+        }
+        REQUIRE(document->removeBlock(0, vfx::editor::ContextKind::Update, block));
     }
 }

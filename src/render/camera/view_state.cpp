@@ -125,14 +125,21 @@ void ViewState::setJitterScale(float scale) {
 }
 
 void ViewState::update(const Camera& camera, uint16_t targetWidth, uint16_t targetHeight, float renderScale,
-                       bool jitterEnabled, bool homogeneousDepth) {
+                       bool jitterEnabled, bool homogeneousDepth, bool preserveHistoryOnScaleChange) {
     const ViewResolution nextResolution = makeViewResolution(targetWidth, targetHeight, renderScale);
-    const bool resolutionChanged = nextResolution.targetWidth != m_resolution.targetWidth ||
-                                   nextResolution.targetHeight != m_resolution.targetHeight ||
-                                   nextResolution.renderWidth != m_resolution.renderWidth ||
+    const bool targetChanged = nextResolution.targetWidth != m_resolution.targetWidth ||
+                               nextResolution.targetHeight != m_resolution.targetHeight;
+    const bool renderSizeChanged = nextResolution.renderWidth != m_resolution.renderWidth ||
                                    nextResolution.renderHeight != m_resolution.renderHeight;
+    const bool aspectChanged =
+        m_resolution.renderWidth > 0 && m_resolution.renderHeight > 0 && nextResolution.renderHeight > 0 &&
+        std::fabs(static_cast<float>(nextResolution.renderWidth) / static_cast<float>(nextResolution.renderHeight) -
+                  static_cast<float>(m_resolution.renderWidth) / static_cast<float>(m_resolution.renderHeight)) >
+            1.0e-6f;
     const bool jitterChanged = jitterEnabled != m_jitterEnabled;
-    if (resolutionChanged || jitterChanged) {
+    const bool preserveScaleHistory = preserveHistoryOnScaleChange && !targetChanged && !aspectChanged &&
+                                      nextResolution.renderWidth > 0 && nextResolution.renderHeight > 0;
+    if (targetChanged || (renderSizeChanged && !preserveScaleHistory) || jitterChanged) {
         m_history.reset();
         m_taaFrameIndex = 0;
     }

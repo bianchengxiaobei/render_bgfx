@@ -28,6 +28,8 @@ struct RenderObject {
     std::vector<float> morphWeights;
 
     bool staticShadowCaster = true;
+    bool contributeGI = false;
+    bool hasContributeGI = false;
 
     bool hasLightmap() const { return lightmapAtlas != UINT32_MAX; }
 };

@@ -572,8 +572,8 @@ bool validateGraphExpressions(const Graph& graph, std::vector<ParseError>& error
 
 class GraphParser {
 public:
-    GraphParser(const Json& root, std::vector<ParseError>& errors)
-        : m_root(root), m_errors(errors) {}
+    GraphParser(const Json& root, std::vector<ParseError>& errors, GraphParseMode mode)
+        : m_root(root), m_errors(errors), m_mode(mode) {}
 
     std::unique_ptr<Graph> parse() {
         if (!m_root.is_object()) {
@@ -582,7 +582,7 @@ public:
         }
 
         static constexpr const char* kRootFields[] = {
-            "version", "name", "properties", "attributes", "subgraphs", "systems",
+            "version", "name", "culling", "properties", "attributes", "subgraphs", "systems",
         };
         if (!checkKnownFields(m_root, "$", kRootFields)) {
             return nullptr;
@@ -602,6 +602,25 @@ public:
         if (graph->name.empty()) {
             fail(publicPath("name"), "must not be empty");
             return nullptr;
+        }
+
+        const auto culling = m_root.find("culling");
+        if (culling != m_root.end()) {
+            if (!culling->is_string()) {
+                fail(publicPath("culling"), "must be a string");
+                return nullptr;
+            }
+            const std::string name = culling->get<std::string>();
+            if (name == "none") {
+                graph->cullingFlags = 0u;
+            } else if (name == "simulation") {
+                graph->cullingFlags = kCullSimulation;
+            } else if (name == "visible") {
+                graph->cullingFlags = kCullSimulation | kCullBoundsUpdate;
+            } else {
+                fail(publicPath("culling"), "unknown culling mode '" + name + "'");
+                return nullptr;
+            }
         }
 
         const auto properties = m_root.find("properties");
@@ -700,14 +719,35 @@ public:
             graph->systems.push_back(std::move(system));
         }
 
-        if (!detail::flattenSubgraphs(*graph, m_errors)) {
+        if (graph->cullingFlags != 0u &&
+            std::any_of(graph->systems.begin(), graph->systems.end(), [](const SystemDesc& system) {
+                return system.bounds.mode == BoundsMode::Automatic;
+            })) {
+            fail(publicPath("culling"), "cannot cull automatic bounds systems");
             return nullptr;
         }
-        if (!validateGraphCustomHlsl(*graph, m_errors)) {
-            return nullptr;
-        }
-        if (!validateGraphExpressions(*graph, m_errors)) {
-            return nullptr;
+
+        if (m_mode == GraphParseMode::PreserveSubgraphs) {
+            Graph flattened = *graph;
+            if (!detail::flattenSubgraphs(flattened, m_errors)) {
+                return nullptr;
+            }
+            if (!validateGraphCustomHlsl(*graph, m_errors)) {
+                return nullptr;
+            }
+            if (!validateGraphExpressions(flattened, m_errors)) {
+                return nullptr;
+            }
+        } else {
+            if (!detail::flattenSubgraphs(*graph, m_errors)) {
+                return nullptr;
+            }
+            if (!validateGraphCustomHlsl(*graph, m_errors)) {
+                return nullptr;
+            }
+            if (!validateGraphExpressions(*graph, m_errors)) {
+                return nullptr;
+            }
         }
         if (!m_errors.empty()) {
             return nullptr;
@@ -1451,7 +1491,8 @@ private:
             return fail(path, "must be an object");
         }
         static constexpr const char* kFields[] = {
-            "type", "lit", "blend", "texture", "softParticles", "softDistance", "metallic", "roughness", "sort",
+            "type", "lit", "blend", "texture", "softParticles", "softDistance", "castShadows",
+            "generateMotionVector", "sortPriority", "metallic", "roughness", "sort", "sortOrder",
         };
         if (!checkKnownFields(value, path, kFields)) {
             return false;
@@ -1470,8 +1511,31 @@ private:
         out.type = OutputType::Quad;
 
         if (!readBool(value, "lit", child(path, "lit"), out.lit) ||
-            !readBool(value, "softParticles", child(path, "softParticles"), out.softParticles)) {
+            !readBool(value, "softParticles", child(path, "softParticles"), out.softParticles) ||
+            !readBool(value, "castShadows", child(path, "castShadows"), out.castShadows) ||
+            !readBool(value, "generateMotionVector", child(path, "generateMotionVector"),
+                      out.generateMotionVector)) {
             return false;
+        }
+        const auto sortPriority = value.find("sortPriority");
+        if (sortPriority != value.end()) {
+            const std::string fieldPath = child(path, "sortPriority");
+            if (sortPriority->is_number_unsigned()) {
+                const std::uint64_t raw = sortPriority->get<std::uint64_t>();
+                if (raw > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+                    return fail(fieldPath, "must fit in int32");
+                }
+                out.sortPriority = static_cast<std::int32_t>(raw);
+            } else if (sortPriority->is_number_integer()) {
+                const std::int64_t raw = sortPriority->get<std::int64_t>();
+                if (raw < std::numeric_limits<std::int32_t>::min() ||
+                    raw > static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())) {
+                    return fail(fieldPath, "must fit in int32");
+                }
+                out.sortPriority = static_cast<std::int32_t>(raw);
+            } else {
+                return fail(fieldPath, "must be an integer");
+            }
         }
         const auto softDistance = value.find("softDistance");
         if (softDistance != value.end()) {
@@ -1558,10 +1622,28 @@ private:
                 parsed.mode = SortMode::Distance;
             } else if (mode == "custom") {
                 parsed.mode = SortMode::Custom;
+            } else if (mode == "cameraDepth") {
+                parsed.mode = SortMode::CameraDepth;
+            } else if (mode == "youngest") {
+                parsed.mode = SortMode::YoungestInFront;
             } else {
                 return fail(child(path, "sort"), "unknown sort mode '" + mode + "'");
             }
             out.sort = parsed;
+        }
+        const auto sortOrder = value.find("sortOrder");
+        if (sortOrder != value.end()) {
+            if (!sortOrder->is_string()) {
+                return fail(child(path, "sortOrder"), "must be a string");
+            }
+            const std::string name = sortOrder->get<std::string>();
+            if (name == "ascending") {
+                out.sortOrder = SortOrder::Ascending;
+            } else if (name == "descending") {
+                out.sortOrder = SortOrder::Descending;
+            } else {
+                return fail(child(path, "sortOrder"), "unknown sort order '" + name + "'");
+            }
         }
         return true;
     }
@@ -1729,26 +1811,47 @@ private:
             if (!bounds->is_object()) {
                 return fail(child(path, "bounds"), "must be an object");
             }
-            static constexpr const char* kBoundsFields[] = {"mode", "center", "extents"};
+            static constexpr const char* kBoundsFields[] = {"mode", "center", "extents", "padding"};
             if (!checkKnownFields(*bounds, child(path, "bounds"), kBoundsFields)) {
                 return false;
             }
+            bool automatic = false;
             const auto mode = bounds->find("mode");
             if (mode != bounds->end()) {
-                if (!mode->is_string() || mode->get<std::string>() != "manual") {
-                    return fail(child(child(path, "bounds"), "mode"), "V1 supports only 'manual' bounds");
+                if (!mode->is_string()) {
+                    return fail(child(child(path, "bounds"), "mode"), "must be a string");
+                }
+                const std::string modeName = mode->get<std::string>();
+                if (modeName == "manual") {
+                    out.bounds.mode = BoundsMode::Manual;
+                } else if (modeName == "automatic") {
+                    out.bounds.mode = BoundsMode::Automatic;
+                    automatic = true;
+                } else {
+                    return fail(child(child(path, "bounds"), "mode"), "unknown bounds mode '" + modeName + "'");
                 }
             }
             const auto center = bounds->find("center");
             const auto extents = bounds->find("extents");
-            if (center == bounds->end()) {
-                return fail(child(child(path, "bounds"), "center"), "is required for manual bounds");
+            const auto padding = bounds->find("padding");
+            if (!automatic) {
+                if (center == bounds->end()) {
+                    return fail(child(child(path, "bounds"), "center"), "is required for manual bounds");
+                }
+                if (extents == bounds->end()) {
+                    return fail(child(child(path, "bounds"), "extents"), "is required for manual bounds");
+                }
             }
-            if (extents == bounds->end()) {
-                return fail(child(child(path, "bounds"), "extents"), "is required for manual bounds");
+            if (center != bounds->end() &&
+                !readVec3(*center, child(child(path, "bounds"), "center"), out.bounds.center)) {
+                return false;
             }
-            if (!readVec3(*center, child(child(path, "bounds"), "center"), out.bounds.center) ||
+            if (extents != bounds->end() &&
                 !readVec3(*extents, child(child(path, "bounds"), "extents"), out.bounds.extents)) {
+                return false;
+            }
+            if (padding != bounds->end() &&
+                !readVec3(*padding, child(child(path, "bounds"), "padding"), out.bounds.padding)) {
                 return false;
             }
             if (out.bounds.extents.x <= 0.0f || out.bounds.extents.y <= 0.0f || out.bounds.extents.z <= 0.0f) {
@@ -1777,6 +1880,10 @@ private:
                     out.sort.mode = SortMode::Distance;
                 } else if (name == "custom") {
                     out.sort.mode = SortMode::Custom;
+                } else if (name == "cameraDepth") {
+                    out.sort.mode = SortMode::CameraDepth;
+                } else if (name == "youngest") {
+                    out.sort.mode = SortMode::YoungestInFront;
                 } else {
                     return fail(child(child(path, "sort"), "mode"), "unknown sort mode '" + name + "'");
                 }
@@ -1910,6 +2017,10 @@ private:
             if (out.sort.mode != SortMode::None && !output.sort.has_value()) {
                 return fail(child(outputPath, "sort"), "is required when the system sort mode is enabled");
             }
+            if (output.sortOrder.has_value() && out.sort.mode == SortMode::None) {
+                return fail(child(outputPath, "sortOrder"),
+                            "requires the system sort mode to be enabled");
+            }
             if (!output.texture.empty()) {
                 const Property* property = findProperty(properties, output.texture);
                 if (property == nullptr) {
@@ -1940,6 +2051,7 @@ private:
 
     const Json& m_root;
     std::vector<ParseError>& m_errors;
+    GraphParseMode m_mode;
 };
 
 void hashBytes(std::uint64_t& hash, const void* data, std::size_t size) {
@@ -2082,6 +2194,13 @@ std::uint64_t hashGraph(const Graph& graph) {
         hashFloat(hash, system.bounds.extents.x);
         hashFloat(hash, system.bounds.extents.y);
         hashFloat(hash, system.bounds.extents.z);
+        if (system.bounds.padding.x != 0.0f || system.bounds.padding.y != 0.0f ||
+            system.bounds.padding.z != 0.0f) {
+            hashU64(hash, 1u);
+            hashFloat(hash, system.bounds.padding.x);
+            hashFloat(hash, system.bounds.padding.y);
+            hashFloat(hash, system.bounds.padding.z);
+        }
         hashFloat(hash, system.spawner.rate);
         hashU64(hash, system.spawner.bursts.size());
         for (const Burst& burst : system.spawner.bursts) {
@@ -2110,6 +2229,11 @@ std::uint64_t hashGraph(const Graph& graph) {
             hashU64(hash, static_cast<std::uint64_t>(output.blend));
             hashString(hash, output.texture);
             hashU64(hash, output.softParticles ? 1u : 0u);
+            hashU64(hash, output.castShadows ? 1u : 0u);
+            hashU64(hash, output.generateMotionVector ? 1u : 0u);
+            if (output.sortPriority != 0) {
+                hashU64(hash, static_cast<std::uint64_t>(output.sortPriority));
+            }
             hashFloat(hash, output.softDistance);
             hashFloat(hash, output.metallic);
             hashFloat(hash, output.roughness);
@@ -2119,6 +2243,9 @@ std::uint64_t hashGraph(const Graph& graph) {
             if (output.sort.has_value()) {
                 hashU64(hash, static_cast<std::uint64_t>(output.sort->mode));
                 hashU64(hash, static_cast<std::uint64_t>(output.sort->order));
+            }
+            if (output.sortOrder.has_value()) {
+                hashU64(hash, static_cast<std::uint64_t>(*output.sortOrder));
             }
         }
         hashU64(hash, system.events.receive.size());
@@ -2131,6 +2258,10 @@ std::uint64_t hashGraph(const Graph& graph) {
             hashString(hash, event.name);
             hashValue(hash, event.attributes);
         }
+    }
+    if (graph.cullingFlags != 0u) {
+        hashU64(hash, 1u);
+        hashU64(hash, graph.cullingFlags);
     }
     return hash;
 }
@@ -2172,7 +2303,7 @@ bool locateJsonPath(std::string_view json, std::string_view path, std::uint32_t&
     return false;
 }
 
-ParseResult parseGraphJson(std::string_view json, std::string_view sourceName) {
+ParseResult parseGraphJson(std::string_view json, std::string_view sourceName, GraphParseMode mode) {
     ParseResult result;
     Json root;
     try {
@@ -2188,7 +2319,7 @@ ParseResult parseGraphJson(std::string_view json, std::string_view sourceName) {
         return result;
     }
 
-    GraphParser parser(root, result.errors);
+    GraphParser parser(root, result.errors, mode);
     result.graph = parser.parse();
     if (!result.errors.empty()) {
         result.graph.reset();

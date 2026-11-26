@@ -35,6 +35,8 @@ enum SectionId : std::uint32_t {
     kBindings = 7,
     kOutputs = 8,
     kEvents = 9,
+    kBounds = 11,
+    kCulling = 12,
 };
 
 struct Section {
@@ -222,13 +224,18 @@ bool parseSystems(const Section& section, std::span<const std::byte> strings, As
         const std::uint8_t sortMode = readU8(section.data, offset + 13u);
         const std::uint8_t sortOrder = readU8(section.data, offset + 14u);
         if (space > static_cast<std::uint8_t>(SystemSpace::Local) ||
-            sortMode > static_cast<std::uint8_t>(SortMode::Custom) ||
+            sortMode > static_cast<std::uint8_t>(SortMode::YoungestInFront) ||
             sortOrder > static_cast<std::uint8_t>(SortOrder::Descending)) {
             return fail(error, "SYSTEMS has an invalid enum value");
         }
         system.space = static_cast<SystemSpace>(space);
         system.sortMode = static_cast<SortMode>(sortMode);
         system.sortOrder = static_cast<SortOrder>(sortOrder);
+        const std::uint8_t boundsMode = readU8(section.data, offset + 60u);
+        if (boundsMode > static_cast<std::uint8_t>(BoundsMode::Automatic)) {
+            return fail(error, "SYSTEMS has an invalid bounds mode");
+        }
+        system.boundsMode = static_cast<BoundsMode>(boundsMode);
         const Vec3 center{readF32(section.data, offset + 16u), readF32(section.data, offset + 20u),
                           readF32(section.data, offset + 24u)};
         const Vec3 extents{readF32(section.data, offset + 28u), readF32(section.data, offset + 32u),
@@ -266,6 +273,45 @@ bool parseSystems(const Section& section, std::span<const std::byte> strings, As
         }
         asset.systems.push_back(std::move(system));
     }
+    return true;
+}
+
+bool parseBoundsPadding(const Section& section, Asset& asset, std::string& error) {
+    if (!isRangeValid(section.data, 0, 4u)) {
+        return fail(error, "BOUNDS section is truncated");
+    }
+    const std::uint32_t count = readU32(section.data, 0);
+    if (static_cast<std::size_t>(count) != asset.systems.size() ||
+        !isRangeValid(section.data, 4u, static_cast<std::size_t>(count) * 12u)) {
+        return fail(error, "BOUNDS section has an invalid system count");
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const std::size_t offset = 4u + static_cast<std::size_t>(i) * 12u;
+        Vec3 padding{readF32(section.data, offset), readF32(section.data, offset + 4u),
+                     readF32(section.data, offset + 8u)};
+        if (!std::isfinite(padding.x) || !std::isfinite(padding.y) || !std::isfinite(padding.z)) {
+            return fail(error, "BOUNDS padding is invalid");
+        }
+        asset.systems[i].boundsPadding = padding;
+    }
+    return true;
+}
+
+bool parseCulling(const Section& section, Asset& asset, std::string& error) {
+    if (section.data.size() != 4u) {
+        return fail(error, "CULLING section is truncated");
+    }
+    const std::uint32_t flags = readU32(section.data, 0);
+    if ((flags & ~(kCullSimulation | kCullBoundsUpdate)) != 0u) {
+        return fail(error, "CULLING flags are invalid");
+    }
+    if (flags != 0u &&
+        std::any_of(asset.systems.begin(), asset.systems.end(), [](const AssetSystem& system) {
+            return system.boundsMode == BoundsMode::Automatic;
+        })) {
+        return fail(error, "CULLING cannot be combined with automatic bounds");
+    }
+    asset.cullingFlags = flags;
     return true;
 }
 
@@ -430,10 +476,13 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
         const std::uint8_t task = readU8(kernels.data, offset + 4u);
         const std::uint8_t stage = readU8(kernels.data, offset + 5u);
         const std::uint8_t backend = readU8(kernels.data, offset + 6u);
+        const std::uint8_t sortMode = readU8(kernels.data, offset + 7u);
         const std::uint32_t program = readU32(kernels.data, offset + 36u);
         const bool global = system == kInvalidOffset;
-        if ((!global && system >= asset.systems.size()) || task > 13u || stage > 2u || backend > 1u ||
-            (global && task != 11u && task != 12u && task != 13u) || (!global && task >= 11u)) {
+        if ((!global && system >= asset.systems.size()) || task > 16u || stage > 2u || backend > 1u ||
+            sortMode > static_cast<std::uint8_t>(SortMode::YoungestInFront) ||
+            (global && task != 11u && task != 12u && task != 13u) ||
+            (!global && task >= 11u && task <= 13u)) {
             return fail(error, "KERNELS has an invalid system/task/stage/backend");
         }
         if (!isRangeValid(kernels.data, offset + 8u, 28u)) {
@@ -460,6 +509,7 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
             assetProgram.task = task;
             assetProgram.output = task == 6u || task == 7u;
             assetProgram.global = global;
+            assetProgram.sortMode = static_cast<SortMode>(sortMode);
             assetProgram.groups = {readU32(kernels.data, offset + 8u), readU32(kernels.data, offset + 12u),
                                    readU32(kernels.data, offset + 16u)};
             asset.programs.push_back(std::move(assetProgram));
@@ -531,7 +581,7 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
         const std::uint8_t sortMode = readU8(outputs.data, offset + 10u);
         const std::uint8_t sortOrder = readU8(outputs.data, offset + 11u);
         if (blend > static_cast<std::uint8_t>(BlendMode::Opaque) ||
-            sortMode > static_cast<std::uint8_t>(SortMode::Custom) ||
+            sortMode > static_cast<std::uint8_t>(SortMode::YoungestInFront) ||
             sortOrder > static_cast<std::uint8_t>(SortOrder::Descending)) {
             return fail(error, "OUTPUTS has an invalid enum value");
         }
@@ -543,7 +593,10 @@ bool parsePrograms(const Section& kernels, const Section& bindings, const Sectio
                                            ? readU32(outputs.data, offset + 12u)
                                            : kInvalidIndex;
         assetProgram.softParticles = readU8(outputs.data, offset + 20u) != 0u;
+        assetProgram.castShadows = readU8(outputs.data, offset + 21u) != 0u;
+        assetProgram.generateMotionVector = readU8(outputs.data, offset + 22u) == 0u;
         assetProgram.softDistance = readF32(outputs.data, offset + 24u);
+        assetProgram.sortPriority = std::bit_cast<std::int32_t>(readU32(outputs.data, offset + 28u));
         if (!std::isfinite(assetProgram.softDistance) || assetProgram.softDistance < 0.001f) {
             return fail(error, "OUTPUTS has an invalid soft particle distance");
         }
@@ -631,6 +684,8 @@ std::shared_ptr<const Asset> parseAssetBinary(std::span<const std::byte> bytes, 
     const Section* bindings = nullptr;
     const Section* outputs = nullptr;
     const Section* events = nullptr;
+    const Section* bounds = nullptr;
+    const Section* culling = nullptr;
     for (const auto& [id, section] : sections) {
         switch (id) {
         case kStrings:
@@ -660,6 +715,12 @@ std::shared_ptr<const Asset> parseAssetBinary(std::span<const std::byte> bytes, 
         case kEvents:
             events = &section;
             break;
+        case kBounds:
+            bounds = &section;
+            break;
+        case kCulling:
+            culling = &section;
+            break;
         default:
             break;
         }
@@ -678,8 +739,16 @@ std::shared_ptr<const Asset> parseAssetBinary(std::span<const std::byte> bytes, 
         return nullptr;
     }
     if (!parseProperties(*properties, strings->data, luts->data, *asset, error) ||
-        !parseSystems(*systems, strings->data, *asset, error) ||
-        !parseBuffers(*buffers, *asset, error) ||
+        !parseSystems(*systems, strings->data, *asset, error)) {
+        return nullptr;
+    }
+    if (bounds != nullptr && !parseBoundsPadding(*bounds, *asset, error)) {
+        return nullptr;
+    }
+    if (culling != nullptr && !parseCulling(*culling, *asset, error)) {
+        return nullptr;
+    }
+    if (!parseBuffers(*buffers, *asset, error) ||
         !parseEvents(*events, strings->data, *asset, error) ||
         !parsePrograms(*kernels, *bindings, *outputs, *asset, error)) {
         return nullptr;

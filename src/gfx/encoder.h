@@ -52,6 +52,9 @@ class Encoder {
     void submit(bgfx::ViewId view, ProgramHandle program, uint32_t depth = 0, uint8_t flags = BGFX_DISCARD_ALL);
     void submitIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start = 0,
                         uint32_t num = 1, uint32_t depth = 0, uint8_t flags = BGFX_DISCARD_ALL);
+    void submitIndirectCount(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start,
+                             BufferHandle count, uint32_t countIndex, uint32_t maxDraws, uint32_t depth = 0,
+                             uint8_t flags = BGFX_DISCARD_ALL);
     void dispatch(bgfx::ViewId view, ProgramHandle program, uint32_t numX = 1, uint32_t numY = 1, uint32_t numZ = 1,
                   uint8_t flags = BGFX_DISCARD_ALL);
     void dispatchIndirect(bgfx::ViewId view, ProgramHandle program, BufferHandle indirect, uint32_t start = 0,

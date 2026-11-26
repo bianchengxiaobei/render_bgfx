@@ -16,6 +16,7 @@ TEST_CASE("texture format mapping is stable") {
     CHECK(toBgfx(TextureFormat::RG11B10F) == bgfx::TextureFormat::RG11B10F);
     CHECK(toBgfx(TextureFormat::RG16F) == bgfx::TextureFormat::RG16F);
     CHECK(toBgfx(TextureFormat::RG32F) == bgfx::TextureFormat::RG32F);
+    CHECK(toBgfx(TextureFormat::R16F) == bgfx::TextureFormat::R16F);
     CHECK(toBgfx(TextureFormat::R32U) == bgfx::TextureFormat::R32U);
     CHECK(toBgfx(TextureFormat::D24S8) == bgfx::TextureFormat::D24S8);
     CHECK(toBgfx(TextureFormat::Count) == bgfx::TextureFormat::Count);

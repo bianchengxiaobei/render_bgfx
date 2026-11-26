@@ -11,7 +11,11 @@
   },
   "tonemapping": "aces",
   "taa": {
-    "enabled": false
+    "enabled": false,
+    "upscale": false,
+    "injection": "beforePost",
+    "motionVectorRejection": 0.1,
+    "velocityRejection": 0.0
   },
   "bloom": {
     "enabled": false

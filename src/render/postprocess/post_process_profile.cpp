@@ -257,12 +257,24 @@ bool readTaa(const Json& root, TaaSettings& taa, std::string& error) {
     if (!readGroup(root, "taa", group, error)) {
         return false;
     }
-    if (!checkKeys(group, {"enabled", "quality", "motionVectorRejection", "sharpening", "jitterScale"}, error,
-                   "taa")) {
+    if (!checkKeys(group,
+                   {"enabled", "upscale", "injection", "quality", "motionVectorRejection", "velocityRejection",
+                    "sharpening", "jitterScale"},
+                   error, "taa")) {
         return false;
     }
-    return readBool(group, "enabled", taa.enabled, error) && readUint(group, "quality", taa.quality, error) &&
+    std::string injection;
+    if (!readString(group, "injection", injection, error)) {
+        return false;
+    }
+    if (!injection.empty() && !parseTaaUpsampleInjection(injection, taa.upscaleInjection)) {
+        error = "taa.injection must be beforePost, afterDepthOfField or afterPost";
+        return false;
+    }
+    return readBool(group, "enabled", taa.enabled, error) && readBool(group, "upscale", taa.upscale, error) &&
+           readUint(group, "quality", taa.quality, error) &&
            readFloat(group, "motionVectorRejection", taa.motionVectorRejection, error) &&
+           readFloat(group, "velocityRejection", taa.velocityRejection, error) &&
            readFloat(group, "sharpening", taa.sharpening, error) &&
            readFloat(group, "jitterScale", taa.jitterScale, error);
 }

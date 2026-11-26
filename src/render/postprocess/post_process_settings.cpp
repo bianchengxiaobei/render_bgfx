@@ -1,7 +1,9 @@
 #include "render/postprocess/post_process_settings.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 
 namespace hbg::render {
 namespace {
@@ -29,6 +31,12 @@ constexpr AntialiasingMode kAntialiasingModes[] = {
     AntialiasingMode::Fxaa,
 };
 
+constexpr TaaUpsampleInjection kTaaUpsampleInjections[] = {
+    TaaUpsampleInjection::BeforePost,
+    TaaUpsampleInjection::AfterDepthOfField,
+    TaaUpsampleInjection::AfterPost,
+};
+
 constexpr const char* kExposureModeNames[] = {
     "Fixed",
     "Automatic",
@@ -52,6 +60,12 @@ constexpr const char* kAntialiasingModeNames[] = {
     "FXAA",
 };
 
+constexpr const char* kTaaUpsampleInjectionNames[] = {
+    "BeforePost",
+    "AfterDepthOfField",
+    "AfterPost",
+};
+
 static_assert(sizeof(kExposureModes) / sizeof(kExposureModes[0]) ==
               sizeof(kExposureModeNames) / sizeof(kExposureModeNames[0]));
 static_assert(sizeof(kTonemappingModes) / sizeof(kTonemappingModes[0]) ==
@@ -60,6 +74,8 @@ static_assert(sizeof(kMeteringModes) / sizeof(kMeteringModes[0]) ==
               sizeof(kMeteringModeNames) / sizeof(kMeteringModeNames[0]));
 static_assert(sizeof(kAntialiasingModes) / sizeof(kAntialiasingModes[0]) ==
               sizeof(kAntialiasingModeNames) / sizeof(kAntialiasingModeNames[0]));
+static_assert(sizeof(kTaaUpsampleInjections) / sizeof(kTaaUpsampleInjections[0]) ==
+              sizeof(kTaaUpsampleInjectionNames) / sizeof(kTaaUpsampleInjectionNames[0]));
 
 float finiteOr(float value, float fallback) {
     return std::isfinite(value) ? value : fallback;
@@ -97,6 +113,24 @@ bool validTonemappingMode(TonemappingMode mode) {
 
 bool validMeteringMode(MeteringMode mode) {
     return mode == MeteringMode::Average || mode == MeteringMode::CenterWeighted;
+}
+
+bool validTaaUpsampleInjection(TaaUpsampleInjection injection) {
+    return injection == TaaUpsampleInjection::BeforePost ||
+           injection == TaaUpsampleInjection::AfterDepthOfField ||
+           injection == TaaUpsampleInjection::AfterPost;
+}
+
+std::string normalizeKey(std::string_view text) {
+    std::string result;
+    result.reserve(text.size());
+    for (char ch : text) {
+        const unsigned char value = static_cast<unsigned char>(ch);
+        if (std::isalnum(value) != 0) {
+            result.push_back(static_cast<char>(std::tolower(value)));
+        }
+    }
+    return result;
 }
 
 Vec4 bloomCurveFromLinear(float threshold) {
@@ -509,8 +543,12 @@ void sanitizePostProcessSettings(PostProcessSettings& settings) {
     vignette.opacity = std::clamp(finiteOr(vignette.opacity, 1.0f), 0.0f, 1.0f);
 
     TaaSettings& taa = settings.taa;
+    if (!validTaaUpsampleInjection(taa.upscaleInjection)) {
+        taa.upscaleInjection = TaaUpsampleInjection::BeforePost;
+    }
     taa.quality = std::clamp(taa.quality, 1u, 5u);
     taa.motionVectorRejection = std::clamp(finiteOr(taa.motionVectorRejection, 0.1f), 0.0f, 1.0f);
+    taa.velocityRejection = std::clamp(finiteOr(taa.velocityRejection, 0.0f), 0.0f, 1.0f);
     taa.sharpening = std::clamp(finiteOr(taa.sharpening, 0.0f), 0.0f, 1.0f);
     taa.jitterScale = std::clamp(finiteOr(taa.jitterScale, 1.0f), 0.0f, 1.0f);
 
@@ -589,6 +627,18 @@ const char* antialiasingModeName(AntialiasingMode mode) {
     }
 }
 
+const char* taaUpsampleInjectionName(TaaUpsampleInjection injection) {
+    switch (injection) {
+    case TaaUpsampleInjection::AfterDepthOfField:
+        return kTaaUpsampleInjectionNames[1];
+    case TaaUpsampleInjection::AfterPost:
+        return kTaaUpsampleInjectionNames[2];
+    case TaaUpsampleInjection::BeforePost:
+    default:
+        return kTaaUpsampleInjectionNames[0];
+    }
+}
+
 std::size_t exposureModeCount() {
     return sizeof(kExposureModes) / sizeof(kExposureModes[0]);
 }
@@ -605,6 +655,10 @@ std::size_t antialiasingModeCount() {
     return sizeof(kAntialiasingModes) / sizeof(kAntialiasingModes[0]);
 }
 
+std::size_t taaUpsampleInjectionCount() {
+    return sizeof(kTaaUpsampleInjections) / sizeof(kTaaUpsampleInjections[0]);
+}
+
 ExposureMode exposureModeAt(std::size_t index) {
     return index < exposureModeCount() ? kExposureModes[index] : ExposureMode::Fixed;
 }
@@ -619,6 +673,28 @@ MeteringMode meteringModeAt(std::size_t index) {
 
 AntialiasingMode antialiasingModeAt(std::size_t index) {
     return index < antialiasingModeCount() ? kAntialiasingModes[index] : AntialiasingMode::None;
+}
+
+TaaUpsampleInjection taaUpsampleInjectionAt(std::size_t index) {
+    return index < taaUpsampleInjectionCount() ? kTaaUpsampleInjections[index]
+                                               : TaaUpsampleInjection::BeforePost;
+}
+
+bool parseTaaUpsampleInjection(std::string_view text, TaaUpsampleInjection& injection) {
+    const std::string key = normalizeKey(text);
+    if (key == "beforepost" || key == "beforepostprocess") {
+        injection = TaaUpsampleInjection::BeforePost;
+        return true;
+    }
+    if (key == "afterdepthoffield" || key == "afterdof") {
+        injection = TaaUpsampleInjection::AfterDepthOfField;
+        return true;
+    }
+    if (key == "afterpost" || key == "afterpostprocess") {
+        injection = TaaUpsampleInjection::AfterPost;
+        return true;
+    }
+    return false;
 }
 
 } // namespace hbg::render

@@ -28,6 +28,7 @@ struct PostProcessInputs {
     uint16_t targetWidth = 0;
     uint16_t targetHeight = 0;
     float renderScale = 1.0f;
+    Vec4 taaJitter{};
     float deltaSeconds = 0.0f;
     uint32_t frameIndex = 0;
     bool historyValid = true;
@@ -49,6 +50,7 @@ struct PostProcessOutput {
     bool dofActive = false;
     bool motionBlurActive = false;
     bool fxaaActive = false;
+    bool requiresFinalCopy = false;
 };
 
 struct PostProcessHistoryState {
@@ -79,6 +81,7 @@ class PostProcessChain {
     void setSettings(const PostProcessSettings& settings, const PipelineSettings& pipeline,
                      const FrameSettings& frameSettings);
     void resetHistory();
+    void resetHistoryPreservingTaa();
     void uploadUniforms(const gfx::generated::PostProcessUniforms& uniforms) const {
         m_uniformBinder.upload(uniforms);
     }
@@ -143,7 +146,7 @@ class PostProcessChain {
     RenderGraphTextureHandle addBloomPasses(RenderGraph& graph, RenderGraphTextureHandle color,
                                             const PostProcessInputs& inputs);
     RenderGraphTextureHandle addTaaPass(RenderGraph& graph, RenderGraphTextureHandle color,
-                                        const PostProcessInputs& inputs);
+                                        const PostProcessInputs& inputs, bool upscale);
     RenderGraphTextureHandle addTaaSharpenPass(RenderGraph& graph, RenderGraphTextureHandle color,
                                                const PostProcessInputs& inputs);
     RenderGraphTextureHandle addDofCocPass(RenderGraph& graph, const PostProcessInputs& inputs);
@@ -161,7 +164,8 @@ class PostProcessChain {
     bool ensureColorGradingLut();
     void releaseColorGradingLut();
     void updateExposureUniforms(const PostProcessInputs& inputs);
-    void updateTaaUniforms(const PostProcessInputs& inputs, bool historyValid);
+    void updateTaaUniforms(const PostProcessInputs& inputs, bool historyValid, uint16_t historyWidth,
+                           uint16_t historyHeight, bool upscale);
     void updateDofUniforms(const PostProcessInputs& inputs, uint16_t cocWidth, uint16_t cocHeight);
     void updateMotionBlurUniforms(const PostProcessInputs& inputs);
     void updateUberUniforms();
@@ -181,6 +185,7 @@ class PostProcessChain {
     gfx::TextureHandle m_exposureTextures[2]{};
     gfx::TextureHandle m_histogramTexture;
     gfx::TextureHandle m_taaHistoryTextures[2]{};
+    gfx::TextureHandle m_taaVelocityHistoryTextures[2]{};
     gfx::TextureHandle m_colorGradingLut;
     gfx::TextureHandle m_bloomFallback;
     gfx::UniformHandle m_ldrSampler;
@@ -193,6 +198,7 @@ class PostProcessChain {
     gfx::UniformHandle m_colorGradingLutSampler;
     gfx::UniformHandle m_bloomSampler;
     gfx::UniformHandle m_taaHistorySampler;
+    gfx::UniformHandle m_taaVelocitySampler;
     gfx::UniformHandle m_taaMotionSampler;
     gfx::UniformHandle m_taaDepthSampler;
     gfx::UniformHandle m_dofCocSampler;
@@ -238,6 +244,8 @@ class PostProcessChain {
     bool m_fxaaActive = false;
     bool m_bloomLogged = false;
     bool m_taaLogged = false;
+    bool m_taaUpscaleSharpeningLogged = false;
+    bool m_taaUpscaleAfterPostFallbackLogged = false;
     bool m_dofLogged = false;
     bool m_motionBlurLogged = false;
     bool m_advancedUnavailableLogged = false;

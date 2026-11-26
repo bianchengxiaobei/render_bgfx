@@ -71,13 +71,14 @@ def read_png(path):
 
 
 def main():
-    if len(sys.argv) != 5:
-        print('usage: compare_png.py expected actual max_pixels max_delta')
+    if len(sys.argv) not in (5, 6):
+        print('usage: compare_png.py expected actual max_pixels max_delta [min_pixels]')
         return 2
     expected = read_png(sys.argv[1])
     actual = read_png(sys.argv[2])
     max_pixels = int(sys.argv[3])
     max_delta = int(sys.argv[4])
+    min_pixels = int(sys.argv[5]) if len(sys.argv) == 6 else 0
     if expected[:3] != actual[:3]:
         print('image dimensions/format differ')
         return 1
@@ -100,7 +101,7 @@ def main():
                 if first_diff is None:
                     first_diff = (x, y)
     print(f'diff_pixels={diff_pixels} max_delta={largest_delta} first={first_diff}')
-    return 0 if diff_pixels <= max_pixels else 1
+    return 0 if min_pixels <= diff_pixels <= max_pixels else 1
 
 
 if __name__ == '__main__':

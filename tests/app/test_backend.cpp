@@ -63,6 +63,11 @@ TEST_CASE("parseCommandLine uses defaults") {
     CHECK(result.options.skyPath.empty());
     CHECK(result.options.skyIntensity == doctest::Approx(1.0f));
     CHECK(result.options.skyRotation == doctest::Approx(0.0f));
+    CHECK_FALSE(result.options.dynamicResolutionSettings.enabled);
+    CHECK(result.options.dynamicResolutionSettings.minScale == doctest::Approx(0.5f));
+    CHECK(result.options.dynamicResolutionSettings.maxScale == doctest::Approx(1.0f));
+    CHECK(result.options.dynamicResolutionSettings.targetFrameMs == doctest::Approx(1000.0f / 60.0f));
+    CHECK(result.options.dynamicResolutionSettings.evaluationFrames == 30u);
     CHECK(result.options.frames == 3);
     CHECK(result.options.renderScale == doctest::Approx(1.0f));
     CHECK(result.options.postProcess.exposureMode == render::ExposureMode::Fixed);
@@ -85,6 +90,29 @@ TEST_CASE("parseCommandLine parses the render-test resize switch") {
     REQUIRE(result.ok);
     CHECK(result.options.renderTestPath == "scene.gltf");
     CHECK(result.options.resizeTest);
+}
+
+TEST_CASE("parseCommandLine parses dynamic resolution settings") {
+    const char* argv[] = {"hbg",
+                          "--dynamic-resolution",
+                          "--dynamic-resolution-target-fps=30",
+                          "--dynamic-resolution-min-scale=0.4",
+                          "--dynamic-resolution-max-scale=0.9",
+                          "--dynamic-resolution-step=0.1",
+                          "--dynamic-resolution-interval=15"};
+    const CommandLineResult result = parseCommandLine(7, argv);
+
+    CHECK(result.ok);
+    CHECK(result.options.dynamicResolutionSettings.enabled);
+    CHECK(result.options.dynamicResolutionSettings.targetFrameMs == doctest::Approx(1000.0f / 30.0f));
+    CHECK(result.options.dynamicResolutionSettings.minScale == doctest::Approx(0.4f));
+    CHECK(result.options.dynamicResolutionSettings.maxScale == doctest::Approx(0.9f));
+    CHECK(result.options.dynamicResolutionSettings.scaleStep == doctest::Approx(0.1f));
+    CHECK(result.options.dynamicResolutionSettings.evaluationFrames == 15u);
+
+    const char* invalid[] = {"hbg", "--dynamic-resolution-target-fps=0"};
+    const CommandLineResult invalidResult = parseCommandLine(2, invalid);
+    CHECK_FALSE(invalidResult.ok);
 }
 
 TEST_CASE("parseCommandLine parses options") {
@@ -489,6 +517,166 @@ TEST_CASE("parseCommandLine parses GPU light-list switches") {
     CHECK(noClusterResult.options.disableLightCluster);
 }
 
+TEST_CASE("parseCommandLine parses GPU skinning switches") {
+    const char* enabled[] = {"hbg", "--gpu-skinning"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.gpuSkinning.has_value());
+    CHECK(*enabledResult.options.gpuSkinning);
+
+    const char* disabled[] = {"hbg", "--no-gpu-skinning"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.gpuSkinning.has_value());
+    CHECK_FALSE(*disabledResult.options.gpuSkinning);
+
+    const char* lastWins[] = {"hbg", "--gpu-skinning", "--no-gpu-skinning"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.gpuSkinning.has_value());
+    CHECK_FALSE(*lastWinsResult.options.gpuSkinning);
+}
+
+TEST_CASE("parseCommandLine parses depth-pyramid compute switches") {
+    const char* enabled[] = {"hbg", "--depth-pyramid-compute"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.depthPyramidCompute.has_value());
+    CHECK(*enabledResult.options.depthPyramidCompute);
+
+    const char* disabled[] = {"hbg", "--no-depth-pyramid-compute"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.depthPyramidCompute.has_value());
+    CHECK_FALSE(*disabledResult.options.depthPyramidCompute);
+
+    const char* lastWins[] = {"hbg", "--depth-pyramid-compute", "--no-depth-pyramid-compute"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.depthPyramidCompute.has_value());
+    CHECK_FALSE(*lastWinsResult.options.depthPyramidCompute);
+}
+
+TEST_CASE("parseCommandLine parses GPU-driven geometry switches") {
+    const char* enabled[] = {"hbg", "--gpu-driven"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.gpuDrivenGeometry.has_value());
+    CHECK(*enabledResult.options.gpuDrivenGeometry);
+
+    const char* disabled[] = {"hbg", "--no-gpu-driven"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.gpuDrivenGeometry.has_value());
+    CHECK_FALSE(*disabledResult.options.gpuDrivenGeometry);
+
+    const char* lastWins[] = {"hbg", "--gpu-driven", "--no-gpu-driven"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.gpuDrivenGeometry.has_value());
+    CHECK_FALSE(*lastWinsResult.options.gpuDrivenGeometry);
+}
+
+TEST_CASE("parseCommandLine parses transparent backface switches") {
+    const char* enabled[] = {"hbg", "--transparent-backface"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.transparentBackface.has_value());
+    CHECK(*enabledResult.options.transparentBackface);
+
+    const char* disabled[] = {"hbg", "--no-transparent-backface"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.transparentBackface.has_value());
+    CHECK_FALSE(*disabledResult.options.transparentBackface);
+
+    const char* lastWins[] = {"hbg", "--transparent-backface", "--no-transparent-backface"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.transparentBackface.has_value());
+    CHECK_FALSE(*lastWinsResult.options.transparentBackface);
+}
+
+TEST_CASE("parseCommandLine parses transparent prepass switches") {
+    const char* enabled[] = {"hbg", "--transparent-prepass"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.transparentPrepass.has_value());
+    CHECK(*enabledResult.options.transparentPrepass);
+
+    const char* disabled[] = {"hbg", "--no-transparent-prepass"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.transparentPrepass.has_value());
+    CHECK_FALSE(*disabledResult.options.transparentPrepass);
+
+    const char* lastWins[] = {"hbg", "--transparent-prepass", "--no-transparent-prepass"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.transparentPrepass.has_value());
+    CHECK_FALSE(*lastWinsResult.options.transparentPrepass);
+}
+
+TEST_CASE("parseCommandLine parses transparent refraction switches") {
+    const char* enabled[] = {"hbg", "--transparent-refraction"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.transparentRefraction.has_value());
+    CHECK(*enabledResult.options.transparentRefraction);
+
+    const char* disabled[] = {"hbg", "--no-transparent-refraction"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.transparentRefraction.has_value());
+    CHECK_FALSE(*disabledResult.options.transparentRefraction);
+
+    const char* lastWins[] = {"hbg", "--transparent-refraction", "--no-transparent-refraction"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.transparentRefraction.has_value());
+    CHECK_FALSE(*lastWinsResult.options.transparentRefraction);
+}
+
+TEST_CASE("parseCommandLine parses refraction depth rejection switches") {
+    const char* enabled[] = {"hbg", "--refraction-depth-rejection"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.refractionDepthRejection.has_value());
+    CHECK(*enabledResult.options.refractionDepthRejection);
+
+    const char* disabled[] = {"hbg", "--no-refraction-depth-rejection"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.refractionDepthRejection.has_value());
+    CHECK_FALSE(*disabledResult.options.refractionDepthRejection);
+
+    const char* lastWins[] = {"hbg", "--refraction-depth-rejection", "--no-refraction-depth-rejection"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.refractionDepthRejection.has_value());
+    CHECK_FALSE(*lastWinsResult.options.refractionDepthRejection);
+}
+
+TEST_CASE("parseCommandLine parses refraction roughness switches") {
+    const char* enabled[] = {"hbg", "--refraction-roughness"};
+    const CommandLineResult enabledResult = parseCommandLine(2, enabled);
+    REQUIRE(enabledResult.ok);
+    REQUIRE(enabledResult.options.refractionRoughness.has_value());
+    CHECK(*enabledResult.options.refractionRoughness);
+
+    const char* disabled[] = {"hbg", "--no-refraction-roughness"};
+    const CommandLineResult disabledResult = parseCommandLine(2, disabled);
+    REQUIRE(disabledResult.ok);
+    REQUIRE(disabledResult.options.refractionRoughness.has_value());
+    CHECK_FALSE(*disabledResult.options.refractionRoughness);
+
+    const char* lastWins[] = {"hbg", "--refraction-roughness", "--no-refraction-roughness"};
+    const CommandLineResult lastWinsResult = parseCommandLine(3, lastWins);
+    REQUIRE(lastWinsResult.ok);
+    REQUIRE(lastWinsResult.options.refractionRoughness.has_value());
+    CHECK_FALSE(*lastWinsResult.options.refractionRoughness);
+}
+
 TEST_CASE("parseCommandLine parses light-list capacity") {
     const char* capacity32[] = {"hbg", "--light-capacity=32"};
     const CommandLineResult result32 = parseCommandLine(2, capacity32);
@@ -762,6 +950,7 @@ TEST_CASE("post-process overrides apply after a profile") {
     render::PostProcessSettings settings;
     settings.bloom.enabled = true;
     settings.taa.enabled = true;
+    settings.taa.upscale = true;
     settings.exposureMode = render::ExposureMode::Automatic;
 
     PostProcessOverrides overrides;
@@ -780,6 +969,7 @@ TEST_CASE("post-process overrides apply after a profile") {
 
     CHECK_FALSE(settings.bloom.enabled);
     CHECK_FALSE(settings.taa.enabled);
+    CHECK_FALSE(settings.taa.upscale);
     CHECK(settings.fxaa.enabled);
     CHECK(settings.exposureMode == render::ExposureMode::Fixed);
     CHECK(settings.motionBlur.enabled);
@@ -970,14 +1160,25 @@ TEST_CASE("parseCommandLine parses the TAA history debug view") {
 }
 
 TEST_CASE("parseCommandLine parses TAA quality and sharpen overrides") {
-    const char* argv[] = {"hbg", "--taa", "--taa-quality=4", "--taa-motion-rejection=0.25",
-                          "--taa-sharpening=0.5", "--taa-jitter-scale=0.75"};
-    const CommandLineResult result = parseCommandLine(6, argv);
+    const char* argv[] = {"hbg", "--taa", "--taa-upscale", "--taa-upscale-injection=after-dof",
+                          "--taa-quality=4", "--taa-motion-rejection=0.25",
+                          "--taa-velocity-rejection=0.4", "--taa-sharpening=0.5", "--taa-jitter-scale=0.75"};
+    const CommandLineResult result = parseCommandLine(9, argv);
     REQUIRE(result.ok);
+    REQUIRE(result.options.postProcessOverrides.taaUpscale.has_value());
+    CHECK(*result.options.postProcessOverrides.taaUpscale);
+    CHECK(result.options.postProcess.taa.upscale);
+    REQUIRE(result.options.postProcessOverrides.taaUpscaleInjection.has_value());
+    CHECK(*result.options.postProcessOverrides.taaUpscaleInjection ==
+          render::TaaUpsampleInjection::AfterDepthOfField);
+    CHECK(result.options.postProcess.taa.upscaleInjection ==
+          render::TaaUpsampleInjection::AfterDepthOfField);
     REQUIRE(result.options.postProcessOverrides.taaQuality.has_value());
     CHECK(*result.options.postProcessOverrides.taaQuality == 4u);
     REQUIRE(result.options.postProcessOverrides.taaMotionRejection.has_value());
     CHECK(*result.options.postProcessOverrides.taaMotionRejection == doctest::Approx(0.25f));
+    REQUIRE(result.options.postProcessOverrides.taaVelocityRejection.has_value());
+    CHECK(*result.options.postProcessOverrides.taaVelocityRejection == doctest::Approx(0.4f));
     REQUIRE(result.options.postProcessOverrides.taaSharpening.has_value());
     CHECK(*result.options.postProcessOverrides.taaSharpening == doctest::Approx(0.5f));
     REQUIRE(result.options.postProcessOverrides.taaJitterScale.has_value());
@@ -985,6 +1186,8 @@ TEST_CASE("parseCommandLine parses TAA quality and sharpen overrides") {
 
     const char* invalid[] = {"hbg", "--taa-quality=9"};
     CHECK_FALSE(parseCommandLine(2, invalid).ok);
+    const char* invalidInjection[] = {"hbg", "--taa-upscale-injection=after-depth"};
+    CHECK_FALSE(parseCommandLine(2, invalidInjection).ok);
 }
 
 TEST_CASE("parseCommandLine parses volumetric fog options") {

@@ -24,6 +24,7 @@
 #include "render/postprocess/ssr_settings.h"
 #include "render/postprocess/ssgi_settings.h"
 #include "render/scene/render_scene.h"
+#include "render/shadergraph/graph_material_system.h"
 #include "render/shadows/shadow_manager.h"
 #include "render/sky/probe_manager.h"
 #include "render/sky/sky_manager.h"
@@ -129,6 +130,28 @@ class ForwardRenderer {
         bool gpuShadowIndirect = false;
         uint32_t gpuShadowCullDispatches = 0;
         uint32_t gpuShadowIndirectDraws = 0;
+        bool gpuSkinningRequested = false;
+        bool gpuSkinningActive = false;
+        uint32_t gpuSkinningMeshes = 0;
+        uint32_t gpuSkinningVertices = 0;
+        uint32_t gpuSkinningDispatches = 0;
+        bool depthPyramidComputeRequested = false;
+        bool depthPyramidComputeActive = false;
+        uint16_t depthPyramidMips = 0;
+        bool gpuDrivenRequested = false;
+        bool gpuDrivenActive = false;
+        bool gpuDrivenHiZActive = false;
+        bool gpuDrivenForwardActive = false;
+        bool gpuDrivenGbufferActive = false;
+        bool gpuDrivenTransparentActive = false;
+        bool gpuDrivenTransparentSorted = false;
+        bool gpuDrivenPrepassActive = false;
+        bool gpuDrivenBindlessActive = false;
+        bool gpuDrivenIndirectCountSupported = false;
+        uint32_t gpuDrivenItems = 0;
+        uint32_t gpuDrivenPrepassItems = 0;
+        uint32_t gpuDrivenBatches = 0;
+        uint32_t gpuDrivenCullingPasses = 0;
         bool asyncGpuLightListRequested = false;
         bool asyncGpuLightListActive = false;
         bool clusterStatsValid = false;
@@ -147,6 +170,7 @@ class ForwardRenderer {
         uint32_t vfxSystems = 0;
         uint32_t vfxParticles = 0;
         uint32_t vfxDraws = 0;
+        uint32_t vfxShadowDraws = 0;
         uint32_t vfxDispatches = 0;
         uint32_t vfxSortPasses = 0;
         uint32_t vfxEvents = 0;
@@ -175,7 +199,7 @@ class ForwardRenderer {
     ForwardRenderer(const ForwardRenderer&) = delete;
     ForwardRenderer& operator=(const ForwardRenderer&) = delete;
 
-    bool init(gfx::ResourceManager& resources, const RenderScene& scene, uint16_t width, uint16_t height);
+    bool init(gfx::ResourceManager& resources, RenderScene& scene, uint16_t width, uint16_t height);
     bool setSky(const std::string& path, float intensity = 1.0f, float rotationDegrees = 0.0f);
     void resize(uint16_t width, uint16_t height);
     void shutdown(gfx::ResourceManager& resources);
@@ -194,6 +218,9 @@ class ForwardRenderer {
     void setLightClusterEnabled(bool enabled) { m_lightClusterEnabled = enabled; }
     void setGpuLightListEnabled(bool enabled);
     void setGpuLightListBufferEnabled(bool enabled);
+    void setGpuDrivenGeometryEnabled(bool enabled);
+    void setGpuSkinningEnabled(bool enabled);
+    bool gpuSkinningActive() const { return m_gpuSkinningActive; }
     void setLitVariantsEnabled(bool enabled) {
         m_litVariantsEnabled = enabled;
         m_pipelineSettings.supportLitVariants = enabled;
@@ -252,6 +279,7 @@ class ForwardRenderer {
   private:
     struct VfxInstanceRuntime {
         const VfxInstance* instance = nullptr;
+        std::vector<const VfxInstance*> instances;
         ::vfx::Effect* effect = nullptr;
         std::filesystem::path assetPath;
         float playRate = 1.0f;
@@ -268,9 +296,14 @@ class ForwardRenderer {
     struct FramePassResources {
         RenderGraphTextureHandle color;
         RenderGraphTextureHandle depth;
+        RenderGraphTextureHandle transparentPreRefractionDepth;
+        RenderGraphTextureHandle transparentPreRefractionColor;
+        RenderGraphTextureHandle transparentRefractionSourceColor;
         RenderGraphTextureHandle normal;
         RenderGraphTextureHandle motionVector;
         RenderGraphTextureHandle depthPyramid;
+        RenderGraphTextureHandle hiZDepthPyramid;
+        RenderGraphTextureHandle hiZHistoryPyramid;
         RenderGraphTextureHandle lightData;
         RenderGraphTextureHandle lightList;
         RenderGraphTextureHandle clusterLightList;
@@ -288,6 +321,38 @@ class ForwardRenderer {
         RenderGraphBufferHandle shadowInstanceBuffer;
         RenderGraphBufferHandle shadowIndirectBuffer;
         RenderGraphBufferHandle shadowStatsBuffer;
+        RenderGraphBufferHandle gpuDrivenForwardInput;
+        RenderGraphBufferHandle gpuDrivenForwardVisible;
+        RenderGraphBufferHandle gpuDrivenForwardBatches;
+        RenderGraphBufferHandle gpuDrivenForwardIndirect;
+        RenderGraphBufferHandle gpuDrivenForwardDrawRecords;
+        RenderGraphBufferHandle gpuDrivenForwardCount;
+        RenderGraphBufferHandle gpuDrivenGbufferInput;
+        RenderGraphBufferHandle gpuDrivenGbufferVisible;
+        RenderGraphBufferHandle gpuDrivenGbufferBatches;
+        RenderGraphBufferHandle gpuDrivenGbufferIndirect;
+        RenderGraphBufferHandle gpuDrivenGbufferDrawRecords;
+        RenderGraphBufferHandle gpuDrivenGbufferCount;
+        RenderGraphBufferHandle gpuDrivenTransparentInput;
+        RenderGraphBufferHandle gpuDrivenTransparentVisible;
+        RenderGraphBufferHandle gpuDrivenTransparentBatches;
+        RenderGraphBufferHandle gpuDrivenTransparentIndirect;
+        RenderGraphBufferHandle gpuDrivenTransparentDrawRecords;
+        RenderGraphBufferHandle gpuDrivenTransparentCount;
+        RenderGraphBufferHandle gpuDrivenTransparentSortedVisible;
+        RenderGraphBufferHandle gpuDrivenTransparentSortedIndirect;
+        RenderGraphBufferHandle gpuDrivenPrepassInput;
+        RenderGraphBufferHandle gpuDrivenPrepassVisible;
+        RenderGraphBufferHandle gpuDrivenPrepassBatches;
+        RenderGraphBufferHandle gpuDrivenPrepassIndirect;
+        RenderGraphBufferHandle gpuDrivenPrepassDrawRecords;
+        RenderGraphBufferHandle gpuDrivenPrepassCount;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondInput;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondVisible;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondBatches;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondIndirect;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondDrawRecords;
+        RenderGraphBufferHandle gpuDrivenPrepassSecondCount;
         RenderGraphTextureHandle directionalShadow;
         RenderGraphTextureHandle punctualShadow;
         RenderGraphTextureHandle areaShadow;
@@ -314,10 +379,72 @@ class ForwardRenderer {
         std::array<RenderGraphTextureHandle, 5> gbuffer{};
     };
 
+    struct GpuDrivenDrawData {
+        gfx::BufferHandle input;
+        gfx::BufferHandle visible;
+        gfx::BufferHandle batches;
+        gfx::BufferHandle indirect;
+        gfx::BufferHandle drawRecords;
+        gfx::BufferHandle sortedVisible;
+        gfx::BufferHandle sortedIndirect;
+        uint32_t itemCount = 0;
+        uint32_t batchCount = 0;
+        uint32_t recordCount = 0;
+        bool perItemBatches = false;
+        bool bindless = false;
+        bool sorted = false;
+        uint32_t materialVariant = 0;
+        gfx::BufferHandle count;
+        bool active = false;
+    };
+
+    bool ensureGpuDrivenDrawData(GpuDrivenDrawData& data, const DrawList& list, const char* prefix,
+                                 bool perItemBatches = false, bool bindless = false, bool sorted = false);
+    void releaseGpuDrivenDrawData(GpuDrivenDrawData& data);
+    bool ensureGpuDrivenHiZTextures(uint16_t width, uint16_t height, uint8_t mipCount);
+    void releaseGpuDrivenHiZTextures();
+    bool updateGpuDrivenData(const RenderScene& scene, bool deferred, bool depthPrepass);
+    void addGpuDrivenCullingPasses(RenderGraph& graph, const FramePassResources& resources);
+    bool addGpuDrivenCullingPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                 RenderGraphBufferHandle input, RenderGraphBufferHandle batches,
+                                 RenderGraphBufferHandle visible, RenderGraphBufferHandle indirect,
+                                 RenderGraphBufferHandle drawRecords, RenderGraphBufferHandle count,
+                                 RenderGraphTextureHandle hiZ,
+                                 RenderGraphBufferHandle previousIndirect, const char* name, bool retestCulled);
+    bool addGpuDrivenTransparentSortPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                         RenderGraphBufferHandle input, RenderGraphBufferHandle visible,
+                                         RenderGraphBufferHandle drawRecords, RenderGraphBufferHandle count,
+                                         RenderGraphBufferHandle sortedVisible,
+                                         RenderGraphBufferHandle sortedIndirect);
+    void addGpuDrivenPrepassPass(RenderGraph& graph, const GpuDrivenDrawData& data,
+                                 RenderGraphTextureHandle normal, RenderGraphTextureHandle depth,
+                                 RenderGraphBufferHandle indirect, const RenderScene& scene, bool depthOnly,
+                                 bool clearColor, const char* name);
+    void renderGpuDrivenPrepass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
+                                const RenderScene& scene, const GpuDrivenDrawData& data, bool depthOnly,
+                                bool clearColor);
+    bool drawGpuDrivenForwardBatch(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
+                                   const DrawBatch& batch, uint32_t batchIndex, const RenderScene& scene,
+                                   gfx::TextureHandle contactShadow, bool clusterList);
+    bool drawGpuDrivenBindlessForward(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
+                                      const RenderScene& scene, gfx::TextureHandle contactShadow,
+                                      bool clusterList);
+    bool drawGpuDrivenBindlessTransparent(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
+                                          const RenderScene& scene, gfx::TextureHandle contactShadow,
+                                          bool clusterList);
+    bool drawGpuDrivenGBufferBatch(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
+                                   const DrawBatch& batch, uint32_t batchIndex, const RenderScene& scene);
+    bool drawGpuDrivenTransparentItem(gfx::Encoder& encoder, bgfx::ViewId view, const DrawItem& item,
+                                      uint32_t itemIndex, const RenderScene& scene,
+                                      gfx::TextureHandle contactShadow, bool clusterList);
     bool shadowsActive() const;
     bool contactShadowsActive() const;
     bool motionVectorsActive() const;
     bool objectMotionVectorsActive() const;
+    bool transparentMotionVectorsActive() const;
+    bool transparentBackfaceActive() const;
+    bool transparentDepthPrepassActive() const;
+    bool transparentRefractionActive();
     const char* deferredUnavailableReason() const;
     bool ensureGBufferTextures(uint16_t renderWidth, uint16_t renderHeight);
     void releaseGBufferTextures();
@@ -327,7 +454,9 @@ class ForwardRenderer {
     gfx::TextureFormat selectDepthFormat() const;
     gfx::TextureFormat selectNormalFormat() const;
     gfx::TextureFormat selectMotionVectorFormat() const;
-    gfx::TextureFormat selectDepthPyramidFormat() const;
+    gfx::TextureFormat selectDepthPyramidFormat();
+    bool depthPyramidComputeSupported();
+    bool depthPyramidMaxComputeSupported();
     gfx::TextureFormat selectSsaoFormat() const;
     void buildDrawLists(const RenderScene& scene);
     const DrawList& forwardDrawList(bool transparent) const;
@@ -350,6 +479,7 @@ class ForwardRenderer {
     void releaseShadowGpuBuffers();
     bool updateShadowGpuData(const RenderScene& scene);
     void addGpuShadowCullPass(RenderGraph& graph, const FramePassResources& resources);
+    void addGpuSkinningPass(RenderGraph& graph);
     void updateLightList();
     void updateCpuLightList();
     void updateLightListFeatureFlags();
@@ -415,10 +545,21 @@ class ForwardRenderer {
                         const RenderScene& scene, bool depthOnly);
     void addObjectsMotionVectorsPass(RenderGraph& graph, RenderGraphTextureHandle motionVector,
                                      RenderGraphTextureHandle depth, const RenderScene& scene);
+    void addTransparentDepthPrepass(RenderGraph& graph, RenderGraphTextureHandle depth, const RenderScene& scene);
+    void addTransparentDepthPrepass(RenderGraph& graph, RenderGraphTextureHandle depth, const RenderScene& scene,
+                                    const DrawList& list, const char* passName);
+    void addTransparentDepthCopyPass(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                     RenderGraphTextureHandle destination);
+    void addTransparentPreRefractionCompositePass(RenderGraph& graph, const FramePassResources& resources);
+    void addTransparentRefractionSourcePass(RenderGraph& graph, const FramePassResources& resources);
+    void addTransparentMotionVectorsPass(RenderGraph& graph, RenderGraphTextureHandle motionVector,
+                                         RenderGraphTextureHandle depth, const RenderScene& scene);
     void addCameraMotionVectorsPass(RenderGraph& graph, RenderGraphTextureHandle motionVector,
                                     RenderGraphTextureHandle depth, RenderGraphTextureHandle depthPyramid);
     void addDepthPyramidPasses(RenderGraph& graph, RenderGraphTextureHandle depth,
                                RenderGraphTextureHandle depthPyramid);
+    void addDepthPyramidMaxPasses(RenderGraph& graph, RenderGraphTextureHandle depth,
+                                  RenderGraphTextureHandle depthPyramidMax);
     void addSkyPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle environment);
     RenderGraphTextureHandle addVolumetricFogPass(RenderGraph& graph, const FramePassResources& resources,
                                                   RenderGraphTextureHandle color, const RenderScene& scene);
@@ -438,13 +579,16 @@ class ForwardRenderer {
                             DebugDisplayMode debugMode, bool materialDebug);
     void recordDeferredFrame(RenderGraph& graph, FramePassResources& resources, const RenderScene& scene,
                              DebugDisplayMode debugMode, bool materialDebug);
-    void addForwardPass(RenderGraph& graph, RenderGraphTextureHandle color, RenderGraphTextureHandle depth,
+    void addForwardPass(RenderGraph& graph, const FramePassResources& resources, RenderGraphTextureHandle color,
+                        RenderGraphTextureHandle depth,
                         RenderGraphTextureHandle lightData, RenderGraphTextureHandle lightList,
                         RenderGraphTextureHandle clusterLightList,
                         RenderGraphBufferHandle lightFptlBuffer, RenderGraphBufferHandle clusterLightListBuffer, RenderGraphTextureHandle directionalShadow,
                         RenderGraphTextureHandle punctualShadow, RenderGraphTextureHandle areaShadow,
                         RenderGraphBufferHandle shadowContext, RenderGraphTextureHandle contactShadow,
-                        const RenderScene& scene, bool transparent, bool forwardOnly = false);
+                        const RenderScene& scene, bool transparent, bool forwardOnly = false,
+                        const DrawList* listOverride = nullptr, RenderGraphTextureHandle depthOverride = {},
+                        const char* passName = nullptr);
     void renderBakedGIDraws(gfx::Encoder& encoder, bgfx::ViewId view, const DrawList& list,
                             const RenderScene& scene);
     void renderBakedGIPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -463,7 +607,13 @@ class ForwardRenderer {
     void releaseVfx();
     void updateVfx(const RenderScene& scene, float deltaSeconds);
     void addVfxSimulationPass(RenderGraph& graph);
-    void addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources);
+    void addVfxOutputPass(RenderGraph& graph, const FramePassResources& resources,
+                          ::vfx::Effect* effect = nullptr, const char* passName = nullptr,
+                          std::uint32_t batchIndex = 0xffffffffu);
+    void addVfxMotionVectorsPass(RenderGraph& graph, const FramePassResources& resources);
+    void addTransparentFramePasses(RenderGraph& graph, const RenderScene& scene,
+                                  FramePassResources& resources, bool vfxVisible);
+    void renderVfxShadow(gfx::Encoder& encoder, bgfx::ViewId view, const ShadowRequest& request);
     bool prepareVfxClusterLighting();
     ::vfx::FrameContext makeVfxFrameContext(const RenderGraphContext& context,
                                           const FramePassResources& resources) const;
@@ -489,6 +639,14 @@ class ForwardRenderer {
                        const RenderScene& scene, bool depthOnly);
     void renderObjectsMotionVectors(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                     const RenderScene& scene);
+    void renderTransparentDepthPrepass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                       gfx::FrameBufferHandle frameBuffer, const RenderScene& scene);
+    void renderTransparentDepthPrepass(gfx::Encoder& encoder, bgfx::ViewId view,
+                                       gfx::FrameBufferHandle frameBuffer, const RenderScene& scene,
+                                       const DrawList& list);
+    void renderTransparentMotionVectors(gfx::Encoder& encoder, bgfx::ViewId view,
+                                        gfx::FrameBufferHandle frameBuffer, const RenderScene& scene,
+                                        bool objectMotion);
     void renderCameraMotionVectors(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                                    gfx::TextureHandle depth, bool cameraOnly);
     void renderDepthPyramidMip(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -497,7 +655,8 @@ class ForwardRenderer {
     void renderSkyPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                        gfx::TextureHandle environment);
     void renderGBufferPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
-                           const RenderScene& scene, bool decals);
+                           const RenderScene& scene, bool decals, bool gpuDriven,
+                           gfx::TextureHandle sceneDepth);
     void renderGBufferClear(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                             bool useShader);
     void renderDecalClear(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer);
@@ -561,7 +720,9 @@ class ForwardRenderer {
                                 bool advancedIms);
     void renderForwardPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                            const RenderScene& scene, bool transparent, bool forwardOnly,
-                           gfx::TextureHandle contactShadow);
+                           gfx::TextureHandle contactShadow, gfx::TextureHandle sceneDepth,
+                           gfx::TextureHandle refractionSource, bool gpuDriven,
+                           const DrawList* listOverride = nullptr);
     void renderWireframePass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
                              const RenderScene& scene);
     void renderDebugMaterialPass(gfx::Encoder& encoder, bgfx::ViewId view, gfx::FrameBufferHandle frameBuffer,
@@ -583,6 +744,7 @@ class ForwardRenderer {
 
     gfx::ResourceManager* m_resources = nullptr;
     MaterialSystem m_materialSystem;
+    GraphMaterialSystem m_graphMaterialSystem;
     RenderGraph m_renderGraph{"Forward Renderer"};
     shader::ShaderLibrary m_shaderLibrary;
     MaterialSamplers m_materialSamplers;
@@ -634,6 +796,9 @@ class ForwardRenderer {
     gfx::UniformHandle m_ssrSampler;
     gfx::UniformHandle m_ssrHistorySampler;
     gfx::UniformHandle m_bakedIndirectSampler;
+    gfx::UniformHandle m_refractionSourceDepthSampler;
+    gfx::UniformHandle m_refractionPreColorSampler;
+    gfx::UniformHandle m_bakedGICompositeModeUniform;
     gfx::TextureHandle m_bakedIndirectFallback;
     gfx::UniformHandle m_ssgiSampler;
     gfx::UniformHandle m_ssgiRawSampler;
@@ -704,12 +869,19 @@ class ForwardRenderer {
     DrawList m_forwardOpaqueDrawList;
     DrawList m_bakedGIDrawList;
     DrawList m_transparentDrawList;
+    DrawList m_transparentPreRefractionDrawList;
+    DrawList m_transparentRefractionDrawList;
+    DrawList m_transparentBackfaceDrawList;
     DrawList m_shadowDrawList;
     DrawList m_shadowStaticDrawList;
     DrawList m_shadowDynamicDrawList;
     DrawList m_prepassDrawList;
     DrawList m_gbufferDrawList;
     DrawList m_motionVectorDrawList;
+    DrawList m_transparentDepthPrepassDrawList;
+    DrawList m_transparentPreRefractionDepthPrepassDrawList;
+    DrawList m_transparentRefractionDepthPrepassDrawList;
+    DrawList m_transparentMotionVectorDrawList;
     DrawList m_wireframeDrawList;
     ViewState m_viewState;
     Camera m_camera;
@@ -747,7 +919,15 @@ class ForwardRenderer {
     bool m_gpuLightListBufferActive = false;
     bool m_gpuLightListIndirectActive = false;
     bool m_gpuLightListWarningLogged = false;
+    bool m_graphLightListTextureLogged = false;
     bool m_asyncGpuLightListWarningLogged = false;
+    bool m_gpuSkinningEnabled = true;
+    bool m_gpuSkinningActive = false;
+    bool m_gpuSkinningWarningLogged = false;
+    uint32_t m_gpuSkinningMeshes = 0;
+    uint32_t m_gpuSkinningVertices = 0;
+    uint32_t m_gpuSkinningDispatches = 0;
+    gfx::UniformHandle m_skinParamsUniform;
     bool m_lightListCapacityWarningLogged = false;
     uint32_t m_lightListCapacity = kLightListDefaultCapacity;
     uint32_t m_lightListTextureCapacity = kLightListDefaultCapacity;
@@ -854,12 +1034,39 @@ class ForwardRenderer {
     mutable bool m_deferredFallbackLogged = false;
     mutable bool m_decalFallbackLogged = false;
     float m_renderScale = 1.0f;
+    bool m_preserveHistoryOnScaleChange = false;
     float m_lastRenderTime = 0.0f;
     double m_postProcessWallTotalMs = 0.0;
     uint32_t m_postProcessWallFrames = 0;
     uint16_t m_width = 0;
     uint16_t m_height = 0;
     uint16_t m_depthPyramidMipCount = 1;
+    bool m_depthPyramidComputeActive = false;
+    bool m_depthPyramidComputeWarningLogged = false;
+    bool m_depthPyramidFormatWarningLogged = false;
+    bool m_depthPyramidMaxComputeActive = false;
+    bool m_depthPyramidMaxWarningLogged = false;
+    bool m_gpuDrivenRequested = false;
+    bool m_gpuDrivenWarningLogged = false;
+    bool m_gpuDrivenIndirectCountSupported = false;
+    uint32_t m_gpuDrivenCullingPasses = 0;
+    GpuDrivenDrawData m_gpuDrivenForward;
+    GpuDrivenDrawData m_gpuDrivenGbuffer;
+    GpuDrivenDrawData m_gpuDrivenTransparent;
+    bool m_gpuDrivenTransparentSortActive = false;
+    GpuDrivenDrawData m_gpuDrivenPrepass;
+    GpuDrivenDrawData m_gpuDrivenPrepassSecond;
+    std::array<gfx::TextureHandle, 2> m_hiZPyramidTextures{};
+    uint16_t m_hiZPyramidWidth = 0;
+    uint16_t m_hiZPyramidHeight = 0;
+    uint8_t m_hiZPyramidMipCount = 0;
+    uint32_t m_hiZPyramidIndex = 0;
+    bool m_hiZHistoryValid = false;
+    bool m_gpuDrivenPrepassActive = false;
+    gfx::UniformHandle m_gpuDrivenParamsUniform;
+    gfx::UniformHandle m_gpuDrivenCullModeUniform;
+    gfx::UniformHandle m_gpuSortParamsUniform;
+    gfx::UniformHandle m_bindlessMaterialUniform;
     uint32_t m_frameIndex = 0;
     bool m_hasLastRenderTime = false;
     bool m_valid = false;
@@ -867,7 +1074,9 @@ class ForwardRenderer {
     bool m_vfxInitialized = false;
     bool m_vfxSceneInitialized = false;
     bool m_vfxHasLitOutputs = false;
+    bool m_vfxHasShadowCasters = false;
     bool m_vfxClusterReady = false;
+    bool m_vfxTransparentSortLogged = false;
     float m_vfxDeltaSeconds = 0.0f;
     Vec4 m_vfxLightListParams{};
     Vec4 m_vfxLightListParams2{};
@@ -876,6 +1085,7 @@ class ForwardRenderer {
     std::unique_ptr<hbg::vfxbridge::HbgVfxBackend> m_vfxBackend;
     std::unique_ptr<::vfx::Runtime> m_vfxRuntime;
     std::vector<VfxInstanceRuntime> m_vfxInstanceRuntimes;
+    std::vector<std::unique_ptr<DrawList>> m_vfxTransparentSegments;
 };
 
 } // namespace hbg::render

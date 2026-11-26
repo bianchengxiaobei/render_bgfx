@@ -157,11 +157,19 @@ TEST_CASE("shader pass tags follow HDRP material pass support") {
     const ShaderPassMask transparentLitMask = defaultShaderPassMask(transparentLit);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::Forward)) != 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::TransparentDepthPrepass)) != 0);
-    CHECK((transparentLitMask & shaderPassMask(ShaderPass::TransparentBackface)) != 0);
+    CHECK((transparentLitMask & shaderPassMask(ShaderPass::TransparentBackface)) == 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::TransparentDepthPostpass)) != 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::GBuffer)) == 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::DepthOnly)) == 0);
     CHECK((transparentLitMask & shaderPassMask(ShaderPass::ShadowCaster)) == 0);
+
+    transparentLit.transparentBackface = true;
+    const ShaderPassMask backfaceMask = defaultShaderPassMask(transparentLit);
+    CHECK((backfaceMask & shaderPassMask(ShaderPass::TransparentBackface)) != 0);
+
+    transparentLit.doubleSided = true;
+    const ShaderPassMask doubleSidedBackfaceMask = defaultShaderPassMask(transparentLit);
+    CHECK((doubleSidedBackfaceMask & shaderPassMask(ShaderPass::TransparentBackface)) == 0);
 
     asset::Material unlit;
     unlit.type = asset::MaterialType::Unlit;
@@ -204,6 +212,13 @@ TEST_CASE("draw list filters by pass tag and HDRP render queue") {
     list.build(scene, viewState, desc);
     REQUIRE(list.size() == 1);
     CHECK(list.items()[0].materialIndex == litTransparent);
+
+    scene.materials[litTransparent].transparentBackface = true;
+    desc.passTags = shaderPassMask(ShaderPass::TransparentBackface);
+    list.build(scene, viewState, desc);
+    REQUIRE(list.size() == 1);
+    CHECK(list.items()[0].materialIndex == litTransparent);
+    scene.materials[litTransparent].transparentBackface = false;
 
     desc.passTags = shaderPassMask(ShaderPass::ForwardOnly);
     list.build(scene, viewState, desc);

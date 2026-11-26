@@ -44,12 +44,18 @@ enum class SystemSpace : std::uint8_t {
 
 enum class BoundsMode : std::uint8_t {
     Manual,
+    Automatic,
 };
+
+inline constexpr std::uint32_t kCullSimulation = 1u << 0u;
+inline constexpr std::uint32_t kCullBoundsUpdate = 1u << 1u;
 
 enum class SortMode : std::uint8_t {
     None,
     Distance,
     Custom,
+    CameraDepth,
+    YoungestInFront,
 };
 
 enum class SortOrder : std::uint8_t {
@@ -143,6 +149,7 @@ struct BoundsDesc {
     BoundsMode mode = BoundsMode::Manual;
     Vec3 center{};
     Vec3 extents{1.0f, 1.0f, 1.0f};
+    Vec3 padding{};
 };
 
 struct SortDesc {
@@ -156,12 +163,16 @@ struct OutputDesc {
     BlendMode blend = BlendMode::Alpha;
     std::string texture;
     bool softParticles = false;
+    bool castShadows = false;
+    bool generateMotionVector = true;
+    std::int32_t sortPriority = 0;
     float softDistance = 0.1f;
     float metallic = 0.0f;
     float roughness = 0.5f;
     std::string metallicProperty;
     std::string roughnessProperty;
     std::optional<SortDesc> sort;
+    std::optional<SortOrder> sortOrder;
 };
 
 struct EventDesc {
@@ -199,6 +210,7 @@ struct SubgraphDesc {
 struct Graph {
     std::uint32_t version = 1;
     std::string name;
+    std::uint32_t cullingFlags = 0;
     std::vector<Property> properties;
     std::vector<AttributeDesc> attributes;
     std::vector<SubgraphDesc> subgraphs;

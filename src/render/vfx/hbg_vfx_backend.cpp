@@ -4,12 +4,37 @@
 #include "gfx/state.h"
 #include "render/passes/forward_lighting.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <utility>
 
+#ifndef HBG_SHADER_ROOT
+#define HBG_SHADER_ROOT ""
+#endif
+
 namespace hbg::vfxbridge {
 namespace {
+
+const char* shaderSubdirectory() {
+    switch (bgfx::getRendererType()) {
+    case bgfx::RendererType::Direct3D11:
+    case bgfx::RendererType::Direct3D12:
+        return "dxbc";
+    case bgfx::RendererType::Vulkan:
+        return "spirv";
+    default:
+        return nullptr;
+    }
+}
+
+std::string shaderPath(const char* file) {
+    const char* subdirectory = shaderSubdirectory();
+    if (subdirectory == nullptr || HBG_SHADER_ROOT[0] == '\0') {
+        return {};
+    }
+    return std::string(HBG_SHADER_ROOT) + "/build/" + subdirectory + "/" + file;
+}
 
 bgfx::Access::Enum toBgfx(::vfx::Access access) {
     switch (access) {
@@ -161,7 +186,33 @@ std::uint64_t toBgfx(const ::vfx::DrawState& drawState) {
 
 HbgVfxBackend::HbgVfxBackend(gfx::ResourceManager& resources) : m_resources(resources) {}
 
-HbgVfxBackend::~HbgVfxBackend() { destroyAll(); }
+HbgVfxBackend::~HbgVfxBackend() {
+    for (std::uint32_t attempt = 0u; attempt < 8u; ++attempt) {
+        const bool pending = std::any_of(
+            m_readbacks.begin(), m_readbacks.end(), [](const std::unique_ptr<ReadbackEntry>& entry) {
+                return entry != nullptr &&
+                       std::all_of(entry->data.begin(), entry->data.end(),
+                                   [](std::byte value) { return value == std::byte{0xCD}; });
+            });
+        if (!pending) {
+            break;
+        }
+        bgfx::frame();
+        m_resources.endFrame();
+    }
+    destroyAll();
+    for (std::unique_ptr<ReadbackEntry>& entry : m_readbacks) {
+        if (entry != nullptr) {
+            const bool ready =
+                std::any_of(entry->data.begin(), entry->data.end(),
+                            [](std::byte value) { return value != std::byte{0xCD}; });
+            if (!ready) {
+                (void)entry.release();
+            }
+        }
+    }
+    m_readbacks.clear();
+}
 
 void HbgVfxBackend::begin(gfx::Encoder& encoder, bgfx::ViewId view) {
     m_encoder = &encoder;
@@ -290,6 +341,72 @@ bool HbgVfxBackend::updateBuffer(::vfx::BufferHandle handle, std::span<const std
         return false;
     }
     return m_resources.updateBuffer(entry.handle, data.data(), static_cast<std::uint32_t>(data.size()), offset);
+}
+
+::vfx::ReadbackHandle HbgVfxBackend::readBufferAsync(::vfx::BufferHandle handle, std::uint32_t size) {
+    if (!handle.valid() || handle.index >= m_buffers.size() || size == 0u || size % 4u != 0u) {
+        return {};
+    }
+    const BufferEntry& buffer = m_buffers[handle.index];
+    if (!buffer.alive) {
+        return {};
+    }
+    const bgfx::BufferHandle native = m_resources.native(buffer.handle);
+    if (!bgfx::isValid(native)) {
+        return {};
+    }
+    auto entry = std::make_unique<ReadbackEntry>();
+    entry->data.assign(size, std::byte{0xCD});
+    const std::uint32_t expectedFrame =
+        bgfx::read({.handle = native, .offset = 0, .size = size}, entry->data.data());
+    if (expectedFrame == 0u) {
+        return {};
+    }
+    ::vfx::Index slot = static_cast<::vfx::Index>(m_readbacks.size());
+    for (::vfx::Index i = 0; i < m_readbacks.size(); ++i) {
+        if (m_readbacks[i] == nullptr) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == m_readbacks.size()) {
+        m_readbacks.push_back(std::move(entry));
+    } else {
+        m_readbacks[slot] = std::move(entry);
+    }
+    return ::vfx::ReadbackHandle{slot};
+}
+
+bool HbgVfxBackend::readbackReady(::vfx::ReadbackHandle handle) const {
+    if (!handle.valid() || handle.index >= m_readbacks.size() || m_readbacks[handle.index] == nullptr) {
+        return false;
+    }
+    const std::vector<std::byte>& data = m_readbacks[handle.index]->data;
+    return std::any_of(data.begin(), data.end(), [](std::byte value) { return value != std::byte{0xCD}; });
+}
+
+bool HbgVfxBackend::copyReadback(::vfx::ReadbackHandle handle, std::span<std::byte> data) const {
+    if (!readbackReady(handle)) {
+        return false;
+    }
+    const std::vector<std::byte>& source = m_readbacks[handle.index]->data;
+    if (data.size() < source.size()) {
+        return false;
+    }
+    std::copy(source.begin(), source.end(), data.begin());
+    return true;
+}
+
+void HbgVfxBackend::releaseReadback(::vfx::ReadbackHandle handle) {
+    if (!handle.valid() || handle.index >= m_readbacks.size() || m_readbacks[handle.index] == nullptr) {
+        return;
+    }
+    std::unique_ptr<ReadbackEntry>& entry = m_readbacks[handle.index];
+    if (readbackReady(handle)) {
+        entry.reset();
+    } else {
+        entry->released = true;
+    }
 }
 
 ::vfx::TextureHandle HbgVfxBackend::importTexture(gfx::TextureHandle handle) {
@@ -591,8 +708,40 @@ void HbgVfxBackend::bindLighting(::vfx::CommandSink&, const ::vfx::FrameContext&
     bindForwardLighting(*m_encoder, *lighting);
 }
 
-::vfx::ProgramHandle HbgVfxBackend::resolveProgram(const ::vfx::RenderOutputDesc&, ::vfx::ShaderBackend) {
-    return {};
+::vfx::ProgramHandle HbgVfxBackend::resolveProgram(const ::vfx::RenderOutputDesc& output,
+                                                   ::vfx::ShaderBackend backend) {
+    if (backend != this->backend()) {
+        return {};
+    }
+    const char* vertexFile = nullptr;
+    const char* fragmentFile = nullptr;
+    if (output.name == "vfx.motionVectors") {
+        vertexFile = "vfx_motion_vectors.vs.bin";
+        fragmentFile = "vfx_motion_vectors.fs.bin";
+    } else if (output.name == "vfx.shadow") {
+        vertexFile = "vfx_shadow.vs.bin";
+        fragmentFile = "vfx_shadow.fs.bin";
+    } else {
+        return {};
+    }
+    const auto existing = m_resolvedPrograms.find(std::string(output.name));
+    if (existing != m_resolvedPrograms.end()) {
+        return existing->second;
+    }
+
+    const gfx::ProgramHandle program =
+        m_resources.createProgramFromFiles(shaderPath(vertexFile), shaderPath(fragmentFile),
+                                           std::string(output.name));
+    if (!program.valid()) {
+        return {};
+    }
+    ProgramEntry entry;
+    entry.handle = program;
+    entry.alive = true;
+    m_programs.push_back(entry);
+    const ::vfx::ProgramHandle handle{static_cast<::vfx::Index>(m_programs.size() - 1)};
+    m_resolvedPrograms.emplace(std::string(output.name), handle);
+    return handle;
 }
 
 std::size_t HbgVfxBackend::liveBufferCount() const {

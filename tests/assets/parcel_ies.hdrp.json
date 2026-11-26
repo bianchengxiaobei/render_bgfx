@@ -1,0 +1,8 @@
+{
+  "lights": [
+    {
+      "name": "Point",
+      "ies": "parcel_ies.ies"
+    }
+  ]
+}

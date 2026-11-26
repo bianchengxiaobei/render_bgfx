@@ -35,6 +35,7 @@ add_library(hbg_vfx_adapter STATIC
 )
 target_include_directories(hbg_vfx_adapter PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(hbg_vfx_adapter PUBLIC hbg_vfx hbg_gfx)
+target_compile_definitions(hbg_vfx_adapter PRIVATE HBG_SHADER_ROOT="${CMAKE_SOURCE_DIR}/shaders")
 hbg_target_options(hbg_vfx_adapter)
 
 add_executable(hbg_vfx_attributes_dump tools/attributes_dump.cpp)
@@ -63,6 +64,31 @@ if(HBG_BUILD_TESTS)
     target_compile_definitions(hbg_vfx_tests PRIVATE VFX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     hbg_target_options(hbg_vfx_tests)
     add_test(NAME hbg_vfx_tests COMMAND hbg_vfx_tests)
+
+    add_executable(hbg_vfx_editor_roundtrip tests/editor_roundtrip.cpp)
+    target_link_libraries(hbg_vfx_editor_roundtrip PRIVATE hbg_vfx)
+    add_dependencies(hbg_vfx_editor_roundtrip vfxbake)
+    hbg_target_options(hbg_vfx_editor_roundtrip)
+
+    set(vfx_editor_roundtrip_bake_args)
+    if(HBG_SHADER_COMPILER AND HBG_BGFX_SOURCE_DIR)
+        list(APPEND vfx_editor_roundtrip_bake_args
+            "-DHBG_VFXBAKE=$<TARGET_FILE:vfxbake>"
+            "-DHBG_SHADERC=${HBG_SHADER_COMPILER}"
+            "-DHBG_BGFX_SOURCE=${HBG_BGFX_SOURCE_DIR}"
+            "-DHBG_SHADER_PACK=${CMAKE_SOURCE_DIR}/shaders")
+    endif()
+    add_test(NAME hbg_vfx_editor_roundtrip
+        COMMAND ${CMAKE_COMMAND}
+                "-DHBG_ROUNDTRIP=$<TARGET_FILE:hbg_vfx_editor_roundtrip>"
+                "-DHBG_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets"
+                "-DHBG_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/editor_roundtrip_test"
+                "-DHBG_EXPECTED_ASSETS=31"
+                ${vfx_editor_roundtrip_bake_args}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_editor_roundtrip.cmake)
+    set_tests_properties(hbg_vfx_editor_roundtrip PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        TIMEOUT 1800)
 
     add_executable(hbg_vfx_adapter_tests
         tests/test_vfx_hbg_backend.cpp
@@ -124,6 +150,25 @@ if(HBG_BUILD_TESTS)
                 --vfx-reference-graph=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/reference_1024.vfx.json
                 --no-vsync --width=64 --height=64)
     set_tests_properties(hbg_vfx_reference_vulkan PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+
+    if(WIN32)
+        add_test(NAME hbg_vfx_reference_auto_bounds_d3d11
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=d3d11"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_auto_bounds.cmake)
+        set_tests_properties(hbg_vfx_reference_auto_bounds_d3d11 PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endif()
+    add_test(NAME hbg_vfx_reference_auto_bounds_vulkan
+        COMMAND ${CMAKE_COMMAND}
+                "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                "-DHBG_BACKEND=vulkan"
+                "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_auto_bounds.cmake)
+    set_tests_properties(hbg_vfx_reference_auto_bounds_vulkan PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
 
     if(WIN32)
         add_test(NAME hbg_vfx_reference_forces_d3d11
@@ -257,6 +302,67 @@ if(HBG_BUILD_TESTS)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
     endfunction()
 
+    function(add_vfx_sort_outputs_smoke backend)
+        add_test(NAME hbg_vfx_sort_outputs_${backend}
+            COMMAND $<TARGET_FILE:hbg> --backend=${backend}
+                    --render-test=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_sort_outputs.gltf
+                    --vfx-test --frames=2 --width=320 --height=180 --no-vsync
+                    --screenshot=${CMAKE_CURRENT_BINARY_DIR}/vfx_sort_outputs_${backend}.png)
+        set_tests_properties(hbg_vfx_sort_outputs_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "bgfx fatal;was already set")
+    endfunction()
+
+    function(add_vfx_instancing backend)
+        add_test(NAME hbg_vfx_instancing_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_instancing.cmake)
+        set_tests_properties(hbg_vfx_instancing_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 180)
+    endfunction()
+
+    function(add_vfx_instancing_cull backend)
+        add_test(NAME hbg_vfx_instancing_cull_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_instancing_cull.cmake)
+        set_tests_properties(hbg_vfx_instancing_cull_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 180)
+    endfunction()
+
+    function(add_vfx_transparent_sort backend)
+        add_test(NAME hbg_vfx_transparent_sort_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_GOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/vfx_transparent_sort_${backend}.png"
+                    "-DHBG_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/vfx_transparent_sort_${backend}.png"
+                    "-DHBG_PYTHON=${HBG_PYTHON_EXECUTABLE}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_transparent_sort.cmake)
+        set_tests_properties(hbg_vfx_transparent_sort_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 180)
+    endfunction()
+
+    function(add_vfx_transparent_batch_sort backend)
+        add_test(NAME hbg_vfx_transparent_batch_sort_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_GOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/vfx_transparent_batch_sort_${backend}.png"
+                    "-DHBG_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/vfx_transparent_batch_sort_${backend}.png"
+                    "-DHBG_PYTHON=${HBG_PYTHON_EXECUTABLE}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_transparent_batch_sort.cmake)
+        set_tests_properties(hbg_vfx_transparent_batch_sort_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 180)
+    endfunction()
     function(add_vfx_editor_smoke backend)
         add_test(NAME hbg_vfx_editor_${backend}
             COMMAND $<TARGET_FILE:hbg> --backend=${backend}
@@ -264,6 +370,81 @@ if(HBG_BUILD_TESTS)
                     --vfx-editor=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/minimal_unlit.vfx.json
                     --frames=3 --width=640 --height=360 --no-vsync)
         set_tests_properties(hbg_vfx_editor_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endfunction()
+
+    function(add_vfx_editor_subgraph_smoke backend)
+        add_test(NAME hbg_vfx_editor_subgraph_${backend}
+            COMMAND $<TARGET_FILE:hbg> --backend=${backend}
+                    --scene=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_scene.gltf
+                    --vfx-editor=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/subgraph_visual.vfx.json
+                    --frames=3 --width=640 --height=360 --no-vsync)
+        set_tests_properties(hbg_vfx_editor_subgraph_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endfunction()
+
+    function(add_vfx_editor_screenshot backend)
+        add_test(NAME hbg_vfx_editor_screenshot_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_scene.gltf"
+                    "-DHBG_GRAPH=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/subgraph_visual.vfx.json"
+                    "-DHBG_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/vfx_editor_screenshot_${backend}.png"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_editor_screenshot.cmake)
+        set_tests_properties(hbg_vfx_editor_screenshot_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endfunction()
+
+    function(add_vfx_shadows backend)
+        set(test_name hbg_vfx_shadows_${backend})
+        set(deferred_args)
+        if(ARGC GREATER 1 AND ARGV1 STREQUAL "deferred")
+            set(test_name hbg_vfx_shadows_deferred_${backend})
+            list(APPEND deferred_args "-DHBG_DEFERRED=ON")
+        endif()
+        add_test(NAME ${test_name}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_SHADOW_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_shadow.gltf"
+                    "-DHBG_OFF_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_lit.gltf"
+                    "-DHBG_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    "-DHBG_PYTHON=${HBG_PYTHON_EXECUTABLE}"
+                    ${deferred_args}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_shadows.cmake)
+        set_tests_properties(${test_name} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endfunction()
+
+    function(add_vfx_motion_vectors backend)
+        add_test(NAME hbg_vfx_motion_vectors_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_forces.gltf"
+                    "-DHBG_STATIC_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_sort.gltf"
+                    "-DHBG_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    "-DHBG_PYTHON=${HBG_PYTHON_EXECUTABLE}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_motion_vectors.cmake)
+        set_tests_properties(hbg_vfx_motion_vectors_${backend} PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
+    endfunction()
+
+    function(add_vfx_motion_gate backend)
+        add_test(NAME hbg_vfx_motion_gate_${backend}
+            COMMAND ${CMAKE_COMMAND}
+                    "-DHBG_EXE=$<TARGET_FILE:hbg>"
+                    "-DHBG_BACKEND=${backend}"
+                    "-DHBG_SCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/vfx_shadow.gltf"
+                    "-DHBG_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DHBG_WORKDIR=${CMAKE_SOURCE_DIR}"
+                    "-DHBG_PYTHON=${HBG_PYTHON_EXECUTABLE}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_motion_gate.cmake)
+        set_tests_properties(hbg_vfx_motion_gate_${backend} PROPERTIES
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 120)
     endfunction()
 
@@ -376,6 +557,17 @@ if(HBG_BUILD_TESTS)
         add_vfx_perf_smoke(100k d3d11)
         add_vfx_perf_smoke(1m d3d11)
         add_vfx_editor_smoke(d3d11)
+        add_vfx_editor_subgraph_smoke(d3d11)
+        add_vfx_editor_screenshot(d3d11)
+        add_vfx_shadows(d3d11)
+        add_vfx_shadows(d3d11 deferred)
+        add_vfx_motion_vectors(d3d11)
+        add_vfx_motion_gate(d3d11)
+        add_vfx_sort_outputs_smoke(d3d11)
+        add_vfx_instancing(d3d11)
+        add_vfx_instancing_cull(d3d11)
+        add_vfx_transparent_sort(d3d11)
+        add_vfx_transparent_batch_sort(d3d11)
         add_vfx_determinism(sort d3d11 vfx_sort.gltf 10)
         add_vfx_determinism(events d3d11 vfx_events.gltf 30)
     endif()
@@ -412,6 +604,17 @@ if(HBG_BUILD_TESTS)
     add_vfx_perf_smoke(100k vulkan)
     add_vfx_perf_smoke(1m vulkan)
     add_vfx_editor_smoke(vulkan)
+    add_vfx_editor_subgraph_smoke(vulkan)
+    add_vfx_editor_screenshot(vulkan)
+    add_vfx_shadows(vulkan)
+    add_vfx_shadows(vulkan deferred)
+    add_vfx_motion_vectors(vulkan)
+    add_vfx_motion_gate(vulkan)
+    add_vfx_sort_outputs_smoke(vulkan)
+    add_vfx_instancing(vulkan)
+    add_vfx_instancing_cull(vulkan)
+    add_vfx_transparent_sort(vulkan)
+    add_vfx_transparent_batch_sort(vulkan)
     add_vfx_determinism(sort vulkan vfx_sort.gltf 10)
     add_vfx_determinism(events vulkan vfx_events.gltf 30)
 
@@ -445,4 +648,29 @@ if(HBG_BUILD_TESTS)
                 -DHBG_WORKDIR=${CMAKE_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vfx_golden.cmake)
     set_tests_properties(hbg_vfx_golden_vulkan PROPERTIES TIMEOUT 120)
+
+    function(hbg_vfx_label_tests label regex)
+        get_property(vfx_tests DIRECTORY PROPERTY TESTS)
+        foreach(vfx_test IN LISTS vfx_tests)
+            if(vfx_test MATCHES "${regex}")
+                set_property(TEST "${vfx_test}" APPEND PROPERTY LABELS "${label}")
+            endif()
+        endforeach()
+    endfunction()
+
+    hbg_vfx_label_tests(vfx "^hbg_vfx")
+    hbg_vfx_label_tests(vfx_unit "^(hbg_vfx_tests|hbg_vfx_runtime_tests|hbg_vfx_compiler_tests|hbg_vfx_adapter_tests)$")
+    hbg_vfx_label_tests(vfx_asset_unit "^hbg_vfx_tests$")
+    hbg_vfx_label_tests(vfx_runtime "^hbg_vfx_runtime_tests$")
+    hbg_vfx_label_tests(vfx_compiler "^hbg_vfx_compiler_tests$")
+    hbg_vfx_label_tests(vfx_adapter "^hbg_vfx_adapter_tests$")
+    hbg_vfx_label_tests(vfx_slow "^(hbg_vfx_asset_check|hbg_vfx_editor_roundtrip|hbg_vfx_perf_.*|hbg_vfx_reference_sorted_262144_.*)$")
+    hbg_vfx_label_tests(vfx_instancing "^hbg_vfx_instancing")
+    hbg_vfx_label_tests(vfx_bounds "auto_bounds")
+    hbg_vfx_label_tests(vfx_motion "^hbg_vfx_motion")
+    hbg_vfx_label_tests(vfx_shadow "^hbg_vfx_shadows")
+    hbg_vfx_label_tests(vfx_sort "^hbg_vfx_(sort|determinism|transparent)")
+    hbg_vfx_label_tests(vfx_reference "reference")
+    hbg_vfx_label_tests(vfx_golden "golden")
+    hbg_vfx_label_tests(vfx_editor "^hbg_vfx_editor")
 endif()

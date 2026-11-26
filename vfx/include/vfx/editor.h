@@ -55,6 +55,7 @@ std::optional<ContextRef> parseContextPath(std::string_view path);
 std::optional<ErrorFocus> errorFocus(std::string_view jsonPath);
 std::filesystem::path defaultLayoutPath(const std::filesystem::path& assetPath);
 std::filesystem::path defaultBinaryPath(const std::filesystem::path& assetPath);
+std::filesystem::path defaultRecoveryPath(const std::filesystem::path& assetPath);
 
 class Document {
   public:
@@ -77,11 +78,36 @@ class Document {
 
     std::string serialize() const;
     bool save(std::string& error);
+    const std::filesystem::path& recoveryPath() const;
+    bool saveRecovery(std::string& error) const;
+    bool loadRecovery(std::string& error);
+    void clearRecovery();
 
     bool addSystem(std::string_view name = {});
     bool removeSystem(std::uint32_t system);
     bool renameSystem(std::uint32_t system, std::string_view name);
     bool addBlock(std::uint32_t system, ContextKind context, std::string_view type, std::uint32_t index = kAppend);
+    bool addSubgraphBlock(std::uint32_t system, ContextKind context, std::string_view subgraph,
+                          std::uint32_t index, std::uint32_t& inserted);
+    std::vector<std::string> subgraphNames(ContextKind context) const;
+    bool copyBlock(std::uint32_t system, ContextKind context, std::uint32_t block, std::string& json) const;
+    bool pasteBlock(std::uint32_t system, ContextKind context, std::uint32_t index, std::string_view json,
+                    std::uint32_t& inserted);
+    bool duplicateBlock(std::uint32_t system, ContextKind context, std::uint32_t block,
+                        std::uint32_t& duplicated);
+    bool copyProperty(std::string_view property, std::string& json) const;
+    bool pasteProperty(std::string_view json, std::string& insertedName);
+    bool duplicateProperty(std::string_view property, std::string& duplicatedName);
+    bool duplicateSystem(std::uint32_t system, std::uint32_t& duplicated);
+    bool duplicateOutput(std::uint32_t system, std::uint32_t output, std::uint32_t& duplicated);
+    bool blockParameterJson(std::uint32_t system, ContextKind context, std::uint32_t block,
+                            std::string_view parameter, std::string& json) const;
+    bool setBlockParameterJson(std::uint32_t system, ContextKind context, std::uint32_t block,
+                               std::string_view parameter, std::string_view json);
+    std::vector<std::string> optionalBlockParameters(std::uint32_t system, ContextKind context,
+                                                     std::uint32_t block) const;
+    bool addOptionalBlockParameter(std::uint32_t system, ContextKind context, std::uint32_t block,
+                                   std::string_view parameter);
     bool removeBlock(std::uint32_t system, ContextKind context, std::uint32_t block);
     bool moveBlock(std::uint32_t system, ContextKind context, std::uint32_t from, std::uint32_t to);
     bool addOutput(std::uint32_t system);
@@ -89,10 +115,13 @@ class Document {
     bool addProperty(std::string_view name, PropertyType type);
     bool removeProperty(std::string_view name);
 
+    bool setCullingFlags(std::uint32_t flags);
     bool setSystemCapacity(std::uint32_t system, std::uint32_t capacity);
     bool setSystemSpace(std::uint32_t system, SystemSpace space);
     bool setSystemSort(std::uint32_t system, SortMode mode, SortOrder order);
     bool setSystemBounds(std::uint32_t system, Vec3 center, Vec3 extents);
+    bool setSystemBoundsPadding(std::uint32_t system, Vec3 padding);
+    bool setSystemBoundsMode(std::uint32_t system, BoundsMode mode);
     bool setSpawnerRate(std::uint32_t system, float rate);
     bool setBlockEnabled(std::uint32_t system, ContextKind context, std::uint32_t block, bool enabled);
     bool setBlockParameterNumber(std::uint32_t system, ContextKind context, std::uint32_t block,
@@ -105,6 +134,12 @@ class Document {
     bool setOutputBlend(std::uint32_t system, std::uint32_t output, BlendMode blend);
     bool setOutputTexture(std::uint32_t system, std::uint32_t output, std::string_view texture);
     bool setOutputSoftParticles(std::uint32_t system, std::uint32_t output, bool enabled);
+    bool setOutputCastShadows(std::uint32_t system, std::uint32_t output, bool enabled);
+    bool setOutputGenerateMotionVector(std::uint32_t system, std::uint32_t output, bool enabled);
+    bool setOutputSortPriority(std::uint32_t system, std::uint32_t output, std::int32_t priority);
+    bool setOutputSortMode(std::uint32_t system, std::uint32_t output, SortMode mode);
+    bool setOutputSortOrder(std::uint32_t system, std::uint32_t output,
+                            std::optional<SortOrder> order);
     bool setOutputSoftDistance(std::uint32_t system, std::uint32_t output, float distance);
     bool setOutputMetallic(std::uint32_t system, std::uint32_t output, float metallic);
     bool setOutputRoughness(std::uint32_t system, std::uint32_t output, float roughness);

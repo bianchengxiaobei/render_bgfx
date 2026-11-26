@@ -196,6 +196,40 @@ void Mesh::applyMorphWeights(const std::vector<float>& weights, std::vector<Mesh
     }
 }
 
+Bounds Mesh::computeSkinnedBounds(const std::vector<Mat4>& jointMatrices) const {
+    if (skinVertices.size() != vertices.size()) {
+        return computeBounds(vertices);
+    }
+
+    Bounds result;
+    for (std::size_t vertexIndex = 0; vertexIndex < vertices.size(); ++vertexIndex) {
+        const MeshVertex& source = vertices[vertexIndex];
+        const SkinVertex& skin = skinVertices[vertexIndex];
+        Vec3 position(0.0f, 0.0f, 0.0f);
+        float totalWeight = 0.0f;
+        const std::size_t influenceBegin = skin.influenceOffset;
+        const std::size_t influenceEnd =
+            std::min(skinInfluences.size(), influenceBegin + static_cast<std::size_t>(skin.influenceCount));
+        for (std::size_t influenceIndex = influenceBegin; influenceIndex < influenceEnd; ++influenceIndex) {
+            const SkinInfluence& influence = skinInfluences[influenceIndex];
+            if (std::abs(influence.weight) <= 1.0e-8f || influence.joint >= jointMatrices.size()) {
+                continue;
+            }
+            position = position + transformPoint(jointMatrices[influence.joint], source.position) * influence.weight;
+            totalWeight += influence.weight;
+        }
+        if (totalWeight > 1.0e-8f) {
+            if (std::abs(totalWeight - 1.0f) > 1.0e-5f) {
+                position = position * (1.0f / totalWeight);
+            }
+            result.expand(position);
+        } else {
+            result.expand(source.position);
+        }
+    }
+    return result;
+}
+
 void Mesh::applySkinning(const std::vector<Mat4>& jointMatrices, std::vector<MeshVertex>& output) const {
     if (skinVertices.size() != vertices.size()) {
         return;

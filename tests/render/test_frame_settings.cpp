@@ -60,6 +60,9 @@ TEST_CASE("pipeline defaults enable the validated GPU light-list buffer path") {
     CHECK(pipeline.supportLightListFeatureFlags);
     CHECK(pipeline.lightListCapacity == kLightListDefaultCapacity);
     CHECK_FALSE(pipeline.supportGpuLightListIndirect);
+    CHECK(pipeline.supportGpuSkinning);
+    CHECK(pipeline.supportDepthPyramidCompute);
+    CHECK_FALSE(pipeline.supportGpuDrivenGeometry);
     CHECK_FALSE(pipeline.supportGpuShadowCulling);
     CHECK_FALSE(pipeline.supportGpuShadowIndirect);
     CHECK_FALSE(pipeline.supportAsyncGpuLightList);
@@ -228,6 +231,42 @@ TEST_CASE("Pipeline light-list capacity uses supported tiers") {
     REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
     CHECK_FALSE(roundTrip.supportLightListFeatureFlags);
     CHECK_FALSE(parsePipelineSettings(R"({"supportLightListFeatureFlags":"false"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportGpuSkinning":false})", settings, error));
+    CHECK_FALSE(settings.supportGpuSkinning);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK_FALSE(roundTrip.supportGpuSkinning);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportGpuSkinning":"false"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportDepthPyramidCompute":false})", settings, error));
+    CHECK_FALSE(settings.supportDepthPyramidCompute);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK_FALSE(roundTrip.supportDepthPyramidCompute);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportDepthPyramidCompute":"false"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportGpuDrivenGeometry":true})", settings, error));
+    CHECK(settings.supportGpuDrivenGeometry);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK(roundTrip.supportGpuDrivenGeometry);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportGpuDrivenGeometry":"true"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportTransparentRefraction":true})", settings, error));
+    CHECK(settings.supportTransparentRefraction);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK(roundTrip.supportTransparentRefraction);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportTransparentRefraction":"true"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportRefractionDepthRejection":false})", settings, error));
+    CHECK_FALSE(settings.supportRefractionDepthRejection);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK_FALSE(roundTrip.supportRefractionDepthRejection);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportRefractionDepthRejection":"false"})", settings, error));
+
+    REQUIRE(parsePipelineSettings(R"({"supportRefractionRoughness":true})", settings, error));
+    CHECK(settings.supportRefractionRoughness);
+    REQUIRE(parsePipelineSettings(pipelineSettingsToJson(settings), roundTrip, error));
+    CHECK(roundTrip.supportRefractionRoughness);
+    CHECK_FALSE(parsePipelineSettings(R"({"supportRefractionRoughness":"true"})", settings, error));
 }
 
 TEST_CASE("PipelineSettings JSON parses and round-trips") {
@@ -288,6 +327,9 @@ TEST_CASE("Shipped settings files load") {
     REQUIRE(loadFrameSettings(std::string(HBG_PROJECT_ROOT) + "/config/frame_settings.json", frame, error));
     CHECK(pipeline.supportShadows);
     CHECK(pipeline.supportFXAA);
+    CHECK(pipeline.supportGpuSkinning);
+    CHECK(pipeline.supportDepthPyramidCompute);
+    CHECK_FALSE(pipeline.supportGpuDrivenGeometry);
     CHECK(frame.isEnabled(FrameSettingsField::ShadowMaps));
 }
 
@@ -320,4 +362,26 @@ TEST_CASE("pipeline settings parse and serialize supportVFX") {
     REQUIRE(render::parsePipelineSettings(serialized, roundTrip, error));
     CHECK(roundTrip.supportVFX);
     CHECK_FALSE(render::parsePipelineSettings(R"({"supportVFX":"true"})", settings, error));
+    REQUIRE(render::parsePipelineSettings(R"({"supportVFXInstancing":true})", settings, error));
+    CHECK(settings.supportVFXInstancing);
+    const std::string instancingSerialized = render::pipelineSettingsToJson(settings);
+    render::PipelineSettings instancingRoundTrip;
+    REQUIRE(render::parsePipelineSettings(instancingSerialized, instancingRoundTrip, error));
+    CHECK(instancingRoundTrip.supportVFXInstancing);
+    CHECK_FALSE(render::parsePipelineSettings(R"({"supportVFXInstancing":"true"})", settings, error));
+    REQUIRE(render::parsePipelineSettings(R"({"supportVFXTransparentSort":true})", settings, error));
+    CHECK(settings.supportVFXTransparentSort);
+    const std::string transparentSortSerialized = render::pipelineSettingsToJson(settings);
+    render::PipelineSettings transparentSortRoundTrip;
+    REQUIRE(render::parsePipelineSettings(transparentSortSerialized, transparentSortRoundTrip, error));
+    CHECK(transparentSortRoundTrip.supportVFXTransparentSort);
+    CHECK_FALSE(render::parsePipelineSettings(R"({"supportVFXTransparentSort":"true"})", settings, error));
+    REQUIRE(render::parsePipelineSettings(R"({"vfxInstanceBatchSize":2})", settings, error));
+    CHECK(settings.vfxInstanceBatchSize == 2u);
+    const std::string batchSerialized = render::pipelineSettingsToJson(settings);
+    render::PipelineSettings batchRoundTrip;
+    REQUIRE(render::parsePipelineSettings(batchSerialized, batchRoundTrip, error));
+    CHECK(batchRoundTrip.vfxInstanceBatchSize == 2u);
+    CHECK_FALSE(render::parsePipelineSettings(R"({"vfxInstanceBatchSize":65536})", settings, error));
+    CHECK_FALSE(render::parsePipelineSettings(R"({"vfxInstanceBatchSize":"2"})", settings, error));
 }

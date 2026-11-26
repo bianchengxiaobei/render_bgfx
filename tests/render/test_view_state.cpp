@@ -191,6 +191,27 @@ TEST_CASE("ViewState shifts previous matrices and resets history on resolution c
     CHECK(state.renderHeight() == 360);
 }
 
+TEST_CASE("ViewState preserves history for render-scale-only changes when requested") {
+    ViewState state;
+    const Camera camera = makeCamera(Vec3(0.0f, 0.0f, 5.0f));
+    state.update(camera, 1280, 720, 0.5f, true, false);
+    state.update(camera, 1280, 720, 0.5f, true, false);
+    REQUIRE(state.historyValid());
+    const Mat4 previousViewProj = state.constants().nonJitteredViewProj;
+    const uint32_t previousTaaFrame = state.taaFrameIndex();
+
+    state.update(camera, 1280, 720, 0.6f, true, false, true);
+    CHECK(state.historyValid());
+    CHECK(state.renderWidth() == 768);
+    CHECK(state.renderHeight() == 432);
+    CHECK(state.taaFrameIndex() == ((previousTaaFrame + 1) & 1023u));
+    checkMatrix(state.constants().prevViewProj, previousViewProj);
+
+    state.update(camera, 1280, 720, 0.7f, true, false, false);
+    CHECK_FALSE(state.historyValid());
+    CHECK(state.taaFrameIndex() == 1);
+}
+
 TEST_CASE("ViewState exposes dynamic resolution scale and orthographic jitter") {
     ViewState state;
     const Camera camera = makeCamera(Vec3(0.0f, 0.0f, 5.0f));

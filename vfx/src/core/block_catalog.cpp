@@ -10,7 +10,7 @@ namespace {
 constexpr FieldSpec kSetPositionSphere[] = {
     {"center", true},
     {"radius", true},
-    {"surface", false},
+    {"surface", false, "false"},
 };
 constexpr FieldSpec kSetPositionBox[] = {
     {"center", true},
@@ -19,8 +19,8 @@ constexpr FieldSpec kSetPositionBox[] = {
 constexpr FieldSpec kSetVelocityRandom[] = {
     {"minSpeed", true},
     {"maxSpeed", true},
-    {"direction", false},
-    {"coneAngle", false},
+    {"direction", false, "[0.0, 1.0, 0.0]"},
+    {"coneAngle", false, "0.0"},
 };
 constexpr FieldSpec kSetVelocityDirection[] = {
     {"direction", true},
@@ -57,33 +57,36 @@ constexpr FieldSpec kGravity[] = {
     {"gravity", true},
 };
 constexpr FieldSpec kDrag[] = {
-    {"drag", false},
-    {"useSize", false},
+    {"drag", false, "0.5"},
+    {"useSize", false, "false"},
 };
 constexpr FieldSpec kForce[] = {
     {"force", true},
-    {"mode", false},
-    {"drag", false},
-    {"space", false},
+    {"mode", false, "\"absolute\""},
+    {"drag", false, "1.0"},
+    {"space", false, "\"world\""},
 };
 constexpr FieldSpec kAttractor[] = {
     {"position", true},
     {"strength", true},
-    {"falloff", false},
+    {"falloff", false, "1.0"},
 };
 constexpr FieldSpec kTurbulence[] = {
-    {"intensity", false},  {"frequency", false}, {"octaves", false}, {"roughness", false},
-    {"lacunarity", false}, {"scroll", false},    {"mode", false},    {"drag", false},
+    {"intensity", false, "1.0"},     {"frequency", false, "1.0"},  {"octaves", false, "3"},
+    {"roughness", false, "0.5"},     {"lacunarity", false, "2.0"}, {"scroll", false, "[0.0, 0.0, 0.0]"},
+    {"mode", false, "\"relative\""}, {"drag", false, "1.0"},
 };
 constexpr FieldSpec kEmpty[] = {{"", false}};
 constexpr FieldSpec kReap[] = {
     {"condition", false},
 };
 constexpr FieldSpec kCollisionPlane[] = {
-    {"normal", true}, {"distance", true}, {"mode", false}, {"restitution", false}, {"friction", false},
+    {"normal", true},           {"distance", true}, {"mode", false, "\"bounce\""}, {"restitution", false, "0.5"},
+    {"friction", false, "0.2"},
 };
 constexpr FieldSpec kCollisionSphere[] = {
-    {"center", true}, {"radius", true}, {"mode", false}, {"restitution", false}, {"friction", false},
+    {"center", true},           {"radius", true}, {"mode", false, "\"bounce\""}, {"restitution", false, "0.5"},
+    {"friction", false, "0.2"},
 };
 constexpr FieldSpec kOverLife[] = {
     {"gradient", false},
@@ -91,13 +94,13 @@ constexpr FieldSpec kOverLife[] = {
 };
 constexpr FieldSpec kCustomHlsl[] = {
     {"code", true},
-    {"reads", false},
-    {"writes", false},
+    {"reads", false, "[]"},
+    {"writes", false, "[]"},
 };
 constexpr FieldSpec kTriggerEvent[] = {
     {"event", true},
-    {"count", false},
-    {"condition", false},
+    {"count", false, "1.0"},
+    {"condition", false, "true"},
 };
 constexpr FieldSpec kSubgraphInvocation[] = {
     {"name", true},

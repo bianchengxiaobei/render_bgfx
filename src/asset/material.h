@@ -3,10 +3,13 @@
 #include "asset/texture_sampler.h"
 #include "core/math.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace hbg::asset {
 
@@ -36,11 +39,29 @@ struct TextureRef {
     bool valid() const { return imageIndex >= 0; }
 };
 
+struct GraphPropertyOverride {
+    std::string refName;
+    std::array<float, 16> values{};
+    uint8_t count = 0;
+};
+
+struct GraphTextureOverride {
+    std::string refName;
+    TextureRef texture;
+    std::vector<int> imageIndices;
+};
+
+struct GraphKeywordOverride {
+    std::string refName;
+    std::string value;
+};
+
 struct Material {
     std::string name;
     MaterialType type = MaterialType::Lit;
     AlphaMode alphaMode = AlphaMode::Opaque;
     bool doubleSided = false;
+    bool transparentBackface = false;
     uint32_t features = MaterialFeatureNone;
     int renderQueue = kRenderQueueOpaque;
 
@@ -62,6 +83,13 @@ struct Material {
     std::string diffusionProfile;
     bool maskMapPacked = true;
 
+    std::filesystem::path graphShader;
+    std::vector<GraphPropertyOverride> graphProperties;
+    std::vector<GraphTextureOverride> graphTextures;
+    std::vector<GraphKeywordOverride> graphKeywords;
+
+    bool hasGraphShader() const { return !graphShader.empty(); }
+
     float clearCoat = 0.0f;
     float clearCoatRoughness = 0.03f;
     float clearCoatNormalScale = 1.0f;
@@ -81,6 +109,7 @@ struct MaterialKey {
     uint32_t alphaMode = 0;
     uint32_t features = 0;
     bool doubleSided = false;
+    bool transparentBackface = false;
     int renderQueue = 0;
     Vec4 baseColorFactor;
     float metallic = 0.0f;

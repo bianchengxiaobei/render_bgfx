@@ -13,6 +13,10 @@ enum class LightType : uint8_t { Directional, Point, Spot, Area };
 enum class LightCookieMode : uint8_t { None, Clamp, Repeat };
 enum class LightCookieType : uint8_t { None, Spot2D, PointOctahedral };
 enum class LightAreaShape : uint8_t { Rectangle, Tube, Disc };
+enum class LightFalloffMode : uint8_t { InverseSquared, BakeryPhysical, BakeryFake };
+enum class LightBakeMode : uint8_t { Baked, Mixed, Realtime };
+enum class LightMixedMode : uint8_t { ShadowMask, IndirectOnly };
+enum class LightShadowType : uint8_t { None, Hard, Soft };
 
 enum class ShadowUpdateMode : uint8_t {
     EveryFrame = 0,
@@ -41,19 +45,37 @@ struct LightShadowSettings {
 struct Light {
     std::string name;
     int nodeIndex = -1;
+    uint32_t instanceId = 0;
     LightType type = LightType::Point;
     Vec3 color{1.0f, 1.0f, 1.0f};
+    bool useColorTemperature = false;
+    float colorTemperature = 6570.0f;
     float intensity = 1.0f;
+    float indirectMultiplier = 1.0f;
+    LightFalloffMode falloffMode = LightFalloffMode::InverseSquared;
     float range = 10.0f;
+    float sourceRadius = 0.0f;
+    float sourceLength = 0.0f;
+    float lightSourceAngle = 0.0f;
     float innerConeAngle = 0.0f;
     float outerConeAngle = 0.78539816339f;
     LightAreaShape areaShape = LightAreaShape::Rectangle;
     float areaWidth = 1.0f;
     float areaHeight = 1.0f;
     float areaShadowCone = 120.0f;
+    float barnDoorAngle = 0.0f;
+    float barnDoorLength = 0.0f;
     Mat4 world = Mat4::identity();
     bool castShadows = false;
     bool shadowConfigured = false;
+    LightShadowType shadowType = LightShadowType::Soft;
+    LightBakeMode bakeMode = LightBakeMode::Baked;
+    LightMixedMode mixedMode = LightMixedMode::ShadowMask;
+    uint8_t lightingChannel = 0;
+    float shadowTranslucency = 1.0f;
+    bool enablePenumbra = false;
+    Vec4 penumbraTint{0.0f, 0.0f, 0.0f, 1.0f};
+    float penumbraLuma = 1.0f;
     uint16_t lightLayerMask = 0xffffu;
     LightCookieMode cookieMode = LightCookieMode::None;
     LightCookieType cookieType = LightCookieType::None;

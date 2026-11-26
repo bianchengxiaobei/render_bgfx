@@ -382,13 +382,41 @@ TEST_CASE("post-process TAA settings sanitize quality and weights") {
     PostProcessSettings settings;
     settings.taa.quality = 9;
     settings.taa.motionVectorRejection = 2.0f;
+    settings.taa.velocityRejection = 2.0f;
     settings.taa.sharpening = -1.0f;
     settings.taa.jitterScale = 2.0f;
+    settings.taa.upscaleInjection = static_cast<TaaUpsampleInjection>(99);
     sanitizePostProcessSettings(settings);
     CHECK(settings.taa.quality == 5u);
     CHECK(settings.taa.motionVectorRejection == doctest::Approx(1.0f));
+    CHECK(settings.taa.velocityRejection == doctest::Approx(1.0f));
     CHECK(settings.taa.sharpening == doctest::Approx(0.0f));
     CHECK(settings.taa.jitterScale == doctest::Approx(1.0f));
+    CHECK(settings.taa.upscaleInjection == TaaUpsampleInjection::BeforePost);
+}
+
+TEST_CASE("post-process TAAU injection names and parsing mirror HDRP schedules") {
+    CHECK(taaUpsampleInjectionCount() == 3u);
+    CHECK(std::string(taaUpsampleInjectionName(TaaUpsampleInjection::BeforePost)) == "BeforePost");
+    CHECK(std::string(taaUpsampleInjectionName(TaaUpsampleInjection::AfterDepthOfField)) ==
+          "AfterDepthOfField");
+    CHECK(std::string(taaUpsampleInjectionName(TaaUpsampleInjection::AfterPost)) == "AfterPost");
+
+    TaaUpsampleInjection injection = TaaUpsampleInjection::AfterPost;
+    CHECK(parseTaaUpsampleInjection("before-post", injection));
+    CHECK(injection == TaaUpsampleInjection::BeforePost);
+    CHECK(parseTaaUpsampleInjection("after-dof", injection));
+    CHECK(injection == TaaUpsampleInjection::AfterDepthOfField);
+    CHECK(parseTaaUpsampleInjection("afterPost", injection));
+    CHECK(injection == TaaUpsampleInjection::AfterPost);
+    CHECK_FALSE(parseTaaUpsampleInjection("after-depth", injection));
+}
+
+TEST_CASE("post-process profile rejects unknown TAAU injection") {
+    PostProcessProfile profile;
+    std::string error;
+    CHECK_FALSE(parsePostProcessProfile(R"({"taa":{"injection":"after-depth"}})", profile, error));
+    CHECK_FALSE(error.empty());
 }
 
 TEST_CASE("post-process TAA history uses minmax clamp and rejection weights") {
@@ -445,8 +473,8 @@ TEST_CASE("post-process profile parses grouped settings") {
     std::string error;
     REQUIRE(parsePostProcessProfile(
         R"({"name":"quality","exposure":{"mode":"auto","fixedEv100":-2.0,"metering":"average"},)"
-        R"("tonemapping":"neutral","taa":{"enabled":true,"quality":4,"motionVectorRejection":0.2,)"
-        R"("sharpening":0.4,"jitterScale":0.5},)"
+        R"("tonemapping":"neutral","taa":{"enabled":true,"upscale":true,"injection":"afterDof","quality":4,)"
+        R"("motionVectorRejection":0.2,"velocityRejection":0.35,"sharpening":0.4,"jitterScale":0.5},)"
         R"("bloom":{"enabled":true,"threshold":0.8,"intensity":0.5,"tint":[1.0,0.9,0.8]},)"
         R"("colorGrading":{"enabled":true,"saturation":12.0},)"
         R"("fxaa":{"enabled":true}})",
@@ -458,9 +486,12 @@ TEST_CASE("post-process profile parses grouped settings") {
     CHECK(profile.settings.fixedEv100 == doctest::Approx(-2.0f));
     CHECK(profile.settings.tonemapping == TonemappingMode::Neutral);
     CHECK(profile.settings.taa.enabled);
+    CHECK(profile.settings.taa.upscale);
+    CHECK(profile.settings.taa.upscaleInjection == TaaUpsampleInjection::AfterDepthOfField);
     CHECK_FALSE(profile.settings.fxaa.enabled);
     CHECK(profile.settings.taa.quality == 4);
     CHECK(profile.settings.taa.motionVectorRejection == doctest::Approx(0.2f));
+    CHECK(profile.settings.taa.velocityRejection == doctest::Approx(0.35f));
     CHECK(profile.settings.taa.sharpening == doctest::Approx(0.4f));
     CHECK(profile.settings.bloom.enabled);
     CHECK(profile.settings.bloom.tint.y == doctest::Approx(0.9f));

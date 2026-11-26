@@ -22,6 +22,7 @@ namespace {
 
 constexpr std::uint32_t kThreadsPerGroup = 64u;
 constexpr std::uint32_t kMaxParticleCapacity = 1u << 20;
+constexpr std::uint32_t kParticlesPerDrawInstance = 2048u;
 constexpr std::uint32_t kSortChunkSize = 4096u;
 constexpr std::uint32_t kSortThreads = 1024u;
 constexpr std::uint32_t kSortElementsPerThread = 4u;
@@ -1283,6 +1284,111 @@ ShaderSource makeDeadListSource(const CompiledSystem& system) {
     return source;
 }
 
+ShaderSource makeBoundsInitSource(const CompiledSystem& system) {
+    ShaderSource source;
+    source.stage = ShaderStage::Compute;
+    source.name = "bounds_init";
+    source.bindings = {
+        {BindingKind::Buffer, 0, Access::ReadWrite, static_cast<std::uint32_t>(BufferKind::Bounds)},
+    };
+    source.source = "#include \"bgfx_compute.sh\"\n\n";
+    source.source += "BUFFER_RW(s_vfxBounds, uint, 0);\n\n";
+    source.source += "NUM_THREADS(1, 1, 1)\n\n";
+    source.source += "void main()\n{\n";
+    source.source += "    s_vfxBounds[0] = 0xffffffffu;\n";
+    source.source += "    s_vfxBounds[1] = 0xffffffffu;\n";
+    source.source += "    s_vfxBounds[2] = 0xffffffffu;\n";
+    source.source += "    s_vfxBounds[3] = 0u;\n";
+    source.source += "    s_vfxBounds[4] = 0u;\n";
+    source.source += "    s_vfxBounds[5] = 0u;\n";
+    source.source += "}\n";
+    (void)system;
+    return source;
+}
+
+ShaderSource makeBoundsSource(const CompiledSystem& system) {
+    ShaderSource source;
+    source.stage = ShaderStage::Compute;
+    source.name = "bounds";
+    source.bindings = {
+        {BindingKind::Buffer, 0, Access::Read, static_cast<std::uint32_t>(BufferKind::Attributes)},
+        {BindingKind::Buffer, 1, Access::ReadWrite, static_cast<std::uint32_t>(BufferKind::Bounds)},
+    };
+    const AttributeLayoutEntry* position = system.layout.find("position");
+    const AttributeLayoutEntry* size = system.layout.find("size");
+    const AttributeLayoutEntry* scale = system.layout.find("scale");
+    const AttributeLayoutEntry* angle = system.layout.find("angle");
+    const AttributeLayoutEntry* alive = system.layout.find("alive");
+    const std::uint32_t positionOffset = position != nullptr ? position->offsetWords : 0u;
+    const std::uint32_t sizeOffset = size != nullptr ? size->offsetWords : 0u;
+    const std::uint32_t scaleOffset = scale != nullptr ? scale->offsetWords : 0u;
+    const std::uint32_t angleOffset = angle != nullptr ? angle->offsetWords : 0u;
+    const std::uint32_t aliveOffset = alive != nullptr ? alive->offsetWords : 0u;
+    source.source = "#include \"bgfx_compute.sh\"\n\n";
+    source.source += "BUFFER_RAW_RO(s_vfxAttributes, 0);\n";
+    source.source += "BUFFER_RW(s_vfxBounds, uint, 1);\n\n";
+    source.source += "uniform vec4 u_vfxBoundsParams;\n";
+    source.source += "uniform vec4 u_vfxBoundsRight;\n";
+    source.source += "uniform vec4 u_vfxBoundsUp;\n\n";
+    source.source += "uint vfxFloatFlip(uint value)\n{\n";
+    source.source += "    const uint mask = uint(-int(value >> 31)) | 0x80000000u;\n";
+    source.source += "    return value ^ mask;\n";
+    source.source += "}\n\n";
+    source.source += "NUM_THREADS(64, 1, 1)\n\n";
+    source.source += "void main()\n{\n";
+    source.source += "    const uint index = uint(gl_GlobalInvocationID.x);\n";
+    source.source += "    if (index >= " + std::to_string(system.layout.capacity) + "u)\n    {\n        return;\n    }\n";
+    source.source += "    const uint base = index * " + std::to_string(system.layout.strideWords) + "u;\n";
+    if (alive != nullptr) {
+        source.source += "    if (rawLoadUint(s_vfxAttributes, base + " + std::to_string(aliveOffset) +
+                          "u) == 0u)\n    {\n        return;\n    }\n";
+    }
+    source.source += "    const vec3 position = vec3(rawLoadFloat(s_vfxAttributes, base + " +
+                      std::to_string(positionOffset) + "u),\n";
+    source.source += "        rawLoadFloat(s_vfxAttributes, base + " + std::to_string(positionOffset + 1u) +
+                      "u),\n";
+    source.source += "        rawLoadFloat(s_vfxAttributes, base + " + std::to_string(positionOffset + 2u) +
+                      "u));\n";
+    source.source += "    const float size = rawLoadFloat(s_vfxAttributes, base + " +
+                      std::to_string(sizeOffset) + "u);\n";
+    source.source += "    const vec3 scale = vec3(rawLoadFloat(s_vfxAttributes, base + " +
+                      std::to_string(scaleOffset) + "u),\n";
+    source.source += "        rawLoadFloat(s_vfxAttributes, base + " + std::to_string(scaleOffset + 1u) +
+                      "u),\n";
+    source.source += "        rawLoadFloat(s_vfxAttributes, base + " + std::to_string(scaleOffset + 2u) +
+                      "u));\n";
+    if (angle != nullptr) {
+        source.source += "    const float angle = rawLoadFloat(s_vfxAttributes, base + " +
+                          std::to_string(angleOffset) + "u);\n";
+    } else {
+        source.source += "    const float angle = 0.0;\n";
+    }
+    source.source += "    const float radius = 0.5 * abs(size) * length(scale.xy);\n";
+    source.source += "    if (!(radius >= 0.0))\n    {\n        return;\n    }\n";
+    source.source += "    vec3 extents = vec3(radius, radius, radius);\n";
+    source.source += "    if (u_vfxBoundsParams.x > 0.5)\n    {\n";
+    source.source += "        const float cosine = cos(angle);\n";
+    source.source += "        const float sine = sin(angle);\n";
+    source.source += "        const vec3 billboardRight = u_vfxBoundsRight.xyz * cosine +\n";
+    source.source += "            u_vfxBoundsUp.xyz * sine;\n";
+    source.source += "        const vec3 billboardUp = -u_vfxBoundsRight.xyz * sine +\n";
+    source.source += "            u_vfxBoundsUp.xyz * cosine;\n";
+    source.source += "        const float halfSize = 0.5 * abs(size);\n";
+    source.source += "        extents = halfSize * (abs(billboardRight) * abs(scale.x) +\n";
+    source.source += "            abs(billboardUp) * abs(scale.y));\n";
+    source.source += "    }\n";
+    source.source += "    const vec3 boundsMin = position - extents;\n";
+    source.source += "    const vec3 boundsMax = position + extents;\n";
+    source.source += "    atomicMin(s_vfxBounds[0], vfxFloatFlip(asuint(boundsMin.x)));\n";
+    source.source += "    atomicMin(s_vfxBounds[1], vfxFloatFlip(asuint(boundsMin.y)));\n";
+    source.source += "    atomicMin(s_vfxBounds[2], vfxFloatFlip(asuint(boundsMin.z)));\n";
+    source.source += "    atomicMax(s_vfxBounds[3], vfxFloatFlip(asuint(boundsMax.x)));\n";
+    source.source += "    atomicMax(s_vfxBounds[4], vfxFloatFlip(asuint(boundsMax.y)));\n";
+    source.source += "    atomicMax(s_vfxBounds[5], vfxFloatFlip(asuint(boundsMax.z)));\n";
+    source.source += "}\n";
+    return source;
+}
+
 std::string eventPayloadExpression(ExprType type, const std::string& value) {
     switch (type) {
     case ExprType::Float:
@@ -1513,6 +1619,7 @@ ShaderSource makeInitSource(const CompiledSystem& system, const Graph& graph, co
             return source;
         }
     }
+    code += "    a_oldPosition = a_position;\n";
     code += makeAttributeStores(system);
     code += "}\n";
     source.source = std::move(code);
@@ -1591,6 +1698,7 @@ ShaderSource makeEventInitSource(const CompiledSystem& system, const Graph& grap
         code += makeEventPayloadLoad(valueName, base);
         code += eventPayloadAssignment(*entry, static_cast<std::uint32_t>(i));
     }
+    code += "    a_oldPosition = a_position;\n";
     code += makeAttributeStores(system);
     code += "}\n";
     source.source = std::move(code);
@@ -1626,6 +1734,7 @@ ShaderSource makeUpdateSource(const CompiledSystem& system, const Graph& graph, 
     code += "    attributes.Init(particleIndex);\n";
     code += makeParameterLocals(system, false);
     code += "    if (!a_alive)\n    {\n        return;\n    }\n";
+    code += "    a_oldPosition = a_position;\n";
     code += "    const bool vfxWasAlive = a_alive;\n";
 
     BlockCompiler compiler(graph, system, systemPath, eventLink, code);
@@ -1706,7 +1815,34 @@ ShaderSource makeUpdateSource(const CompiledSystem& system, const Graph& graph, 
     return source;
 }
 
+ShaderSource makeSortResetSource(const CompiledSystem& system) {
+    ShaderSource source;
+    source.stage = ShaderStage::Compute;
+    source.name = "sort_reset";
+    source.bindings = {
+        {BindingKind::Buffer, 0, Access::ReadWrite,
+         static_cast<std::uint32_t>(BufferKind::RenderCount)},
+    };
+    source.source = R"(#include "bgfx_compute.sh"
+
+BUFFER_RW(s_vfxRenderCount, uint, 0);
+
+NUM_THREADS(1, 1, 1)
+
+void main()
+{
+    if (uint(gl_GlobalInvocationID.x) == 0u)
+    {
+        s_vfxRenderCount[0] = 0u;
+    }
+}
+)";
+    (void)system;
+    return source;
+}
+
 ShaderSource makeOutputUpdateSource(const CompiledSystem& system, const Graph& graph,
+                                    SortMode sortMode, bool useSortUniforms,
                                     const AttributeLayoutEntry* customSortKey) {
     ShaderSource source;
     source.stage = ShaderStage::Compute;
@@ -1717,11 +1853,20 @@ ShaderSource makeOutputUpdateSource(const CompiledSystem& system, const Graph& g
         {BindingKind::Buffer, 2, Access::ReadWrite, static_cast<std::uint32_t>(BufferKind::Indirection)},
         {BindingKind::Buffer, 3, Access::ReadWrite, static_cast<std::uint32_t>(BufferKind::RenderCount)},
     };
-    const SortMode sortMode = system.desc->sort.mode;
+    const std::string worldUniform = useSortUniforms ? "u_vfxSortWorld" : "u_vfx_world";
+    const std::string cameraPosUniform =
+        useSortUniforms ? "u_vfxSortCameraPos" : "u_global_cameraPos";
+    const std::string invViewUniform = useSortUniforms ? "u_vfxSortInvView" : "u_global_invView";
     std::string code = makeComputePreamble(system, graph, false, 0);
-    if (sortMode == SortMode::Distance) {
-        code += "uniform mat4 u_vfx_world;\n";
-        code += "uniform vec4 u_global_cameraPos;\n\n";
+    if (sortMode == SortMode::Distance || sortMode == SortMode::CameraDepth) {
+        code += "uniform mat4 " + worldUniform + ";\n";
+        code += "uniform vec4 " + cameraPosUniform + ";\n";
+    }
+    if (sortMode == SortMode::CameraDepth) {
+        code += "uniform mat4 " + invViewUniform + ";\n";
+    }
+    if (sortMode == SortMode::Distance || sortMode == SortMode::CameraDepth) {
+        code += "\n";
     }
     code += "BUFFER_RAW_RW(s_vfxRenderKVP, 1);\n";
     code += "BUFFER_RAW_RW(s_vfxIndirection, 2);\n";
@@ -1736,9 +1881,19 @@ ShaderSource makeOutputUpdateSource(const CompiledSystem& system, const Graph& g
     code += "    float sortKey = 0.0;\n";
     if (sortMode == SortMode::Distance) {
         code += "    const vec3 localPosition = attributes.Load_position();\n";
-        code += "    const vec3 worldPosition = mul(u_vfx_world, vec4(localPosition, 1.0)).xyz;\n";
-        code += "    const vec3 cameraToPosition = worldPosition - u_global_cameraPos.xyz;\n";
+        code += "    const vec3 worldPosition = mul(" + worldUniform +
+                ", vec4(localPosition, 1.0)).xyz;\n";
+        code += "    const vec3 cameraToPosition = worldPosition - " + cameraPosUniform + ".xyz;\n";
         code += "    sortKey = dot(cameraToPosition, cameraToPosition);\n";
+    } else if (sortMode == SortMode::CameraDepth) {
+        code += "    const vec3 localPosition = attributes.Load_position();\n";
+        code += "    const vec3 worldPosition = mul(" + worldUniform +
+                ", vec4(localPosition, 1.0)).xyz;\n";
+        code += "    const vec3 cameraToPosition = worldPosition - " + cameraPosUniform + ".xyz;\n";
+        code += "    const vec3 cameraForward = -" + invViewUniform + "[2].xyz;\n";
+        code += "    sortKey = dot(cameraToPosition, cameraForward);\n";
+    } else if (sortMode == SortMode::YoungestInFront) {
+        code += "    sortKey = attributes.Load_age();\n";
     } else if (sortMode == SortMode::Custom && customSortKey != nullptr) {
         code += "    sortKey = float(attributes.Load_" + customSortKey->attribute.name + "());\n";
     }
@@ -1962,38 +2117,36 @@ ShaderSource makeFillIndirectSource(const CompiledSystem& system) {
         {BindingKind::Buffer, 1, Access::Read, static_cast<std::uint32_t>(BufferKind::RenderCount)},
         {BindingKind::Buffer, 2, Access::ReadWrite, static_cast<std::uint32_t>(BufferKind::RenderKVP)},
     };
-    source.source = R"(#include "bgfx_compute.sh"
-
-BUFFER_RAW_WO(s_vfxIndirectArgs, 0);
-BUFFER_RO(s_vfxRenderCount, uint, 1);
-BUFFER_RAW_RW(s_vfxRenderKVP, 2);
-
-NUM_THREADS(1, 1, 1)
-
-void main()
-{
-    if (uint(gl_GlobalInvocationID.x) != 0u)
-    {
-        return;
-    }
-    const uint count = s_vfxRenderCount[0];
-    rawStoreUint(s_vfxRenderKVP, 0u, 0u);
-    rawStoreUint(s_vfxRenderKVP, 1u, count);
-    rawStoreUint(s_vfxIndirectArgs, 0u, count * 6u);
-    rawStoreUint(s_vfxIndirectArgs, 1u, 1u);
-    rawStoreUint(s_vfxIndirectArgs, 2u, 0u);
-    rawStoreUint(s_vfxIndirectArgs, 3u, 0u);
-    rawStoreUint(s_vfxIndirectArgs, 4u, 0u);
-    rawStoreUint(s_vfxIndirectArgs, 5u, 0u);
-    rawStoreUint(s_vfxIndirectArgs, 6u, 0u);
-    rawStoreUint(s_vfxIndirectArgs, 7u, 0u);
-}
-)";
+    source.source = "#include \"bgfx_compute.sh\"\n\n";
+    source.source += "BUFFER_RAW_WO(s_vfxIndirectArgs, 0);\n";
+    source.source += "BUFFER_RO(s_vfxRenderCount, uint, 1);\n";
+    source.source += "BUFFER_RAW_RW(s_vfxRenderKVP, 2);\n\n";
+    source.source += "uniform vec4 u_vfxInstanceParams;\n\n";
+    source.source += "NUM_THREADS(1, 1, 1)\n\n";
+    source.source += "void main()\n{\n";
+    source.source += "    if (uint(gl_GlobalInvocationID.x) != 0u)\n    {\n        return;\n    }\n";
+    source.source += "    const uint particlesPerInstance = " +
+                    std::to_string(kParticlesPerDrawInstance) + "u;\n";
+    source.source += "    const uint count = s_vfxRenderCount[0];\n";
+    source.source += "    const uint particleChunks = (count + particlesPerInstance - 1u) / particlesPerInstance;\n";
+    source.source += "    const uint effectInstances = max(uint(u_vfxInstanceParams.x + 0.5), 1u);\n";
+    source.source += "    rawStoreUint(s_vfxRenderKVP, 0u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxRenderKVP, 1u, count);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 0u, min(count, particlesPerInstance) * 6u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 1u, particleChunks * effectInstances);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 2u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 3u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 4u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 5u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 6u, 0u);\n";
+    source.source += "    rawStoreUint(s_vfxIndirectArgs, 7u, 0u);\n";
+    source.source += "}\n";
     (void)system;
     return source;
 }
 
-ShaderSource makeOutputVertexSource(const CompiledSystem& system, const std::string& name) {
+ShaderSource makeOutputVertexSource(const CompiledSystem& system, const std::string& name,
+                                    bool reverseSort) {
     ShaderSource source;
     source.stage = ShaderStage::Vertex;
     source.name = name + ".vs";
@@ -2005,20 +2158,52 @@ vec3 v_normal   : NORMAL    = vec3(0.0, 0.0, 1.0);
     source.bindings = {
         {BindingKind::Buffer, 12, Access::Read, static_cast<std::uint32_t>(BufferKind::Attributes)},
         {BindingKind::Buffer, 13, Access::Read, static_cast<std::uint32_t>(BufferKind::Indirection)},
+        {BindingKind::Buffer, 14, Access::Read, static_cast<std::uint32_t>(BufferKind::RenderCount)},
     };
     std::string code;
     code += "$output v_uv, v_color, v_worldPos, v_normal\n\n";
     code += "#include \"bgfx_shader.sh\"\n\n";
     code += makeAttributePreamble(system, false, 12);
     code += "\nBUFFER_RAW_RO(s_vfxIndirection, 13);\n";
+    code += "BUFFER_RAW_RO(s_vfxRenderCount, 14);\n";
+    code += "BUFFER_RAW_RO(s_vfxInstances, 15);\n";
     code += "uniform mat4 u_global_invView;\n";
     code += "uniform mat4 u_global_viewProj;\n";
     code += "uniform vec4 u_global_cameraPos;\n";
-    code += "uniform mat4 u_vfx_world;\n\n";
+    code += "uniform mat4 u_vfx_world;\n";
+    code += "uniform vec4 u_vfxInstanceParams;\n\n";
     code += "void main()\n{\n";
     code += "    const uint vertexID = uint(gl_VertexID);\n";
+    code += "    const uint renderCount = rawLoadUint(s_vfxRenderCount, 0u);\n";
+    code += "    const uint particleChunks = max((renderCount + " +
+            std::to_string(kParticlesPerDrawInstance) + "u - 1u) / " +
+            std::to_string(kParticlesPerDrawInstance) + "u, 1u);\n";
+    code += "    const uint instanceIndex = uint(gl_InstanceID) / particleChunks;\n";
+    code += "    const uint particleChunk = uint(gl_InstanceID) - instanceIndex * particleChunks;\n";
+    code += "    const uint linearParticle = vertexID / 6u + particleChunk * " +
+            std::to_string(kParticlesPerDrawInstance) + "u;\n";
+    code += "    uint effectInstance = instanceIndex;\n";
+    code += "    bool instanceActive = true;\n";
+    code += "    if (u_vfxInstanceParams.w > 0.5)\n    {\n";
+    code += "        instanceActive = instanceIndex < uint(u_vfxInstanceParams.y + 0.5);\n";
+    code += "        if (instanceActive)\n        {\n";
+    code += "            effectInstance = rawLoadUint(s_vfxInstances,\n";
+    code += "                uint(u_vfxInstanceParams.z + 0.5) + instanceIndex);\n";
+    code += "        }\n";
+    code += "    }\n";
+    code += "    gl_Position = vec4(0.0, 0.0, 0.0, 0.0);\n";
+    code += "    v_uv = vec2(0.0, 0.0);\n";
+    code += "    v_color = vec4(0.0, 0.0, 0.0, 0.0);\n";
+    code += "    v_worldPos = vec3(0.0, 0.0, 0.0);\n";
+    code += "    v_normal = vec3(0.0, 0.0, 1.0);\n";
+    code += "    if (linearParticle < renderCount && instanceActive)\n    {\n";
     code += "    const uint quadVertex = vertexID % 6u;\n";
-    code += "    const uint drawParticle = vertexID / 6u;\n";
+    if (reverseSort) {
+        code += "    uint drawParticle = linearParticle;\n";
+        code += "    drawParticle = renderCount - 1u - drawParticle;\n";
+    } else {
+        code += "    const uint drawParticle = linearParticle;\n";
+    }
     code += "    const uint particle = rawLoadUint(s_vfxIndirection, drawParticle);\n";
     code += "    VfxAttributes attributes;\n";
     code += "    attributes.Init(particle);\n";
@@ -2043,12 +2228,30 @@ vec3 v_normal   : NORMAL    = vec3(0.0, 0.0, 1.0);
     code += "    const vec2 offset = corner - 0.5;\n";
     code += "    const vec3 localPosition = position + (billboardRight * (offset.x * scale.x) +\n";
     code += "        billboardUp * (offset.y * scale.y)) * size;\n";
-    code += "    const vec3 worldPosition = mul(u_vfx_world, vec4(localPosition, 1.0)).xyz;\n";
+    code += "    vec3 worldPosition = mul(u_vfx_world, vec4(localPosition, 1.0)).xyz;\n";
+    code += "    if (u_vfxInstanceParams.x > 1.5 && instanceActive)\n    {\n";
+    code += "        const uint instanceBase = effectInstance * 32u;\n";
+    code += "        const vec3 instanceX = vec3(rawLoadFloat(s_vfxInstances, instanceBase + 0u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 1u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 2u));\n";
+    code += "        const vec3 instanceY = vec3(rawLoadFloat(s_vfxInstances, instanceBase + 4u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 5u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 6u));\n";
+    code += "        const vec3 instanceZ = vec3(rawLoadFloat(s_vfxInstances, instanceBase + 8u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 9u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 10u));\n";
+    code += "        const vec3 instanceTranslation = vec3(rawLoadFloat(s_vfxInstances, instanceBase + 12u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 13u),\n";
+    code += "            rawLoadFloat(s_vfxInstances, instanceBase + 14u));\n";
+    code += "        worldPosition = instanceX * localPosition.x + instanceY * localPosition.y +\n";
+    code += "            instanceZ * localPosition.z + instanceTranslation;\n";
+    code += "    }\n";
     code += "    gl_Position = mul(u_global_viewProj, vec4(worldPosition, 1.0));\n";
     code += "    v_uv = corner;\n";
     code += "    v_color = color;\n";
     code += "    v_worldPos = worldPosition;\n";
     code += "    v_normal = normalize(u_global_cameraPos.xyz - worldPosition);\n";
+    code += "    }\n";
     code += "}\n";
     source.source = std::move(code);
     return source;
@@ -2234,17 +2437,23 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
         compiled.layout = buildAttributeLayout(compiled.attributeSet, system.capacity);
         analyzeAttributeUsage(system, compiled.usage);
 
-        if (system.sort.mode == SortMode::Custom) {
-            const AttributeLayoutEntry* customSortKey = compiled.layout.find("sortKey");
+        const AttributeLayoutEntry* customSortKey = compiled.layout.find("sortKey");
+        const auto validateCustomSort = [&](SortMode mode, const std::string& path) {
+            if (mode != SortMode::Custom) {
+                return true;
+            }
             const AttributeType type = customSortKey != nullptr ? customSortKey->attribute.type
                                                                  : AttributeType::Float;
             if (customSortKey == nullptr ||
                 (type != AttributeType::Float && type != AttributeType::UInt &&
                  type != AttributeType::Int && type != AttributeType::Bool)) {
-                asset.error = systemPath +
-                              ".sort.mode: custom sorting requires a scalar 'sortKey' attribute";
-                return asset;
+                asset.error = path + ": custom sorting requires a scalar 'sortKey' attribute";
+                return false;
             }
+            return true;
+        };
+        if (!validateCustomSort(system.sort.mode, systemPath + ".sort.mode")) {
+            return asset;
         }
         for (std::size_t outputIndex = 0; outputIndex < system.outputs.size(); ++outputIndex) {
             const OutputDesc& output = system.outputs[outputIndex];
@@ -2256,8 +2465,15 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
                                   std::to_string(systemIndex) + "].sort";
                     return asset;
                 }
-            } else if (!output.sort.has_value() || output.sort->mode != system.sort.mode) {
-                asset.error = outputPath + ".sort: must match systems[" +
+            } else if (!output.sort.has_value() || output.sort->mode == SortMode::None) {
+                asset.error = outputPath + ".sort: must select a criterion when systems[" +
+                              std::to_string(systemIndex) + "].sort is enabled";
+                return asset;
+            } else if (!validateCustomSort(output.sort->mode, outputPath + ".sort")) {
+                return asset;
+            }
+            if (output.sortOrder.has_value() && system.sort.mode == SortMode::None) {
+                asset.error = outputPath + ".sortOrder: requires systems[" +
                               std::to_string(systemIndex) + "].sort";
                 return asset;
             }
@@ -2506,8 +2722,7 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
         const std::string systemPath = "systems[" + std::to_string(systemIndex) + "]";
         const std::uint32_t capacity = compiled.layout.capacity;
         const std::uint32_t groups = groupCount(capacity);
-        const AttributeLayoutEntry* customSortKey =
-            system.sort.mode == SortMode::Custom ? compiled.layout.find("sortKey") : nullptr;
+        const AttributeLayoutEntry* customSortKey = compiled.layout.find("sortKey");
 
         KernelProgram spawner;
         spawner.system = &system;
@@ -2559,56 +2774,113 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
         }
         compiled.kernels.push_back(std::move(update));
 
-        KernelProgram outputUpdate;
-        outputUpdate.system = &system;
-        outputUpdate.task = KernelTask::OutputUpdate;
-        outputUpdate.program = nextProgram++;
-        outputUpdate.groups = {groups, 1, 1};
-        outputUpdate.shader = makeOutputUpdateSource(compiled, source, customSortKey);
-        compiled.kernels.push_back(std::move(outputUpdate));
+        if (system.bounds.mode == BoundsMode::Automatic) {
+            KernelProgram boundsInit;
+            boundsInit.system = &system;
+            boundsInit.task = KernelTask::BoundsInit;
+            boundsInit.program = nextProgram++;
+            boundsInit.groups = {1, 1, 1};
+            boundsInit.shader = makeBoundsInitSource(compiled);
+            compiled.kernels.push_back(std::move(boundsInit));
 
+            KernelProgram bounds;
+            bounds.system = &system;
+            bounds.task = KernelTask::Bounds;
+            bounds.program = nextProgram++;
+            bounds.groups = {groups, 1, 1};
+            bounds.shader = makeBoundsSource(compiled);
+            compiled.kernels.push_back(std::move(bounds));
+        }
+
+        std::vector<SortMode> extraSortModes;
         if (system.sort.mode != SortMode::None) {
+            for (const OutputDesc& output : system.outputs) {
+                if (!output.sort.has_value() || output.sort->mode == SortMode::None ||
+                    output.sort->mode == system.sort.mode) {
+                    continue;
+                }
+                if (std::find(extraSortModes.begin(), extraSortModes.end(), output.sort->mode) ==
+                    extraSortModes.end()) {
+                    extraSortModes.push_back(output.sort->mode);
+                }
+            }
+        }
+        const bool useSortUniforms = !extraSortModes.empty();
+
+        const auto appendSortPipeline = [&](SortMode mode, bool tagged) {
+            const SortMode kernelMode = tagged ? mode : SortMode::None;
+            if (tagged) {
+                KernelProgram reset;
+                reset.system = &system;
+                reset.task = KernelTask::SortReset;
+                reset.program = nextProgram++;
+                reset.groups = {1, 1, 1};
+                reset.sortMode = kernelMode;
+                reset.shader = makeSortResetSource(compiled);
+                compiled.kernels.push_back(std::move(reset));
+            }
+
+            KernelProgram outputUpdate;
+            outputUpdate.system = &system;
+            outputUpdate.task = KernelTask::OutputUpdate;
+            outputUpdate.program = nextProgram++;
+            outputUpdate.groups = {groups, 1, 1};
+            outputUpdate.sortMode = kernelMode;
+            outputUpdate.shader = makeOutputUpdateSource(
+                compiled, source, mode, useSortUniforms,
+                mode == SortMode::Custom ? customSortKey : nullptr);
+            compiled.kernels.push_back(std::move(outputUpdate));
+
+            if (mode == SortMode::None) {
+                return;
+            }
             if (capacity <= kSortChunkSize) {
                 KernelProgram bitonic;
                 bitonic.system = &system;
                 bitonic.task = KernelTask::SortBitonic;
                 bitonic.program = nextProgram++;
                 bitonic.groups = {1, 1, 1};
+                bitonic.sortMode = kernelMode;
                 bitonic.shader = makeSortBitonicSource(compiled, true, kSortChunkSize, kSortThreads);
                 compiled.kernels.push_back(std::move(bitonic));
-            } else {
-                KernelProgram prepass;
-                prepass.system = &system;
-                prepass.task = KernelTask::SortPrepass;
-                prepass.program = nextProgram++;
-                prepass.groups = {1, 1, 1};
-                prepass.shader = makeSortBitonicSource(compiled, false, kSortChunkSize, kSortThreads);
-                compiled.kernels.push_back(std::move(prepass));
-
-                BufferKind sourceKind = BufferKind::SortScratch;
-                BufferKind destinationKind = BufferKind::RenderKVP;
-                for (std::uint32_t subArraySize = kSortChunkSize; subArraySize < capacity;
-                     subArraySize <<= 1u) {
-                    const bool finalPass = subArraySize * 2u >= capacity;
-                    KernelProgram merge;
-                    merge.system = &system;
-                    merge.task = KernelTask::SortMerge;
-                    merge.program = nextProgram++;
-                    merge.groups = {groups, 1, 1};
-                    merge.shader = makeSortMergeSource(compiled, subArraySize, sourceKind,
-                                                       finalPass ? BufferKind::Indirection
-                                                                 : destinationKind,
-                                                       finalPass);
-                    compiled.kernels.push_back(std::move(merge));
-                    if (finalPass) {
-                        break;
-                    }
-                    sourceKind = destinationKind;
-                    destinationKind = destinationKind == BufferKind::RenderKVP ? BufferKind::SortScratch
-                                                                               : BufferKind::RenderKVP;
-                }
+                return;
             }
-        }
+
+            KernelProgram prepass;
+            prepass.system = &system;
+            prepass.task = KernelTask::SortPrepass;
+            prepass.program = nextProgram++;
+            prepass.groups = {1, 1, 1};
+            prepass.sortMode = kernelMode;
+            prepass.shader = makeSortBitonicSource(compiled, false, kSortChunkSize, kSortThreads);
+            compiled.kernels.push_back(std::move(prepass));
+
+            BufferKind sourceKind = BufferKind::SortScratch;
+            BufferKind destinationKind = BufferKind::RenderKVP;
+            for (std::uint32_t subArraySize = kSortChunkSize; subArraySize < capacity;
+                 subArraySize <<= 1u) {
+                const bool finalPass = subArraySize * 2u >= capacity;
+                KernelProgram merge;
+                merge.system = &system;
+                merge.task = KernelTask::SortMerge;
+                merge.program = nextProgram++;
+                merge.groups = {groups, 1, 1};
+                merge.sortMode = kernelMode;
+                merge.shader = makeSortMergeSource(compiled, subArraySize, sourceKind,
+                                                   finalPass ? BufferKind::Indirection
+                                                             : destinationKind,
+                                                   finalPass);
+                compiled.kernels.push_back(std::move(merge));
+                if (finalPass) {
+                    break;
+                }
+                sourceKind = destinationKind;
+                destinationKind = destinationKind == BufferKind::RenderKVP ? BufferKind::SortScratch
+                                                                           : BufferKind::RenderKVP;
+            }
+        };
+
+        appendSortPipeline(system.sort.mode, false);
 
         KernelProgram fillIndirect;
         fillIndirect.system = &system;
@@ -2617,6 +2889,10 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
         fillIndirect.groups = {1, 1, 1};
         fillIndirect.shader = makeFillIndirectSource(compiled);
         compiled.kernels.push_back(std::move(fillIndirect));
+
+        for (const SortMode mode : extraSortModes) {
+            appendSortPipeline(mode, true);
+        }
 
         for (std::size_t outputIndex = 0; outputIndex < system.outputs.size(); ++outputIndex) {
             const OutputDesc& outputDesc = system.outputs[outputIndex];
@@ -2659,16 +2935,21 @@ CompiledAsset generatePrograms(std::unique_ptr<Graph> graph) {
             output.blend = outputDesc.blend;
             output.lit = outputDesc.lit;
             output.softParticles = outputDesc.softParticles;
+            output.castShadows = outputDesc.castShadows;
+            output.generateMotionVector = outputDesc.generateMotionVector;
+            output.sortPriority = outputDesc.sortPriority;
             output.softDistance = outputDesc.softDistance;
             output.metallic = outputDesc.metallic;
             output.roughness = outputDesc.roughness;
             output.metallicProperty = outputDesc.metallicProperty;
             output.roughnessProperty = outputDesc.roughnessProperty;
-            output.sortMode = system.sort.mode;
-            output.sortOrder = system.sort.order;
+            output.sortMode = outputDesc.sort.has_value() ? outputDesc.sort->mode : system.sort.mode;
+            output.sortOrder = outputDesc.sortOrder.value_or(system.sort.order);
             output.textureProperty = textureProperty;
             const std::string outputName = "output" + std::to_string(outputIndex);
-            output.vertex = makeOutputVertexSource(compiled, outputName);
+            const bool reverseSort = output.sortMode != SortMode::None &&
+                                     output.sortOrder != system.sort.order;
+            output.vertex = makeOutputVertexSource(compiled, outputName, reverseSort);
             output.fragment = makeOutputFragmentSource(outputName, outputDesc, textureProperty);
             compiled.outputs.push_back(std::move(output));
 

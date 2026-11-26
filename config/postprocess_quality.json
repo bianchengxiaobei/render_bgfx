@@ -12,8 +12,11 @@
   "tonemapping": "neutral",
   "taa": {
     "enabled": true,
+    "upscale": false,
+    "injection": "beforePost",
     "quality": 3,
     "motionVectorRejection": 0.1,
+    "velocityRejection": 0.0,
     "sharpening": 0.0,
     "jitterScale": 1.0
   },

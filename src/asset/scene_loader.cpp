@@ -60,6 +60,45 @@ bool applyMaterialOverride(Material& material, const nlohmann::json& override, s
         }
     }
 
+    const auto alphaMode = override.find("alphaMode");
+    if (alphaMode != override.end() && alphaMode->is_string()) {
+        const std::string value = lower(alphaMode->get<std::string>());
+        if (value == "opaque") {
+            material.alphaMode = AlphaMode::Opaque;
+        } else if (value == "mask" || value == "clip") {
+            material.alphaMode = AlphaMode::Mask;
+        } else if (value == "blend" || value == "transparent") {
+            material.alphaMode = AlphaMode::Blend;
+        } else {
+            if (error != nullptr) {
+                *error = "unknown material alphaMode '" + value + "'";
+            }
+            return false;
+        }
+    }
+
+    const auto doubleSided = override.find("doubleSided");
+    if (doubleSided != override.end()) {
+        if (!doubleSided->is_boolean()) {
+            if (error != nullptr) {
+                *error = "doubleSided must be a boolean";
+            }
+            return false;
+        }
+        material.doubleSided = doubleSided->get<bool>();
+    }
+
+    const auto transparentBackface = override.find("transparentBackface");
+    if (transparentBackface != override.end()) {
+        if (!transparentBackface->is_boolean()) {
+            if (error != nullptr) {
+                *error = "transparentBackface must be a boolean";
+            }
+            return false;
+        }
+        material.transparentBackface = transparentBackface->get<bool>();
+    }
+
     const auto renderQueue = override.find("renderQueue");
     if (renderQueue != override.end() && renderQueue->is_number_integer()) {
         material.renderQueue = renderQueue->get<int>();
@@ -515,10 +554,147 @@ bool applyLightLayer(render::RenderScene& scene, const nlohmann::json& object, s
     }
 
     uint32_t mask = target->lightLayerMask;
-    if (!readUint(object, "lightLayerMask", mask, error)) {
+    if (!readUint(object, "lightLayerMask", mask, error) ||
+        !readUint(object, "instanceId", target->instanceId, error) ||
+        !readBool(object, "castShadows", target->castShadows, error) ||
+        !readNumber(object, "indirectMultiplier", target->indirectMultiplier, error) ||
+        !readBool(object, "useColorTemperature", target->useColorTemperature, error) ||
+        !readNumber(object, "colorTemperature", target->colorTemperature, error) ||
+        !readNumber(object, "range", target->range, error) ||
+        !readNumber(object, "sourceRadius", target->sourceRadius, error) ||
+        !readNumber(object, "sourceLength", target->sourceLength, error) ||
+        !readNumber(object, "lightSourceAngle", target->lightSourceAngle, error) ||
+        !readNumber(object, "barnDoorAngle", target->barnDoorAngle, error) ||
+        !readNumber(object, "barnDoorLength", target->barnDoorLength, error) ||
+        !readNumber(object, "shadowTranslucency", target->shadowTranslucency, error) ||
+        !readBool(object, "enablePenumbra", target->enablePenumbra, error) ||
+        !readVec4(object, "penumbraTint", target->penumbraTint, error) ||
+        !readNumber(object, "penumbraLuma", target->penumbraLuma, error)) {
         return false;
     }
+    const auto shadowType = object.find("shadowType");
+    const auto shadows = object.find("shadows");
+    const auto shadowTypeValue = shadowType != object.end() ? shadowType : shadows;
+    if (shadowTypeValue != object.end()) {
+        if (!shadowTypeValue->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].shadowType must be a string";
+            }
+            return false;
+        }
+        const std::string value = lower(shadowTypeValue->get<std::string>());
+        if (value == "none") {
+            target->shadowType = render::LightShadowType::None;
+            target->castShadows = false;
+        } else if (value == "hard") {
+            target->shadowType = render::LightShadowType::Hard;
+            target->castShadows = true;
+        } else if (value == "soft") {
+            target->shadowType = render::LightShadowType::Soft;
+            target->castShadows = true;
+        } else {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].shadowType must be none, hard or soft";
+            }
+            return false;
+        }
+    }
+
+    const auto bakeMode = object.find("bakeMode");
+    const auto lightmapBakeType = object.find("lightmapBakeType");
+    const auto mode = bakeMode != object.end() ? bakeMode : lightmapBakeType;
+    if (mode != object.end()) {
+        if (!mode->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].bakeMode must be a string";
+            }
+            return false;
+        }
+        const std::string value = lower(mode->get<std::string>());
+        if (value == "baked") {
+            target->bakeMode = render::LightBakeMode::Baked;
+        } else if (value == "mixed") {
+            target->bakeMode = render::LightBakeMode::Mixed;
+        } else if (value == "realtime") {
+            target->bakeMode = render::LightBakeMode::Realtime;
+        } else {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].bakeMode must be baked, mixed or realtime";
+            }
+            return false;
+        }
+    }
+    const auto mixedMode = object.find("mixedMode");
+    if (mixedMode != object.end()) {
+        if (!mixedMode->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].mixedMode must be a string";
+            }
+            return false;
+        }
+        const std::string value = lower(mixedMode->get<std::string>());
+        if (value == "shadowmask" || value == "shadow-mask") {
+            target->mixedMode = render::LightMixedMode::ShadowMask;
+        } else if (value == "indirectonly" || value == "indirect-only") {
+            target->mixedMode = render::LightMixedMode::IndirectOnly;
+        } else {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].mixedMode must be shadowmask or indirectonly";
+            }
+            return false;
+        }
+    }
+    uint32_t lightingChannel = target->lightingChannel;
+    if (!readUint(object, "lightingChannel", lightingChannel, error)) {
+        return false;
+    }
+    if (lightingChannel > 3) {
+        if (error != nullptr) {
+            *error = "lights[" + std::to_string(index) +
+                     "].lightingChannel must be in 0..3";
+        }
+        return false;
+    }
+    target->lightingChannel = static_cast<uint8_t>(lightingChannel);
+
+    const auto falloff = object.find("falloff");
+    if (falloff != object.end()) {
+        if (!falloff->is_string()) {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) + "].falloff must be a string";
+            }
+            return false;
+        }
+        const std::string value = lower(falloff->get<std::string>());
+        if (value == "inverse-square" || value == "inverse_squared" || value == "inverse") {
+            target->falloffMode = render::LightFalloffMode::InverseSquared;
+        } else if (value == "bakery-physical" || value == "bakery_physical" || value == "physical") {
+            target->falloffMode = render::LightFalloffMode::BakeryPhysical;
+        } else if (value == "bakery-fake" || value == "bakery_fake" || value == "fake") {
+            target->falloffMode = render::LightFalloffMode::BakeryFake;
+        } else {
+            if (error != nullptr) {
+                *error = "lights[" + std::to_string(index) +
+                         "].falloff must be inverse-square, bakery-physical or bakery-fake";
+            }
+            return false;
+        }
+    }
     target->lightLayerMask = static_cast<uint16_t>(std::min<uint32_t>(mask, 0xffffu));
+    target->range = std::max(target->range, 0.0f);
+    target->colorTemperature = std::clamp(target->colorTemperature, 1000.0f, 20000.0f);
+    target->indirectMultiplier = std::max(target->indirectMultiplier, 0.0f);
+    target->sourceRadius = std::max(target->sourceRadius, 0.0f);
+    target->sourceLength = std::max(target->sourceLength, 0.0f);
+    target->lightSourceAngle = std::clamp(target->lightSourceAngle, 0.0f, 179.0f);
+    target->barnDoorLength = std::max(target->barnDoorLength, 0.0f);
+    target->shadowTranslucency = std::clamp(target->shadowTranslucency, 0.0f, 1.0f);
     return true;
 }
 
@@ -840,6 +1016,17 @@ bool applyObjectLayer(render::RenderScene& scene, const nlohmann::json& object, 
     if (!readBool(object, "staticShadowCaster", target->staticShadowCaster, error)) {
         return false;
     }
+    const auto contributeGI = object.find("contributeGI");
+    if (contributeGI != object.end()) {
+        if (!contributeGI->is_boolean()) {
+            if (error != nullptr) {
+                *error = "contributeGI must be a boolean";
+            }
+            return false;
+        }
+        target->contributeGI = contributeGI->get<bool>();
+        target->hasContributeGI = true;
+    }
     return true;
 }
 
@@ -997,6 +1184,106 @@ bool applyLightmap(render::RenderScene& scene, const nlohmann::json& lightmap,
         target->lightmapSize = Vec2(static_cast<float>(values[2]), static_cast<float>(values[3]));
     }
 
+    return true;
+}
+
+bool applySceneSky(render::RenderScene& scene, const nlohmann::json& sky, const std::filesystem::path& baseDirectory,
+                   std::string* error) {
+    const auto fail = [error](std::string message) {
+        if (error != nullptr) {
+            *error = std::move(message);
+        }
+        return false;
+    };
+
+    if (!sky.is_object()) {
+        return fail("sky must be an object");
+    }
+
+    render::SceneSky result;
+    if (!readUint(sky, "instanceId", result.instanceId, error)) {
+        return false;
+    }
+    const auto texture = sky.find("texture");
+    if (texture != sky.end()) {
+        if (!texture->is_string()) {
+            return fail("sky.texture must be a string");
+        }
+        if (!texture->get<std::string>().empty()) {
+            result.texture = baseDirectory / texture->get<std::string>();
+        }
+    }
+
+    std::string mode;
+    const auto modeJson = sky.find("mode");
+    if (modeJson != sky.end()) {
+        if (!modeJson->is_string()) {
+            return fail("sky.mode must be a string");
+        }
+        mode = lower(modeJson->get<std::string>());
+    } else if (!result.texture.empty()) {
+        mode = "skybox";
+    } else if (sky.find("skyColor") != sky.end() || sky.find("equatorColor") != sky.end() ||
+               sky.find("groundColor") != sky.end()) {
+        mode = "trilight";
+    } else {
+        mode = "flat";
+    }
+
+    if (!readNumber(sky, "intensity", result.intensity, error) ||
+        !readNumber(sky, "indirectMultiplier", result.indirectMultiplier, error) ||
+        !readNumber(sky, "indirectIntensity", result.indirectIntensity, error) ||
+        !readNumber(sky, "rotation", result.rotationDegrees, error) ||
+        !readNumber(sky, "shadowTranslucency", result.shadowTranslucency, error) ||
+        !readNumber(sky, "lerpExp", result.lerpExponent, error) ||
+        !readVec3(sky, "color", result.color, error) ||
+        !readVec3(sky, "ambientColor", result.ambientColor, error) ||
+        !readVec3(sky, "skyColor", result.skyColor, error) ||
+        !readVec3(sky, "equatorColor", result.equatorColor, error) ||
+        !readVec3(sky, "groundColor", result.groundColor, error) ||
+        !readVec3(sky, "adaptRotation", result.adaptRotationEulerDegrees, error)) {
+        return false;
+    }
+    if (!readBool(sky, "enabled", result.enabled, error)) {
+        return false;
+    }
+    if (!result.enabled) {
+        result.mode = render::SceneSkyMode::None;
+        scene.sky = std::move(result);
+        return true;
+    }
+
+    if (mode == "none") {
+        result.mode = render::SceneSkyMode::None;
+    } else if (mode == "skybox") {
+        if (result.texture.empty()) {
+            return fail("sky.texture is required for skybox mode");
+        }
+        result.mode = render::SceneSkyMode::Skybox;
+    } else if (mode == "trilight") {
+        result.mode = render::SceneSkyMode::Trilight;
+    } else if (mode == "flat") {
+        result.mode = render::SceneSkyMode::Flat;
+    } else {
+        return fail("sky.mode must be one of none, skybox, trilight, flat");
+    }
+
+    result.intensity = std::max(result.intensity, 0.0f);
+    result.indirectMultiplier = std::max(result.indirectMultiplier, 0.0f);
+    result.indirectIntensity = std::max(result.indirectIntensity, 0.0f);
+    result.shadowTranslucency = std::clamp(result.shadowTranslucency, 0.0f, 1.0f);
+    result.lerpExponent = std::max(result.lerpExponent, 0.0f);
+    result.color = Vec3(std::max(result.color.x, 0.0f), std::max(result.color.y, 0.0f),
+                        std::max(result.color.z, 0.0f));
+    result.ambientColor = Vec3(std::max(result.ambientColor.x, 0.0f), std::max(result.ambientColor.y, 0.0f),
+                               std::max(result.ambientColor.z, 0.0f));
+    result.skyColor = Vec3(std::max(result.skyColor.x, 0.0f), std::max(result.skyColor.y, 0.0f),
+                           std::max(result.skyColor.z, 0.0f));
+    result.equatorColor = Vec3(std::max(result.equatorColor.x, 0.0f), std::max(result.equatorColor.y, 0.0f),
+                               std::max(result.equatorColor.z, 0.0f));
+    result.groundColor = Vec3(std::max(result.groundColor.x, 0.0f), std::max(result.groundColor.y, 0.0f),
+                              std::max(result.groundColor.z, 0.0f));
+    scene.sky = std::move(result);
     return true;
 }
 
@@ -1377,6 +1664,29 @@ bool loadIesSamples(render::Light& light, const std::filesystem::path& path, std
     const float cutoffAngle =
         90.0f * static_cast<float>(lastVisible) / static_cast<float>(render::kLightIesSampleCount - 1);
     light.iesCut = std::cos(cutoffAngle * 3.14159265358979323846f / 180.0f);
+    const bool hadCookie = light.cookieType != render::LightCookieType::None &&
+                           light.cookieMode != render::LightCookieMode::None;
+    if (!hadCookie) {
+        light.cookieSamples.fill(1.0f);
+    }
+    const uint32_t cookieSize = render::kCookieLegacySize;
+    for (uint32_t y = 0; y < cookieSize; ++y) {
+        for (uint32_t x = 0; x < cookieSize; ++x) {
+            const Vec2 uv((static_cast<float>(x) + 0.5f) / static_cast<float>(cookieSize),
+                          (static_cast<float>(y) + 0.5f) / static_cast<float>(cookieSize));
+            const Vec2 centered(uv.x * 2.0f - 1.0f, uv.y * 2.0f - 1.0f);
+            const float radius = std::min(1.0f, std::sqrt(centered.x * centered.x +
+                                                           centered.y * centered.y));
+            const float scaled = radius * static_cast<float>(render::kLightIesSampleCount - 1);
+            const uint32_t lower = std::min(static_cast<uint32_t>(scaled),
+                                            render::kLightIesSampleCount - 2);
+            const uint32_t upper = lower + 1;
+            const float t = scaled - static_cast<float>(lower);
+            const float profileSample =
+                light.iesSamples[lower] * (1.0f - t) + light.iesSamples[upper] * t;
+            light.cookieSamples[y * cookieSize + x] *= profileSample;
+        }
+    }
     light.hasIes = true;
     return true;
 }
@@ -1500,6 +1810,203 @@ void applyLightCookie(render::RenderScene& scene, const nlohmann::json& object, 
         }
     }
 }
+bool applyGraphMaterialOverrides(Material& material, const nlohmann::json& override,
+                                  render::RenderScene& scene, const std::filesystem::path& baseDirectory,
+                                  std::string* error) {
+    const auto shader = override.find("shader");
+    if (shader != override.end() && !shader->is_null()) {
+        if (!shader->is_string()) {
+            if (error != nullptr) {
+                *error = "material shader must be a string path";
+            }
+            return false;
+        }
+        const std::string value = shader->get<std::string>();
+        if (!value.empty()) {
+            const std::filesystem::path path(value);
+            material.graphShader =
+                path.is_absolute() ? path.lexically_normal()
+                                   : std::filesystem::absolute(baseDirectory / path).lexically_normal();
+        }
+    }
+
+    const auto properties = override.find("propertyOverrides");
+    if (properties != override.end()) {
+        if (!properties->is_object()) {
+            if (error != nullptr) {
+                *error = "propertyOverrides must be an object";
+            }
+            return false;
+        }
+        for (const auto& [name, value] : properties->items()) {
+            if (name.empty() || name.front() != '_') {
+                if (error != nullptr) {
+                    *error = "propertyOverrides keys must be graph reference names";
+                }
+                return false;
+            }
+            GraphPropertyOverride property;
+            property.refName = name;
+            if (value.is_boolean()) {
+                property.count = 1;
+                property.values[0] = value.get<bool>() ? 1.0f : 0.0f;
+            } else if (value.is_number()) {
+                property.count = 1;
+                property.values[0] = value.get<float>();
+            } else if (value.is_array()) {
+                if (value.empty() || value.size() > 16) {
+                    if (error != nullptr) {
+                        *error = "propertyOverrides arrays must contain 1-16 numbers";
+                    }
+                    return false;
+                }
+                property.count = static_cast<uint8_t>(value.size());
+                for (std::size_t index = 0; index < value.size(); ++index) {
+                    if (!value[index].is_number()) {
+                        if (error != nullptr) {
+                            *error = "propertyOverrides arrays must contain numbers";
+                        }
+                        return false;
+                    }
+                    property.values[index] = value[index].get<float>();
+                }
+            } else {
+                if (error != nullptr) {
+                    *error = "propertyOverrides values must be numbers or arrays";
+                }
+                return false;
+            }
+            const auto existing = std::find_if(material.graphProperties.begin(), material.graphProperties.end(),
+                                               [&](const GraphPropertyOverride& entry) {
+                                                   return entry.refName == property.refName;
+                                               });
+            if (existing != material.graphProperties.end()) {
+                *existing = std::move(property);
+            } else {
+                material.graphProperties.push_back(std::move(property));
+            }
+        }
+    }
+
+    const auto textures = override.find("textureOverrides");
+    if (textures != override.end()) {
+        if (!textures->is_object()) {
+            if (error != nullptr) {
+                *error = "textureOverrides must be an object";
+            }
+            return false;
+        }
+        for (const auto& [name, value] : textures->items()) {
+            if (name.empty() || name.front() != '_') {
+                if (error != nullptr) {
+                    *error = "textureOverrides keys must be graph reference names";
+                }
+                return false;
+            }
+            std::vector<std::string> relativePaths;
+            if (value.is_string()) {
+                relativePaths.push_back(value.get<std::string>());
+            } else if (value.is_array() && !value.empty()) {
+                relativePaths.reserve(value.size());
+                for (const auto& entry : value) {
+                    if (!entry.is_string()) {
+                        if (error != nullptr) {
+                            *error = "textureOverrides arrays must contain string paths";
+                        }
+                        return false;
+                    }
+                    relativePaths.push_back(entry.get<std::string>());
+                }
+            } else {
+                if (error != nullptr) {
+                    *error = "textureOverrides values must be string paths or arrays of string paths";
+                }
+                return false;
+            }
+
+            GraphTextureOverride texture;
+            texture.refName = name;
+            texture.texture.sampler.wrapS = TextureWrap::Repeat;
+            texture.texture.sampler.wrapT = TextureWrap::Repeat;
+            texture.texture.sampler.minFilter = TextureFilter::Linear;
+            texture.texture.sampler.magFilter = TextureFilter::Linear;
+            texture.texture.sampler.mipFilter = TextureMipFilter::Linear;
+            for (const std::string& relativePath : relativePaths) {
+                const std::filesystem::path relative(relativePath);
+                if (relative.empty()) {
+                    continue;
+                }
+                ImageAsset image;
+                std::string textureError;
+                const std::filesystem::path resolved = baseDirectory / relative;
+                if (!TextureLoader::loadFromFile(resolved, image, &textureError)) {
+                    if (error != nullptr) {
+                        *error = "failed to load graph texture '" + resolved.string() + "': " + textureError;
+                    }
+                    return false;
+                }
+                texture.imageIndices.push_back(static_cast<int>(scene.images.size()));
+                scene.images.push_back(std::move(image));
+            }
+            if (texture.imageIndices.empty()) {
+                continue;
+            }
+            texture.texture.imageIndex = texture.imageIndices.front();
+            const auto existing = std::find_if(material.graphTextures.begin(), material.graphTextures.end(),
+                                               [&](const GraphTextureOverride& entry) {
+                                                   return entry.refName == texture.refName;
+                                               });
+            if (existing != material.graphTextures.end()) {
+                *existing = std::move(texture);
+            } else {
+                material.graphTextures.push_back(std::move(texture));
+            }
+        }
+    }
+
+    const auto keywords = override.find("keywordOverrides");
+    if (keywords != override.end()) {
+        if (!keywords->is_object()) {
+            if (error != nullptr) {
+                *error = "keywordOverrides must be an object";
+            }
+            return false;
+        }
+        for (const auto& [name, value] : keywords->items()) {
+            if (name.empty() || name.front() != '_') {
+                if (error != nullptr) {
+                    *error = "keywordOverrides keys must be graph reference names";
+                }
+                return false;
+            }
+            GraphKeywordOverride keyword;
+            keyword.refName = name;
+            if (value.is_boolean()) {
+                keyword.value = value.get<bool>() ? "1" : "0";
+            } else if (value.is_number_integer()) {
+                keyword.value = std::to_string(value.get<int>());
+            } else if (value.is_string()) {
+                keyword.value = value.get<std::string>();
+            } else {
+                if (error != nullptr) {
+                    *error = "keywordOverrides values must be boolean, integer, or string";
+                }
+                return false;
+            }
+            const auto existing = std::find_if(material.graphKeywords.begin(), material.graphKeywords.end(),
+                                               [&](const GraphKeywordOverride& entry) {
+                                                   return entry.refName == keyword.refName;
+                                               });
+            if (existing != material.graphKeywords.end()) {
+                *existing = std::move(keyword);
+            } else {
+                material.graphKeywords.push_back(std::move(keyword));
+            }
+        }
+    }
+    return true;
+}
+
 bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidecar,
                   const std::filesystem::path& baseDirectory, std::string* error) {
     std::ifstream file(sidecar);
@@ -1527,6 +2034,11 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
         return false;
     }
 
+    const auto sky = root.find("sky");
+    if (sky != root.end() && !applySceneSky(scene, *sky, baseDirectory, error)) {
+        return false;
+    }
+
     const auto global = root.find("hdrp");
     if (global != root.end()) {
         for (Material& material : scene.materials) {
@@ -1547,7 +2059,8 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
         for (const auto& [name, override] : materials->items()) {
             for (Material& material : scene.materials) {
                 if (material.name == name) {
-                    if (!applyMaterialOverride(material, override, error)) {
+                    if (!applyMaterialOverride(material, override, error) ||
+                        !applyGraphMaterialOverrides(material, override, scene, baseDirectory, error)) {
                         return false;
                     }
                 }
@@ -1669,6 +2182,11 @@ bool applySidecar(render::RenderScene& scene, const std::filesystem::path& sidec
 }
 
 } // namespace
+
+bool SceneLoader::applySidecarToScene(render::RenderScene& scene, const std::filesystem::path& sidecar,
+                                      std::string* error) {
+    return applySidecar(scene, sidecar, sidecar.parent_path(), error);
+}
 
 SceneLoadResult SceneLoader::load(const std::filesystem::path& path, const SceneLoadOptions& options) {
     GltfLoadResult gltf = GltfLoader::load(path);

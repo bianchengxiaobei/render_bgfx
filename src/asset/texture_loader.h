@@ -15,7 +15,11 @@ struct ImageAsset {
     std::string name;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint16_t layers = 1;
+    uint16_t depth = 1;
     uint8_t mipCount = 1;
+    bool cubeMap = false;
+    bool is3D = false;
     gfx::TextureFormat format = gfx::TextureFormat::RGBA8;
     std::vector<uint8_t> pixels;
 
@@ -27,10 +31,14 @@ struct ImageAsset {
     }
 };
 
+enum class LayeredTextureLayout : uint8_t { Texture2DArray, Texture3D, Cubemap };
+
 class TextureLoader {
   public:
     static bool loadFromMemory(const void* data, std::size_t size, ImageAsset& image, std::string* error = nullptr);
     static bool loadFromFile(const std::filesystem::path& path, ImageAsset& image, std::string* error = nullptr);
+    static bool composeLayered(const std::vector<const ImageAsset*>& layers, LayeredTextureLayout layout,
+                               ImageAsset& image, std::string* error = nullptr);
     static bool packOrmMask(const ImageAsset* occlusion, const ImageAsset* metallicRoughness, ImageAsset& packed,
                             std::string* error = nullptr);
 

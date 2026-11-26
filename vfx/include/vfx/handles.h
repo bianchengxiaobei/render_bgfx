@@ -21,6 +21,7 @@ struct ProgramTag {};
 struct TextureTag {};
 struct UniformTag {};
 struct SamplerTag {};
+struct ReadbackTag {};
 
 using EffectHandle = Handle<EffectTag>;
 using SystemHandle = Handle<SystemTag>;
@@ -29,6 +30,7 @@ using ProgramHandle = Handle<ProgramTag>;
 using TextureHandle = Handle<TextureTag>;
 using UniformHandle = Handle<UniformTag>;
 using SamplerHandle = Handle<SamplerTag>;
+using ReadbackHandle = Handle<ReadbackTag>;
 
 using AttributeBufferHandle = BufferHandle;
 using IndirectionBufferHandle = BufferHandle;

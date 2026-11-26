@@ -78,8 +78,11 @@ class VfxEditorUI {
     bool open(const std::filesystem::path& assetPath, std::string& error);
     bool compile(std::string& error);
     bool preview(std::string& error);
+    bool saveRecovery(std::string& error);
     bool valid() const;
     bool dirty() const;
+    void requestClose();
+    bool closeApproved() const;
     void draw();
 
   private:

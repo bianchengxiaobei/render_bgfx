@@ -38,6 +38,7 @@ MaterialKey makeMaterialKey(const Material& material) {
     key.alphaMode = static_cast<uint32_t>(material.alphaMode);
     key.features = material.features;
     key.doubleSided = material.doubleSided;
+    key.transparentBackface = material.transparentBackface;
     key.renderQueue = material.renderQueue;
     key.baseColorFactor = material.baseColorFactor;
     key.metallic = material.metallic;
@@ -83,6 +84,7 @@ std::size_t MaterialKeyHash::operator()(const MaterialKey& key) const {
     hashCombine(seed, key.alphaMode);
     hashCombine(seed, key.features);
     hashCombine(seed, key.doubleSided);
+    hashCombine(seed, key.transparentBackface);
     hashCombine(seed, key.renderQueue);
     hashCombine(seed, key.baseColorFactor);
     hashCombine(seed, key.metallic);

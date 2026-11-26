@@ -42,6 +42,9 @@ struct PipelineSettings {
     bool supportGpuLightList = true;
     bool supportGpuLightListBuffers = true;
     bool supportGpuLightListIndirect = false;
+    bool supportGpuSkinning = true;
+    bool supportDepthPyramidCompute = true;
+    bool supportGpuDrivenGeometry = false;
     bool supportLightListFeatureFlags = true;
     bool supportLitVariants = false;
     bool supportLitVariantTiles = false;
@@ -68,7 +71,11 @@ struct PipelineSettings {
     bool supportMotionBlur = false;
     bool supportFXAA = false;
     bool supportExposureHistogram = false;
+    bool supportTransparentBackface = false;
     bool supportTransparentDepthPrepass = false;
+    bool supportTransparentRefraction = false;
+    bool supportRefractionDepthRejection = true;
+    bool supportRefractionRoughness = false;
     bool supportTransparentDepthPostpass = false;
     bool supportLowResTransparent = false;
     bool supportDecals = false;
@@ -83,6 +90,9 @@ struct PipelineSettings {
     bool supportDataDrivenLensFlare = false;
     bool supportCustomPass = false;
     bool supportVFX = false;
+    bool supportVFXInstancing = false;
+    bool supportVFXTransparentSort = false;
+    uint32_t vfxInstanceBatchSize = 0;
     bool supportVariableRateShading = false;
     bool supportVirtualTexturing = false;
     bool supportProbeVolume = false;

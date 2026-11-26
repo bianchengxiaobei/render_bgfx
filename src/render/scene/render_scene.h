@@ -11,6 +11,7 @@
 #include "render/scene/light.h"
 #include "render/scene/reflection_probe.h"
 #include "render/scene/render_object.h"
+#include "render/scene/scene_sky.h"
 
 #include <array>
 #include <cstdint>
@@ -88,6 +89,7 @@ struct RenderScene {
     std::vector<Camera> cameras;
     std::vector<LightmapAtlasSource> lightmapAtlases;
     std::filesystem::path lightmapBaseDirectory;
+    SceneSky sky;
     Bounds bounds;
 
     bool hasLightmap() const { return !lightmapAtlases.empty(); }

@@ -80,6 +80,8 @@ struct AssetSystem {
     SystemSpace space = SystemSpace::World;
     SortMode sortMode = SortMode::None;
     SortOrder sortOrder = SortOrder::Ascending;
+    BoundsMode boundsMode = BoundsMode::Manual;
+    Vec3 boundsPadding{};
     Bounds bounds{};
     float spawnerRate = 0.0f;
     std::vector<AssetBurst> bursts;
@@ -104,6 +106,9 @@ struct AssetProgram {
     BlendMode blend = BlendMode::Alpha;
     bool lit = false;
     bool softParticles = false;
+    bool castShadows = false;
+    bool generateMotionVector = true;
+    std::int32_t sortPriority = 0;
     float softDistance = 0.1f;
     SortMode sortMode = SortMode::None;
     SortOrder sortOrder = SortOrder::Ascending;
@@ -112,6 +117,7 @@ struct AssetProgram {
 
 struct Asset {
     std::string name;
+    std::uint32_t cullingFlags = 0;
     std::vector<AssetProperty> properties;
     std::vector<AssetSystem> systems;
     std::vector<AssetProgram> programs;

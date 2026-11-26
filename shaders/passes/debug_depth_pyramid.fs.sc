@@ -6,7 +6,7 @@ SAMPLER2D(s_depthPyramid, 0);
 
 void main()
 {
-    const float depth = texture2D(s_depthPyramid, v_texcoord0).x;
+    const float depth = texture2DLod(s_depthPyramid, v_texcoord0, 0.0).x;
     if (depth >= 0.999999)
     {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);

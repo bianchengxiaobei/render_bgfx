@@ -1,0 +1,29 @@
+{
+  "litShaderMode": "deferred",
+  "lodBias": 1.0,
+  "lodBiasMode": "fromQualitySettings",
+  "lodBiasQualityLevel": 0,
+  "maximumLODLevel": 0,
+  "maximumLODLevelMode": "fromQualitySettings",
+  "maximumLODLevelQualityLevel": 0,
+  "sssQualityMode": "fromQualitySettings",
+  "sssQualityLevel": 0,
+  "sssCustomSampleBudget": 0,
+  "sssCustomDownsampleSteps": 0,
+  "msaaMode": "none",
+  "materialQuality": "high",
+  "fields": {
+    "OpaqueObjects": true,
+    "TransparentObjects": true,
+    "ShadowMaps": true,
+    "Postprocess": true,
+    "Tonemapping": true,
+    "MotionVectors": true,
+    "SSR": false,
+    "SSAO": false,
+    "SSGI": false,
+    "Decals": false,
+    "Volumetrics": false,
+    "Water": false
+  }
+}

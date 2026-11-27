@@ -1,0 +1,2017 @@
+{
+  "version": 1,
+  "generated_by": "tools/shader_build.py",
+  "optimization": 3,
+  "passes": {
+    "dxbc": {
+      "waterFft": {
+        "prepare": "build/dxbc/water_fft_prepare.cs.bin",
+        "horizontal": "build/dxbc/water_fft_horizontal.cs.bin",
+        "vertical": "build/dxbc/water_fft_vertical.cs.bin",
+        "finalize": "build/dxbc/water_fft_finalize.cs.bin",
+        "mip": "build/dxbc/water_fft_mip.cs.bin",
+        "displace": "build/dxbc/water_fft_displace.cs.bin"
+      },
+      "forward": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "terrainInstancedVertex": "build/dxbc/prepass_terrain_instanced.vs.bin",
+        "fragments": [
+          "build/dxbc/forward.fs.0.bin",
+          "build/dxbc/forward.fs.1.bin",
+          "build/dxbc/forward.fs.2.bin",
+          "build/dxbc/forward.fs.3.bin",
+          "build/dxbc/forward.fs.4.bin",
+          "build/dxbc/forward.fs.5.bin",
+          "build/dxbc/forward.fs.6.bin",
+          "build/dxbc/forward.fs.7.bin",
+          "build/dxbc/forward.fs.8.bin",
+          "build/dxbc/forward.fs.9.bin",
+          "build/dxbc/forward.fs.10.bin",
+          "build/dxbc/forward.fs.11.bin",
+          "build/dxbc/forward.fs.12.bin",
+          "build/dxbc/forward.fs.13.bin",
+          "build/dxbc/forward.fs.14.bin",
+          "build/dxbc/forward.fs.15.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/forward_buffer.fs.0.bin",
+          "build/dxbc/forward_buffer.fs.1.bin",
+          "build/dxbc/forward_buffer.fs.2.bin",
+          "build/dxbc/forward_buffer.fs.3.bin",
+          "build/dxbc/forward_buffer.fs.4.bin",
+          "build/dxbc/forward_buffer.fs.5.bin",
+          "build/dxbc/forward_buffer.fs.6.bin",
+          "build/dxbc/forward_buffer.fs.7.bin",
+          "build/dxbc/forward_buffer.fs.8.bin",
+          "build/dxbc/forward_buffer.fs.9.bin",
+          "build/dxbc/forward_buffer.fs.10.bin",
+          "build/dxbc/forward_buffer.fs.11.bin",
+          "build/dxbc/forward_buffer.fs.12.bin",
+          "build/dxbc/forward_buffer.fs.13.bin",
+          "build/dxbc/forward_buffer.fs.14.bin",
+          "build/dxbc/forward_buffer.fs.15.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin"
+        ]
+      },
+      "forwardRiver": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/forward_river.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/forward_river_buffer.fs.0.bin"
+        ]
+      },
+      "forwardInstanced": {
+        "vertex": "build/dxbc/forward_instanced.vs.bin",
+        "fragments": [
+          "build/dxbc/forward.fs.0.bin",
+          "build/dxbc/forward.fs.1.bin",
+          "build/dxbc/forward.fs.2.bin",
+          "build/dxbc/forward.fs.3.bin",
+          "build/dxbc/forward.fs.4.bin",
+          "build/dxbc/forward.fs.5.bin",
+          "build/dxbc/forward.fs.6.bin",
+          "build/dxbc/forward.fs.7.bin",
+          "build/dxbc/forward.fs.8.bin",
+          "build/dxbc/forward.fs.9.bin",
+          "build/dxbc/forward.fs.10.bin",
+          "build/dxbc/forward.fs.11.bin",
+          "build/dxbc/forward.fs.12.bin",
+          "build/dxbc/forward.fs.13.bin",
+          "build/dxbc/forward.fs.14.bin",
+          "build/dxbc/forward.fs.15.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/dxbc/forward_buffer.fs.0.bin",
+          "build/dxbc/forward_buffer.fs.1.bin",
+          "build/dxbc/forward_buffer.fs.2.bin",
+          "build/dxbc/forward_buffer.fs.3.bin",
+          "build/dxbc/forward_buffer.fs.4.bin",
+          "build/dxbc/forward_buffer.fs.5.bin",
+          "build/dxbc/forward_buffer.fs.6.bin",
+          "build/dxbc/forward_buffer.fs.7.bin",
+          "build/dxbc/forward_buffer.fs.8.bin",
+          "build/dxbc/forward_buffer.fs.9.bin",
+          "build/dxbc/forward_buffer.fs.10.bin",
+          "build/dxbc/forward_buffer.fs.11.bin",
+          "build/dxbc/forward_buffer.fs.12.bin",
+          "build/dxbc/forward_buffer.fs.13.bin",
+          "build/dxbc/forward_buffer.fs.14.bin",
+          "build/dxbc/forward_buffer.fs.15.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin",
+          "build/dxbc/forward_water.fs.0.bin"
+        ]
+      },
+      "tonemap": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/tonemap.fs.bin"
+      },
+      "final": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragments": [
+          "build/dxbc/final.fs.bin",
+          "build/dxbc/final.fs.fxaa.bin"
+        ]
+      },
+      "uberPost": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/uber_post.fs.bin"
+      },
+      "debugColorGrading": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_color_grading.fs.bin"
+      },
+      "bloomPrefilter": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragments": [
+          "build/dxbc/bloom_prefilter.fs.low.bin",
+          "build/dxbc/bloom_prefilter.fs.hq.bin"
+        ]
+      },
+      "bloomBlur": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragments": [
+          "build/dxbc/bloom_blur.fs.h.bin",
+          "build/dxbc/bloom_blur.fs.v.bin"
+        ]
+      },
+      "bloomDownsample": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/bloom_downsample.fs.bin"
+      },
+      "bloomUpsample": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragments": [
+          "build/dxbc/bloom_upsample.fs.tent.bin",
+          "build/dxbc/bloom_upsample.fs.bicubic.bin"
+        ]
+      },
+      "debugBloom": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_bloom.fs.bin"
+      },
+      "taa": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/taa.fs.bin"
+      },
+      "taaSharpen": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/taa_sharpen.fs.bin"
+      },
+      "debugTaaHistory": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_taa_history.fs.bin"
+      },
+      "dofCoc": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/dof_coc.fs.bin"
+      },
+      "dofGather": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragments": [
+          "build/dxbc/dof_gather.fs.low.bin",
+          "build/dxbc/dof_gather.fs.high.bin"
+        ]
+      },
+      "dofCombine": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/dof_combine.fs.bin"
+      },
+      "debugDofCoc": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_dof_coc.fs.bin"
+      },
+      "debugFxaa": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_fxaa.fs.bin"
+      },
+      "motionBlur": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/motion_blur.fs.bin"
+      },
+      "postProcessExposure": {
+        "compute": "build/dxbc/postprocess_exposure.cs.bin"
+      },
+      "postProcessExposurePrepass": {
+        "compute": "build/dxbc/exposure_prepass.cs.bin"
+      },
+      "postProcessExposureReduce": {
+        "compute": "build/dxbc/exposure_reduce.cs.bin"
+      },
+      "postProcessExposureReduceFinal": {
+        "compute": "build/dxbc/exposure_reduce_final.cs.bin"
+      },
+      "postProcessHistogramClear": {
+        "compute": "build/dxbc/histogram_clear.cs.bin"
+      },
+      "postProcessHistogramGen": {
+        "compute": "build/dxbc/histogram_gen.cs.bin"
+      },
+      "postProcessHistogramReduce": {
+        "compute": "build/dxbc/histogram_reduce.cs.bin"
+      },
+      "applyExposure": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/apply_exposure.fs.bin"
+      },
+      "debugExposure": {
+        "vertex": "build/dxbc/tonemap.vs.bin",
+        "fragment": "build/dxbc/debug_exposure.fs.bin"
+      },
+      "shadow": {
+        "vertex": "build/dxbc/shadowcaster.vs.bin",
+        "fragments": [
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.1.bin",
+          "build/dxbc/shadowcaster.fs.2.bin",
+          "build/dxbc/shadowcaster.fs.3.bin",
+          "build/dxbc/shadowcaster.fs.4.bin",
+          "build/dxbc/shadowcaster.fs.5.bin",
+          "build/dxbc/shadowcaster.fs.6.bin",
+          "build/dxbc/shadowcaster.fs.7.bin",
+          "build/dxbc/shadowcaster.fs.8.bin",
+          "build/dxbc/shadowcaster.fs.9.bin",
+          "build/dxbc/shadowcaster.fs.10.bin",
+          "build/dxbc/shadowcaster.fs.11.bin",
+          "build/dxbc/shadowcaster.fs.12.bin",
+          "build/dxbc/shadowcaster.fs.13.bin",
+          "build/dxbc/shadowcaster.fs.14.bin",
+          "build/dxbc/shadowcaster.fs.15.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin"
+        ],
+        "terrainVertex": "build/dxbc/shadowcaster_terrain.vs.bin"
+      },
+      "shadowInstanced": {
+        "vertex": "build/dxbc/shadowcaster_instanced.vs.bin",
+        "fragments": [
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.1.bin",
+          "build/dxbc/shadowcaster.fs.2.bin",
+          "build/dxbc/shadowcaster.fs.3.bin",
+          "build/dxbc/shadowcaster.fs.4.bin",
+          "build/dxbc/shadowcaster.fs.5.bin",
+          "build/dxbc/shadowcaster.fs.6.bin",
+          "build/dxbc/shadowcaster.fs.7.bin",
+          "build/dxbc/shadowcaster.fs.8.bin",
+          "build/dxbc/shadowcaster.fs.9.bin",
+          "build/dxbc/shadowcaster.fs.10.bin",
+          "build/dxbc/shadowcaster.fs.11.bin",
+          "build/dxbc/shadowcaster.fs.12.bin",
+          "build/dxbc/shadowcaster.fs.13.bin",
+          "build/dxbc/shadowcaster.fs.14.bin",
+          "build/dxbc/shadowcaster.fs.15.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin",
+          "build/dxbc/shadowcaster.fs.0.bin"
+        ]
+      },
+      "shadowCull": {
+        "compute": "build/dxbc/shadow_cull.cs.bin"
+      },
+      "prepass": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/prepass.fs.0.bin",
+          "build/dxbc/prepass.fs.1.bin",
+          "build/dxbc/prepass.fs.2.bin",
+          "build/dxbc/prepass.fs.3.bin",
+          "build/dxbc/prepass.fs.4.bin",
+          "build/dxbc/prepass.fs.5.bin",
+          "build/dxbc/prepass.fs.6.bin",
+          "build/dxbc/prepass.fs.7.bin",
+          "build/dxbc/prepass.fs.8.bin",
+          "build/dxbc/prepass.fs.9.bin",
+          "build/dxbc/prepass.fs.10.bin",
+          "build/dxbc/prepass.fs.11.bin",
+          "build/dxbc/prepass.fs.12.bin",
+          "build/dxbc/prepass.fs.13.bin",
+          "build/dxbc/prepass.fs.14.bin",
+          "build/dxbc/prepass.fs.15.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin",
+          "build/dxbc/prepass.fs.16.bin"
+        ],
+        "terrainFragments": [
+          "build/dxbc/prepass_terrain.fs.0.bin",
+          "build/dxbc/prepass_terrain.fs.1.bin",
+          "build/dxbc/prepass_terrain.fs.2.bin",
+          "build/dxbc/prepass_terrain.fs.3.bin",
+          "build/dxbc/prepass_terrain.fs.4.bin",
+          "build/dxbc/prepass_terrain.fs.5.bin",
+          "build/dxbc/prepass_terrain.fs.6.bin",
+          "build/dxbc/prepass_terrain.fs.7.bin",
+          "build/dxbc/prepass_terrain.fs.8.bin",
+          "build/dxbc/prepass_terrain.fs.9.bin",
+          "build/dxbc/prepass_terrain.fs.10.bin",
+          "build/dxbc/prepass_terrain.fs.11.bin",
+          "build/dxbc/prepass_terrain.fs.12.bin",
+          "build/dxbc/prepass_terrain.fs.13.bin",
+          "build/dxbc/prepass_terrain.fs.14.bin",
+          "build/dxbc/prepass_terrain.fs.15.bin"
+        ],
+        "terrainVertex": "build/dxbc/forward_terrain.vs.bin",
+        "terrainInstancedVertex": "build/dxbc/prepass_terrain_instanced.vs.bin",
+        "instancedVertex": "build/dxbc/forward_instanced.vs.bin"
+      },
+      "gbuffer": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/gbuffer.fs.0.bin",
+          "build/dxbc/gbuffer.fs.1.bin",
+          "build/dxbc/gbuffer.fs.2.bin",
+          "build/dxbc/gbuffer.fs.3.bin",
+          "build/dxbc/gbuffer.fs.4.bin",
+          "build/dxbc/gbuffer.fs.5.bin",
+          "build/dxbc/gbuffer.fs.6.bin",
+          "build/dxbc/gbuffer.fs.7.bin",
+          "build/dxbc/gbuffer.fs.8.bin",
+          "build/dxbc/gbuffer.fs.9.bin",
+          "build/dxbc/gbuffer.fs.10.bin",
+          "build/dxbc/gbuffer.fs.11.bin",
+          "build/dxbc/gbuffer.fs.12.bin",
+          "build/dxbc/gbuffer.fs.13.bin",
+          "build/dxbc/gbuffer.fs.14.bin",
+          "build/dxbc/gbuffer.fs.15.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.16.bin",
+          "build/dxbc/gbuffer.fs.17.bin",
+          "build/dxbc/gbuffer.fs.18.bin",
+          "build/dxbc/gbuffer.fs.19.bin",
+          "build/dxbc/gbuffer.fs.20.bin",
+          "build/dxbc/gbuffer.fs.21.bin",
+          "build/dxbc/gbuffer.fs.22.bin",
+          "build/dxbc/gbuffer.fs.23.bin",
+          "build/dxbc/gbuffer.fs.24.bin",
+          "build/dxbc/gbuffer.fs.25.bin",
+          "build/dxbc/gbuffer.fs.26.bin",
+          "build/dxbc/gbuffer.fs.27.bin",
+          "build/dxbc/gbuffer.fs.28.bin",
+          "build/dxbc/gbuffer.fs.29.bin",
+          "build/dxbc/gbuffer.fs.30.bin",
+          "build/dxbc/gbuffer.fs.31.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin",
+          "build/dxbc/gbuffer.fs.48.bin"
+        ],
+        "terrainFragments": [
+          "build/dxbc/gbuffer_terrain.fs.0.bin",
+          "build/dxbc/gbuffer_terrain.fs.1.bin",
+          "build/dxbc/gbuffer_terrain.fs.2.bin",
+          "build/dxbc/gbuffer_terrain.fs.3.bin",
+          "build/dxbc/gbuffer_terrain.fs.4.bin",
+          "build/dxbc/gbuffer_terrain.fs.5.bin",
+          "build/dxbc/gbuffer_terrain.fs.6.bin",
+          "build/dxbc/gbuffer_terrain.fs.7.bin",
+          "build/dxbc/gbuffer_terrain.fs.8.bin",
+          "build/dxbc/gbuffer_terrain.fs.9.bin",
+          "build/dxbc/gbuffer_terrain.fs.10.bin",
+          "build/dxbc/gbuffer_terrain.fs.11.bin",
+          "build/dxbc/gbuffer_terrain.fs.12.bin",
+          "build/dxbc/gbuffer_terrain.fs.13.bin",
+          "build/dxbc/gbuffer_terrain.fs.14.bin",
+          "build/dxbc/gbuffer_terrain.fs.15.bin",
+          "build/dxbc/gbuffer_terrain.fs.16.bin",
+          "build/dxbc/gbuffer_terrain.fs.17.bin",
+          "build/dxbc/gbuffer_terrain.fs.18.bin",
+          "build/dxbc/gbuffer_terrain.fs.19.bin",
+          "build/dxbc/gbuffer_terrain.fs.20.bin",
+          "build/dxbc/gbuffer_terrain.fs.21.bin",
+          "build/dxbc/gbuffer_terrain.fs.22.bin",
+          "build/dxbc/gbuffer_terrain.fs.23.bin",
+          "build/dxbc/gbuffer_terrain.fs.24.bin",
+          "build/dxbc/gbuffer_terrain.fs.25.bin",
+          "build/dxbc/gbuffer_terrain.fs.26.bin",
+          "build/dxbc/gbuffer_terrain.fs.27.bin",
+          "build/dxbc/gbuffer_terrain.fs.28.bin",
+          "build/dxbc/gbuffer_terrain.fs.29.bin",
+          "build/dxbc/gbuffer_terrain.fs.30.bin",
+          "build/dxbc/gbuffer_terrain.fs.31.bin",
+          "build/dxbc/gbuffer_terrain.fs.16.bin",
+          "build/dxbc/gbuffer_terrain.fs.17.bin",
+          "build/dxbc/gbuffer_terrain.fs.18.bin",
+          "build/dxbc/gbuffer_terrain.fs.19.bin",
+          "build/dxbc/gbuffer_terrain.fs.20.bin",
+          "build/dxbc/gbuffer_terrain.fs.21.bin",
+          "build/dxbc/gbuffer_terrain.fs.22.bin",
+          "build/dxbc/gbuffer_terrain.fs.23.bin",
+          "build/dxbc/gbuffer_terrain.fs.24.bin",
+          "build/dxbc/gbuffer_terrain.fs.25.bin",
+          "build/dxbc/gbuffer_terrain.fs.26.bin",
+          "build/dxbc/gbuffer_terrain.fs.27.bin",
+          "build/dxbc/gbuffer_terrain.fs.28.bin",
+          "build/dxbc/gbuffer_terrain.fs.29.bin",
+          "build/dxbc/gbuffer_terrain.fs.30.bin",
+          "build/dxbc/gbuffer_terrain.fs.31.bin"
+        ],
+        "terrainVertex": "build/dxbc/forward_terrain.vs.bin",
+        "terrainInstancedVertex": "build/dxbc/gbuffer_terrain_instanced.vs.bin",
+        "terrainInstancedFragments": [
+          "build/dxbc/gbuffer_terrain_instanced.fs.0.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.1.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.2.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.3.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.4.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.5.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.6.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.7.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.8.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.9.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.10.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.11.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.12.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.13.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.14.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.15.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.16.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.17.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.18.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.19.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.20.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.21.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.22.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.23.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.24.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.25.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.26.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.27.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.28.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.29.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.30.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.31.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.16.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.17.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.18.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.19.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.20.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.21.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.22.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.23.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.24.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.25.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.26.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.27.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.28.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.29.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.30.bin",
+          "build/dxbc/gbuffer_terrain_instanced.fs.31.bin"
+        ],
+        "instancedVertex": "build/dxbc/forward_instanced.vs.bin"
+      },
+      "gbufferClear": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/gbuffer_clear.fs.bin"
+      },
+      "gbufferDecals": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.1.bin",
+          "build/dxbc/gbuffer_decals.fs.2.bin",
+          "build/dxbc/gbuffer_decals.fs.3.bin",
+          "build/dxbc/gbuffer_decals.fs.4.bin",
+          "build/dxbc/gbuffer_decals.fs.5.bin",
+          "build/dxbc/gbuffer_decals.fs.6.bin",
+          "build/dxbc/gbuffer_decals.fs.7.bin",
+          "build/dxbc/gbuffer_decals.fs.8.bin",
+          "build/dxbc/gbuffer_decals.fs.9.bin",
+          "build/dxbc/gbuffer_decals.fs.10.bin",
+          "build/dxbc/gbuffer_decals.fs.11.bin",
+          "build/dxbc/gbuffer_decals.fs.12.bin",
+          "build/dxbc/gbuffer_decals.fs.13.bin",
+          "build/dxbc/gbuffer_decals.fs.14.bin",
+          "build/dxbc/gbuffer_decals.fs.15.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.16.bin",
+          "build/dxbc/gbuffer_decals.fs.17.bin",
+          "build/dxbc/gbuffer_decals.fs.18.bin",
+          "build/dxbc/gbuffer_decals.fs.19.bin",
+          "build/dxbc/gbuffer_decals.fs.20.bin",
+          "build/dxbc/gbuffer_decals.fs.21.bin",
+          "build/dxbc/gbuffer_decals.fs.22.bin",
+          "build/dxbc/gbuffer_decals.fs.23.bin",
+          "build/dxbc/gbuffer_decals.fs.24.bin",
+          "build/dxbc/gbuffer_decals.fs.25.bin",
+          "build/dxbc/gbuffer_decals.fs.26.bin",
+          "build/dxbc/gbuffer_decals.fs.27.bin",
+          "build/dxbc/gbuffer_decals.fs.28.bin",
+          "build/dxbc/gbuffer_decals.fs.29.bin",
+          "build/dxbc/gbuffer_decals.fs.30.bin",
+          "build/dxbc/gbuffer_decals.fs.31.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin",
+          "build/dxbc/gbuffer_decals.fs.0.bin"
+        ],
+        "terrainFragments": [
+          "build/dxbc/gbuffer_decals_terrain.fs.0.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.1.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.2.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.3.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.4.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.5.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.6.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.7.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.8.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.9.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.10.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.11.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.12.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.13.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.14.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.15.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.16.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.17.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.18.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.19.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.20.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.21.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.22.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.23.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.24.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.25.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.26.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.27.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.28.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.29.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.30.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.31.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.16.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.17.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.18.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.19.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.20.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.21.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.22.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.23.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.24.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.25.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.26.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.27.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.28.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.29.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.30.bin",
+          "build/dxbc/gbuffer_decals_terrain.fs.31.bin"
+        ],
+        "terrainVertex": "build/dxbc/forward_terrain.vs.bin",
+        "instancedVertex": "build/dxbc/forward_instanced.vs.bin"
+      },
+      "decal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/decal.fs.bin"
+      },
+      "decalClear": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/decal_clear.fs.bin"
+      },
+      "deferredLighting": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/deferred_lighting.fs.bin",
+        "bufferFragment": "build/dxbc/deferred_lighting_buffer.fs.bin"
+      },
+      "deferredLightingAdvanced": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/deferred_lighting_advanced.fs.bin",
+        "bufferFragment": "build/dxbc/deferred_lighting_advanced_buffer.fs.bin"
+      },
+      "waterSky": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/water_sky.fs.bin"
+      },
+      "ssao": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssao.fs.bin"
+      },
+      "ssaoBlur": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssao_blur.fs.bin"
+      },
+      "ssaoTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssao_temporal.fs.bin"
+      },
+      "ssaoUpsample": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssao_upsample.fs.bin"
+      },
+      "ssrTrace": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssr_trace.fs.bin"
+      },
+      "ssrTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssr_temporal.fs.bin"
+      },
+      "ssrComposite": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssr_composite.fs.bin"
+      },
+      "ssgiTrace": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssgi_trace.fs.bin"
+      },
+      "ssgiDenoise": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssgi_denoise.fs.bin"
+      },
+      "ssgiTemporal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssgi_temporal.fs.bin"
+      },
+      "ssgiComposite": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/ssgi_composite.fs.bin"
+      },
+      "motionVectors": {
+        "vertex": "build/dxbc/motion_vectors.vs.bin",
+        "fragment": "build/dxbc/motion_vectors.fs.bin",
+        "terrainVertex": "build/dxbc/motion_vectors_terrain.vs.bin",
+        "terrainInstancedVertex": "build/dxbc/motion_vectors_terrain_instanced.vs.bin",
+        "instancedVertex": "build/dxbc/motion_vectors_instanced.vs.bin"
+      },
+      "cameraMotionVectors": {
+        "vertex": "build/dxbc/camera_motion_vectors.vs.bin",
+        "fragment": "build/dxbc/camera_motion_vectors.fs.bin"
+      },
+      "depthPyramidCopy": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/depth_pyramid_copy.fs.bin"
+      },
+      "depthPyramidDownsample": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/depth_pyramid_downsample.fs.bin"
+      },
+      "riverDepthPack": {
+        "vertex": "build/dxbc/river_depth_pack.vs.bin",
+        "fragment": "build/dxbc/river_depth_pack.fs.bin"
+      },
+      "sky": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/sky.fs.bin"
+      },
+      "atmosphere": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/atmosphere.fs.bin"
+      },
+      "volumetricFog": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/volumetric_fog.fs.bin",
+        "bufferFragment": "build/dxbc/volumetric_fog_buffer.fs.bin"
+      },
+      "volumetricFogComposite": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/volumetric_fog_composite.fs.bin"
+      },
+      "debugLightData": {
+        "vertex": "build/dxbc/debug_light_data.vs.bin",
+        "fragment": "build/dxbc/debug_light_data.fs.bin"
+      },
+      "debugNormal": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_normal.fs.bin"
+      },
+      "debugMotionVectors": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_motion_vectors.fs.bin"
+      },
+      "debugDepth": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_depth.fs.bin"
+      },
+      "debugDepthPyramid": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_depth_pyramid.fs.bin"
+      },
+      "debugLightCluster": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_light_cluster.fs.bin",
+        "bufferFragment": "build/dxbc/debug_light_cluster_buffer.fs.bin"
+      },
+      "debugShadowAtlas": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_shadow_atlas.fs.bin"
+      },
+      "debugColor": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_color.fs.bin"
+      },
+      "debugSsao": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_ssao.fs.bin"
+      },
+      "debugSsr": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_ssr.fs.bin"
+      },
+      "debugDecals": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_decals.fs.bin"
+      },
+      "debugSsgi": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_ssgi.fs.bin"
+      },
+      "debugSsgiRaw": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_ssgi_raw.fs.bin"
+      },
+      "debugGbuffer": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_gbuffer.fs.bin"
+      },
+      "debugContactShadows": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_contact_shadows.fs.bin"
+      },
+      "debugShadowCascade": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_shadow_cascade.fs.bin"
+      },
+      "debugShadowFilter": {
+        "vertex": "build/dxbc/depth_pyramid.vs.bin",
+        "fragment": "build/dxbc/debug_shadow_filter.fs.bin"
+      },
+      "contactShadows": {
+        "compute": "build/dxbc/contact_shadows.cs.bin",
+        "bufferCompute": "build/dxbc/contact_shadows_buffer.cs.bin"
+      },
+      "lightScreenAabb": {
+        "compute": "build/dxbc/light_screen_aabb.cs.bin"
+      },
+      "lightBigTile": {
+        "compute": "build/dxbc/light_big_tile.cs.bin"
+      },
+      "lightFptl": {
+        "compute": "build/dxbc/light_fptl.cs.bin"
+      },
+      "lightCluster": {
+        "compute": "build/dxbc/light_cluster.cs.bin"
+      },
+      "lightScreenAabbBuffer": {
+        "compute": "build/dxbc/light_screen_aabb_buffer.cs.bin"
+      },
+      "lightBigTileBuffer": {
+        "compute": "build/dxbc/light_big_tile_buffer.cs.bin"
+      },
+      "lightFptlBuffer": {
+        "compute": "build/dxbc/light_fptl_buffer.cs.bin"
+      },
+      "lightClusterBuffer": {
+        "compute": "build/dxbc/light_cluster_buffer.cs.bin"
+      },
+      "lightIndirectArgs": {
+        "compute": "build/dxbc/light_indirect_args.cs.bin"
+      },
+      "debugAlbedo": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.1.bin",
+          "build/dxbc/debug_albedo.fs.2.bin",
+          "build/dxbc/debug_albedo.fs.3.bin",
+          "build/dxbc/debug_albedo.fs.4.bin",
+          "build/dxbc/debug_albedo.fs.5.bin",
+          "build/dxbc/debug_albedo.fs.6.bin",
+          "build/dxbc/debug_albedo.fs.7.bin",
+          "build/dxbc/debug_albedo.fs.8.bin",
+          "build/dxbc/debug_albedo.fs.9.bin",
+          "build/dxbc/debug_albedo.fs.10.bin",
+          "build/dxbc/debug_albedo.fs.11.bin",
+          "build/dxbc/debug_albedo.fs.12.bin",
+          "build/dxbc/debug_albedo.fs.13.bin",
+          "build/dxbc/debug_albedo.fs.14.bin",
+          "build/dxbc/debug_albedo.fs.15.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin",
+          "build/dxbc/debug_albedo.fs.0.bin"
+        ],
+        "terrainVertex": "build/dxbc/forward_terrain.vs.bin"
+      },
+      "debugRoughness": {
+        "vertex": "build/dxbc/forward.vs.bin",
+        "fragments": [
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.1.bin",
+          "build/dxbc/debug_roughness.fs.2.bin",
+          "build/dxbc/debug_roughness.fs.3.bin",
+          "build/dxbc/debug_roughness.fs.4.bin",
+          "build/dxbc/debug_roughness.fs.5.bin",
+          "build/dxbc/debug_roughness.fs.6.bin",
+          "build/dxbc/debug_roughness.fs.7.bin",
+          "build/dxbc/debug_roughness.fs.8.bin",
+          "build/dxbc/debug_roughness.fs.9.bin",
+          "build/dxbc/debug_roughness.fs.10.bin",
+          "build/dxbc/debug_roughness.fs.11.bin",
+          "build/dxbc/debug_roughness.fs.12.bin",
+          "build/dxbc/debug_roughness.fs.13.bin",
+          "build/dxbc/debug_roughness.fs.14.bin",
+          "build/dxbc/debug_roughness.fs.15.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin",
+          "build/dxbc/debug_roughness.fs.0.bin"
+        ],
+        "terrainVertex": "build/dxbc/forward_terrain.vs.bin"
+      },
+      "wireframe": {
+        "vertex": "build/dxbc/wireframe.vs.bin",
+        "fragment": "build/dxbc/wireframe.fs.bin"
+      },
+      "ui": {
+        "vertex": "build/dxbc/imgui.vs.bin",
+        "fragment": "build/dxbc/imgui.fs.bin"
+      },
+      "riverParticles": {
+        "vertex": "build/dxbc/river_particles.vs.bin",
+        "fragment": "build/dxbc/river_particles.fs.bin"
+      }
+    },
+    "spirv": {
+      "waterFft": {
+        "prepare": "build/spirv/water_fft_prepare.cs.bin",
+        "horizontal": "build/spirv/water_fft_horizontal.cs.bin",
+        "vertical": "build/spirv/water_fft_vertical.cs.bin",
+        "finalize": "build/spirv/water_fft_finalize.cs.bin",
+        "mip": "build/spirv/water_fft_mip.cs.bin",
+        "displace": "build/spirv/water_fft_displace.cs.bin"
+      },
+      "forward": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "terrainInstancedVertex": "build/spirv/prepass_terrain_instanced.vs.bin",
+        "fragments": [
+          "build/spirv/forward.fs.0.bin",
+          "build/spirv/forward.fs.1.bin",
+          "build/spirv/forward.fs.2.bin",
+          "build/spirv/forward.fs.3.bin",
+          "build/spirv/forward.fs.4.bin",
+          "build/spirv/forward.fs.5.bin",
+          "build/spirv/forward.fs.6.bin",
+          "build/spirv/forward.fs.7.bin",
+          "build/spirv/forward.fs.8.bin",
+          "build/spirv/forward.fs.9.bin",
+          "build/spirv/forward.fs.10.bin",
+          "build/spirv/forward.fs.11.bin",
+          "build/spirv/forward.fs.12.bin",
+          "build/spirv/forward.fs.13.bin",
+          "build/spirv/forward.fs.14.bin",
+          "build/spirv/forward.fs.15.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/forward_buffer.fs.0.bin",
+          "build/spirv/forward_buffer.fs.1.bin",
+          "build/spirv/forward_buffer.fs.2.bin",
+          "build/spirv/forward_buffer.fs.3.bin",
+          "build/spirv/forward_buffer.fs.4.bin",
+          "build/spirv/forward_buffer.fs.5.bin",
+          "build/spirv/forward_buffer.fs.6.bin",
+          "build/spirv/forward_buffer.fs.7.bin",
+          "build/spirv/forward_buffer.fs.8.bin",
+          "build/spirv/forward_buffer.fs.9.bin",
+          "build/spirv/forward_buffer.fs.10.bin",
+          "build/spirv/forward_buffer.fs.11.bin",
+          "build/spirv/forward_buffer.fs.12.bin",
+          "build/spirv/forward_buffer.fs.13.bin",
+          "build/spirv/forward_buffer.fs.14.bin",
+          "build/spirv/forward_buffer.fs.15.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin"
+        ]
+      },
+      "forwardRiver": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/forward_river.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/forward_river_buffer.fs.0.bin"
+        ]
+      },
+      "forwardInstanced": {
+        "vertex": "build/spirv/forward_instanced.vs.bin",
+        "fragments": [
+          "build/spirv/forward.fs.0.bin",
+          "build/spirv/forward.fs.1.bin",
+          "build/spirv/forward.fs.2.bin",
+          "build/spirv/forward.fs.3.bin",
+          "build/spirv/forward.fs.4.bin",
+          "build/spirv/forward.fs.5.bin",
+          "build/spirv/forward.fs.6.bin",
+          "build/spirv/forward.fs.7.bin",
+          "build/spirv/forward.fs.8.bin",
+          "build/spirv/forward.fs.9.bin",
+          "build/spirv/forward.fs.10.bin",
+          "build/spirv/forward.fs.11.bin",
+          "build/spirv/forward.fs.12.bin",
+          "build/spirv/forward.fs.13.bin",
+          "build/spirv/forward.fs.14.bin",
+          "build/spirv/forward.fs.15.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin"
+        ],
+        "bufferFragments": [
+          "build/spirv/forward_buffer.fs.0.bin",
+          "build/spirv/forward_buffer.fs.1.bin",
+          "build/spirv/forward_buffer.fs.2.bin",
+          "build/spirv/forward_buffer.fs.3.bin",
+          "build/spirv/forward_buffer.fs.4.bin",
+          "build/spirv/forward_buffer.fs.5.bin",
+          "build/spirv/forward_buffer.fs.6.bin",
+          "build/spirv/forward_buffer.fs.7.bin",
+          "build/spirv/forward_buffer.fs.8.bin",
+          "build/spirv/forward_buffer.fs.9.bin",
+          "build/spirv/forward_buffer.fs.10.bin",
+          "build/spirv/forward_buffer.fs.11.bin",
+          "build/spirv/forward_buffer.fs.12.bin",
+          "build/spirv/forward_buffer.fs.13.bin",
+          "build/spirv/forward_buffer.fs.14.bin",
+          "build/spirv/forward_buffer.fs.15.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin",
+          "build/spirv/forward_water.fs.0.bin"
+        ]
+      },
+      "tonemap": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/tonemap.fs.bin"
+      },
+      "final": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragments": [
+          "build/spirv/final.fs.bin",
+          "build/spirv/final.fs.fxaa.bin"
+        ]
+      },
+      "uberPost": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/uber_post.fs.bin"
+      },
+      "debugColorGrading": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_color_grading.fs.bin"
+      },
+      "bloomPrefilter": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragments": [
+          "build/spirv/bloom_prefilter.fs.low.bin",
+          "build/spirv/bloom_prefilter.fs.hq.bin"
+        ]
+      },
+      "bloomBlur": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragments": [
+          "build/spirv/bloom_blur.fs.h.bin",
+          "build/spirv/bloom_blur.fs.v.bin"
+        ]
+      },
+      "bloomDownsample": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/bloom_downsample.fs.bin"
+      },
+      "bloomUpsample": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragments": [
+          "build/spirv/bloom_upsample.fs.tent.bin",
+          "build/spirv/bloom_upsample.fs.bicubic.bin"
+        ]
+      },
+      "debugBloom": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_bloom.fs.bin"
+      },
+      "taa": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/taa.fs.bin"
+      },
+      "taaSharpen": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/taa_sharpen.fs.bin"
+      },
+      "debugTaaHistory": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_taa_history.fs.bin"
+      },
+      "dofCoc": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/dof_coc.fs.bin"
+      },
+      "dofGather": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragments": [
+          "build/spirv/dof_gather.fs.low.bin",
+          "build/spirv/dof_gather.fs.high.bin"
+        ]
+      },
+      "dofCombine": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/dof_combine.fs.bin"
+      },
+      "debugDofCoc": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_dof_coc.fs.bin"
+      },
+      "debugFxaa": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_fxaa.fs.bin"
+      },
+      "motionBlur": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/motion_blur.fs.bin"
+      },
+      "postProcessExposure": {
+        "compute": "build/spirv/postprocess_exposure.cs.bin"
+      },
+      "postProcessExposurePrepass": {
+        "compute": "build/spirv/exposure_prepass.cs.bin"
+      },
+      "postProcessExposureReduce": {
+        "compute": "build/spirv/exposure_reduce.cs.bin"
+      },
+      "postProcessExposureReduceFinal": {
+        "compute": "build/spirv/exposure_reduce_final.cs.bin"
+      },
+      "postProcessHistogramClear": {
+        "compute": "build/spirv/histogram_clear.cs.bin"
+      },
+      "postProcessHistogramGen": {
+        "compute": "build/spirv/histogram_gen.cs.bin"
+      },
+      "postProcessHistogramReduce": {
+        "compute": "build/spirv/histogram_reduce.cs.bin"
+      },
+      "applyExposure": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/apply_exposure.fs.bin"
+      },
+      "debugExposure": {
+        "vertex": "build/spirv/tonemap.vs.bin",
+        "fragment": "build/spirv/debug_exposure.fs.bin"
+      },
+      "shadow": {
+        "vertex": "build/spirv/shadowcaster.vs.bin",
+        "fragments": [
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.1.bin",
+          "build/spirv/shadowcaster.fs.2.bin",
+          "build/spirv/shadowcaster.fs.3.bin",
+          "build/spirv/shadowcaster.fs.4.bin",
+          "build/spirv/shadowcaster.fs.5.bin",
+          "build/spirv/shadowcaster.fs.6.bin",
+          "build/spirv/shadowcaster.fs.7.bin",
+          "build/spirv/shadowcaster.fs.8.bin",
+          "build/spirv/shadowcaster.fs.9.bin",
+          "build/spirv/shadowcaster.fs.10.bin",
+          "build/spirv/shadowcaster.fs.11.bin",
+          "build/spirv/shadowcaster.fs.12.bin",
+          "build/spirv/shadowcaster.fs.13.bin",
+          "build/spirv/shadowcaster.fs.14.bin",
+          "build/spirv/shadowcaster.fs.15.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin"
+        ],
+        "terrainVertex": "build/spirv/shadowcaster_terrain.vs.bin"
+      },
+      "shadowInstanced": {
+        "vertex": "build/spirv/shadowcaster_instanced.vs.bin",
+        "fragments": [
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.1.bin",
+          "build/spirv/shadowcaster.fs.2.bin",
+          "build/spirv/shadowcaster.fs.3.bin",
+          "build/spirv/shadowcaster.fs.4.bin",
+          "build/spirv/shadowcaster.fs.5.bin",
+          "build/spirv/shadowcaster.fs.6.bin",
+          "build/spirv/shadowcaster.fs.7.bin",
+          "build/spirv/shadowcaster.fs.8.bin",
+          "build/spirv/shadowcaster.fs.9.bin",
+          "build/spirv/shadowcaster.fs.10.bin",
+          "build/spirv/shadowcaster.fs.11.bin",
+          "build/spirv/shadowcaster.fs.12.bin",
+          "build/spirv/shadowcaster.fs.13.bin",
+          "build/spirv/shadowcaster.fs.14.bin",
+          "build/spirv/shadowcaster.fs.15.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin",
+          "build/spirv/shadowcaster.fs.0.bin"
+        ]
+      },
+      "shadowCull": {
+        "compute": "build/spirv/shadow_cull.cs.bin"
+      },
+      "prepass": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/prepass.fs.0.bin",
+          "build/spirv/prepass.fs.1.bin",
+          "build/spirv/prepass.fs.2.bin",
+          "build/spirv/prepass.fs.3.bin",
+          "build/spirv/prepass.fs.4.bin",
+          "build/spirv/prepass.fs.5.bin",
+          "build/spirv/prepass.fs.6.bin",
+          "build/spirv/prepass.fs.7.bin",
+          "build/spirv/prepass.fs.8.bin",
+          "build/spirv/prepass.fs.9.bin",
+          "build/spirv/prepass.fs.10.bin",
+          "build/spirv/prepass.fs.11.bin",
+          "build/spirv/prepass.fs.12.bin",
+          "build/spirv/prepass.fs.13.bin",
+          "build/spirv/prepass.fs.14.bin",
+          "build/spirv/prepass.fs.15.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin",
+          "build/spirv/prepass.fs.16.bin"
+        ],
+        "terrainFragments": [
+          "build/spirv/prepass_terrain.fs.0.bin",
+          "build/spirv/prepass_terrain.fs.1.bin",
+          "build/spirv/prepass_terrain.fs.2.bin",
+          "build/spirv/prepass_terrain.fs.3.bin",
+          "build/spirv/prepass_terrain.fs.4.bin",
+          "build/spirv/prepass_terrain.fs.5.bin",
+          "build/spirv/prepass_terrain.fs.6.bin",
+          "build/spirv/prepass_terrain.fs.7.bin",
+          "build/spirv/prepass_terrain.fs.8.bin",
+          "build/spirv/prepass_terrain.fs.9.bin",
+          "build/spirv/prepass_terrain.fs.10.bin",
+          "build/spirv/prepass_terrain.fs.11.bin",
+          "build/spirv/prepass_terrain.fs.12.bin",
+          "build/spirv/prepass_terrain.fs.13.bin",
+          "build/spirv/prepass_terrain.fs.14.bin",
+          "build/spirv/prepass_terrain.fs.15.bin"
+        ],
+        "terrainVertex": "build/spirv/forward_terrain.vs.bin",
+        "terrainInstancedVertex": "build/spirv/prepass_terrain_instanced.vs.bin",
+        "instancedVertex": "build/spirv/forward_instanced.vs.bin"
+      },
+      "gbuffer": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/gbuffer.fs.0.bin",
+          "build/spirv/gbuffer.fs.1.bin",
+          "build/spirv/gbuffer.fs.2.bin",
+          "build/spirv/gbuffer.fs.3.bin",
+          "build/spirv/gbuffer.fs.4.bin",
+          "build/spirv/gbuffer.fs.5.bin",
+          "build/spirv/gbuffer.fs.6.bin",
+          "build/spirv/gbuffer.fs.7.bin",
+          "build/spirv/gbuffer.fs.8.bin",
+          "build/spirv/gbuffer.fs.9.bin",
+          "build/spirv/gbuffer.fs.10.bin",
+          "build/spirv/gbuffer.fs.11.bin",
+          "build/spirv/gbuffer.fs.12.bin",
+          "build/spirv/gbuffer.fs.13.bin",
+          "build/spirv/gbuffer.fs.14.bin",
+          "build/spirv/gbuffer.fs.15.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.16.bin",
+          "build/spirv/gbuffer.fs.17.bin",
+          "build/spirv/gbuffer.fs.18.bin",
+          "build/spirv/gbuffer.fs.19.bin",
+          "build/spirv/gbuffer.fs.20.bin",
+          "build/spirv/gbuffer.fs.21.bin",
+          "build/spirv/gbuffer.fs.22.bin",
+          "build/spirv/gbuffer.fs.23.bin",
+          "build/spirv/gbuffer.fs.24.bin",
+          "build/spirv/gbuffer.fs.25.bin",
+          "build/spirv/gbuffer.fs.26.bin",
+          "build/spirv/gbuffer.fs.27.bin",
+          "build/spirv/gbuffer.fs.28.bin",
+          "build/spirv/gbuffer.fs.29.bin",
+          "build/spirv/gbuffer.fs.30.bin",
+          "build/spirv/gbuffer.fs.31.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin",
+          "build/spirv/gbuffer.fs.48.bin"
+        ],
+        "terrainFragments": [
+          "build/spirv/gbuffer_terrain.fs.0.bin",
+          "build/spirv/gbuffer_terrain.fs.1.bin",
+          "build/spirv/gbuffer_terrain.fs.2.bin",
+          "build/spirv/gbuffer_terrain.fs.3.bin",
+          "build/spirv/gbuffer_terrain.fs.4.bin",
+          "build/spirv/gbuffer_terrain.fs.5.bin",
+          "build/spirv/gbuffer_terrain.fs.6.bin",
+          "build/spirv/gbuffer_terrain.fs.7.bin",
+          "build/spirv/gbuffer_terrain.fs.8.bin",
+          "build/spirv/gbuffer_terrain.fs.9.bin",
+          "build/spirv/gbuffer_terrain.fs.10.bin",
+          "build/spirv/gbuffer_terrain.fs.11.bin",
+          "build/spirv/gbuffer_terrain.fs.12.bin",
+          "build/spirv/gbuffer_terrain.fs.13.bin",
+          "build/spirv/gbuffer_terrain.fs.14.bin",
+          "build/spirv/gbuffer_terrain.fs.15.bin",
+          "build/spirv/gbuffer_terrain.fs.16.bin",
+          "build/spirv/gbuffer_terrain.fs.17.bin",
+          "build/spirv/gbuffer_terrain.fs.18.bin",
+          "build/spirv/gbuffer_terrain.fs.19.bin",
+          "build/spirv/gbuffer_terrain.fs.20.bin",
+          "build/spirv/gbuffer_terrain.fs.21.bin",
+          "build/spirv/gbuffer_terrain.fs.22.bin",
+          "build/spirv/gbuffer_terrain.fs.23.bin",
+          "build/spirv/gbuffer_terrain.fs.24.bin",
+          "build/spirv/gbuffer_terrain.fs.25.bin",
+          "build/spirv/gbuffer_terrain.fs.26.bin",
+          "build/spirv/gbuffer_terrain.fs.27.bin",
+          "build/spirv/gbuffer_terrain.fs.28.bin",
+          "build/spirv/gbuffer_terrain.fs.29.bin",
+          "build/spirv/gbuffer_terrain.fs.30.bin",
+          "build/spirv/gbuffer_terrain.fs.31.bin",
+          "build/spirv/gbuffer_terrain.fs.16.bin",
+          "build/spirv/gbuffer_terrain.fs.17.bin",
+          "build/spirv/gbuffer_terrain.fs.18.bin",
+          "build/spirv/gbuffer_terrain.fs.19.bin",
+          "build/spirv/gbuffer_terrain.fs.20.bin",
+          "build/spirv/gbuffer_terrain.fs.21.bin",
+          "build/spirv/gbuffer_terrain.fs.22.bin",
+          "build/spirv/gbuffer_terrain.fs.23.bin",
+          "build/spirv/gbuffer_terrain.fs.24.bin",
+          "build/spirv/gbuffer_terrain.fs.25.bin",
+          "build/spirv/gbuffer_terrain.fs.26.bin",
+          "build/spirv/gbuffer_terrain.fs.27.bin",
+          "build/spirv/gbuffer_terrain.fs.28.bin",
+          "build/spirv/gbuffer_terrain.fs.29.bin",
+          "build/spirv/gbuffer_terrain.fs.30.bin",
+          "build/spirv/gbuffer_terrain.fs.31.bin"
+        ],
+        "terrainVertex": "build/spirv/forward_terrain.vs.bin",
+        "terrainInstancedVertex": "build/spirv/gbuffer_terrain_instanced.vs.bin",
+        "terrainInstancedFragments": [
+          "build/spirv/gbuffer_terrain_instanced.fs.0.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.1.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.2.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.3.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.4.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.5.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.6.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.7.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.8.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.9.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.10.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.11.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.12.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.13.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.14.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.15.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.16.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.17.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.18.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.19.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.20.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.21.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.22.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.23.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.24.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.25.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.26.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.27.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.28.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.29.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.30.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.31.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.16.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.17.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.18.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.19.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.20.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.21.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.22.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.23.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.24.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.25.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.26.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.27.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.28.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.29.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.30.bin",
+          "build/spirv/gbuffer_terrain_instanced.fs.31.bin"
+        ],
+        "instancedVertex": "build/spirv/forward_instanced.vs.bin"
+      },
+      "gbufferClear": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/gbuffer_clear.fs.bin"
+      },
+      "gbufferDecals": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.1.bin",
+          "build/spirv/gbuffer_decals.fs.2.bin",
+          "build/spirv/gbuffer_decals.fs.3.bin",
+          "build/spirv/gbuffer_decals.fs.4.bin",
+          "build/spirv/gbuffer_decals.fs.5.bin",
+          "build/spirv/gbuffer_decals.fs.6.bin",
+          "build/spirv/gbuffer_decals.fs.7.bin",
+          "build/spirv/gbuffer_decals.fs.8.bin",
+          "build/spirv/gbuffer_decals.fs.9.bin",
+          "build/spirv/gbuffer_decals.fs.10.bin",
+          "build/spirv/gbuffer_decals.fs.11.bin",
+          "build/spirv/gbuffer_decals.fs.12.bin",
+          "build/spirv/gbuffer_decals.fs.13.bin",
+          "build/spirv/gbuffer_decals.fs.14.bin",
+          "build/spirv/gbuffer_decals.fs.15.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.16.bin",
+          "build/spirv/gbuffer_decals.fs.17.bin",
+          "build/spirv/gbuffer_decals.fs.18.bin",
+          "build/spirv/gbuffer_decals.fs.19.bin",
+          "build/spirv/gbuffer_decals.fs.20.bin",
+          "build/spirv/gbuffer_decals.fs.21.bin",
+          "build/spirv/gbuffer_decals.fs.22.bin",
+          "build/spirv/gbuffer_decals.fs.23.bin",
+          "build/spirv/gbuffer_decals.fs.24.bin",
+          "build/spirv/gbuffer_decals.fs.25.bin",
+          "build/spirv/gbuffer_decals.fs.26.bin",
+          "build/spirv/gbuffer_decals.fs.27.bin",
+          "build/spirv/gbuffer_decals.fs.28.bin",
+          "build/spirv/gbuffer_decals.fs.29.bin",
+          "build/spirv/gbuffer_decals.fs.30.bin",
+          "build/spirv/gbuffer_decals.fs.31.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin",
+          "build/spirv/gbuffer_decals.fs.0.bin"
+        ],
+        "terrainFragments": [
+          "build/spirv/gbuffer_decals_terrain.fs.0.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.1.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.2.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.3.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.4.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.5.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.6.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.7.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.8.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.9.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.10.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.11.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.12.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.13.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.14.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.15.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.16.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.17.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.18.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.19.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.20.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.21.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.22.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.23.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.24.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.25.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.26.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.27.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.28.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.29.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.30.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.31.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.16.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.17.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.18.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.19.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.20.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.21.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.22.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.23.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.24.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.25.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.26.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.27.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.28.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.29.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.30.bin",
+          "build/spirv/gbuffer_decals_terrain.fs.31.bin"
+        ],
+        "terrainVertex": "build/spirv/forward_terrain.vs.bin",
+        "instancedVertex": "build/spirv/forward_instanced.vs.bin"
+      },
+      "decal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/decal.fs.bin"
+      },
+      "decalClear": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/decal_clear.fs.bin"
+      },
+      "deferredLighting": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/deferred_lighting.fs.bin",
+        "bufferFragment": "build/spirv/deferred_lighting_buffer.fs.bin"
+      },
+      "deferredLightingAdvanced": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/deferred_lighting_advanced.fs.bin",
+        "bufferFragment": "build/spirv/deferred_lighting_advanced_buffer.fs.bin"
+      },
+      "waterSky": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/water_sky.fs.bin"
+      },
+      "ssao": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssao.fs.bin"
+      },
+      "ssaoBlur": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssao_blur.fs.bin"
+      },
+      "ssaoTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssao_temporal.fs.bin"
+      },
+      "ssaoUpsample": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssao_upsample.fs.bin"
+      },
+      "ssrTrace": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssr_trace.fs.bin"
+      },
+      "ssrTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssr_temporal.fs.bin"
+      },
+      "ssrComposite": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssr_composite.fs.bin"
+      },
+      "ssgiTrace": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssgi_trace.fs.bin"
+      },
+      "ssgiDenoise": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssgi_denoise.fs.bin"
+      },
+      "ssgiTemporal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssgi_temporal.fs.bin"
+      },
+      "ssgiComposite": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/ssgi_composite.fs.bin"
+      },
+      "motionVectors": {
+        "vertex": "build/spirv/motion_vectors.vs.bin",
+        "fragment": "build/spirv/motion_vectors.fs.bin",
+        "terrainVertex": "build/spirv/motion_vectors_terrain.vs.bin",
+        "terrainInstancedVertex": "build/spirv/motion_vectors_terrain_instanced.vs.bin",
+        "instancedVertex": "build/spirv/motion_vectors_instanced.vs.bin"
+      },
+      "cameraMotionVectors": {
+        "vertex": "build/spirv/camera_motion_vectors.vs.bin",
+        "fragment": "build/spirv/camera_motion_vectors.fs.bin"
+      },
+      "depthPyramidCopy": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/depth_pyramid_copy.fs.bin"
+      },
+      "depthPyramidDownsample": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/depth_pyramid_downsample.fs.bin"
+      },
+      "riverDepthPack": {
+        "vertex": "build/spirv/river_depth_pack.vs.bin",
+        "fragment": "build/spirv/river_depth_pack.fs.bin"
+      },
+      "sky": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/sky.fs.bin"
+      },
+      "atmosphere": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/atmosphere.fs.bin"
+      },
+      "volumetricFog": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/volumetric_fog.fs.bin",
+        "bufferFragment": "build/spirv/volumetric_fog_buffer.fs.bin"
+      },
+      "volumetricFogComposite": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/volumetric_fog_composite.fs.bin"
+      },
+      "debugLightData": {
+        "vertex": "build/spirv/debug_light_data.vs.bin",
+        "fragment": "build/spirv/debug_light_data.fs.bin"
+      },
+      "debugNormal": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_normal.fs.bin"
+      },
+      "debugMotionVectors": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_motion_vectors.fs.bin"
+      },
+      "debugDepth": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_depth.fs.bin"
+      },
+      "debugDepthPyramid": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_depth_pyramid.fs.bin"
+      },
+      "debugLightCluster": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_light_cluster.fs.bin",
+        "bufferFragment": "build/spirv/debug_light_cluster_buffer.fs.bin"
+      },
+      "debugShadowAtlas": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_shadow_atlas.fs.bin"
+      },
+      "debugColor": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_color.fs.bin"
+      },
+      "debugSsao": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_ssao.fs.bin"
+      },
+      "debugSsr": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_ssr.fs.bin"
+      },
+      "debugDecals": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_decals.fs.bin"
+      },
+      "debugSsgi": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_ssgi.fs.bin"
+      },
+      "debugSsgiRaw": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_ssgi_raw.fs.bin"
+      },
+      "debugGbuffer": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_gbuffer.fs.bin"
+      },
+      "debugContactShadows": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_contact_shadows.fs.bin"
+      },
+      "debugShadowCascade": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_shadow_cascade.fs.bin"
+      },
+      "debugShadowFilter": {
+        "vertex": "build/spirv/depth_pyramid.vs.bin",
+        "fragment": "build/spirv/debug_shadow_filter.fs.bin"
+      },
+      "contactShadows": {
+        "compute": "build/spirv/contact_shadows.cs.bin",
+        "bufferCompute": "build/spirv/contact_shadows_buffer.cs.bin"
+      },
+      "lightScreenAabb": {
+        "compute": "build/spirv/light_screen_aabb.cs.bin"
+      },
+      "lightBigTile": {
+        "compute": "build/spirv/light_big_tile.cs.bin"
+      },
+      "lightFptl": {
+        "compute": "build/spirv/light_fptl.cs.bin"
+      },
+      "lightCluster": {
+        "compute": "build/spirv/light_cluster.cs.bin"
+      },
+      "lightScreenAabbBuffer": {
+        "compute": "build/spirv/light_screen_aabb_buffer.cs.bin"
+      },
+      "lightBigTileBuffer": {
+        "compute": "build/spirv/light_big_tile_buffer.cs.bin"
+      },
+      "lightFptlBuffer": {
+        "compute": "build/spirv/light_fptl_buffer.cs.bin"
+      },
+      "lightClusterBuffer": {
+        "compute": "build/spirv/light_cluster_buffer.cs.bin"
+      },
+      "lightIndirectArgs": {
+        "compute": "build/spirv/light_indirect_args.cs.bin"
+      },
+      "debugAlbedo": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.1.bin",
+          "build/spirv/debug_albedo.fs.2.bin",
+          "build/spirv/debug_albedo.fs.3.bin",
+          "build/spirv/debug_albedo.fs.4.bin",
+          "build/spirv/debug_albedo.fs.5.bin",
+          "build/spirv/debug_albedo.fs.6.bin",
+          "build/spirv/debug_albedo.fs.7.bin",
+          "build/spirv/debug_albedo.fs.8.bin",
+          "build/spirv/debug_albedo.fs.9.bin",
+          "build/spirv/debug_albedo.fs.10.bin",
+          "build/spirv/debug_albedo.fs.11.bin",
+          "build/spirv/debug_albedo.fs.12.bin",
+          "build/spirv/debug_albedo.fs.13.bin",
+          "build/spirv/debug_albedo.fs.14.bin",
+          "build/spirv/debug_albedo.fs.15.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin",
+          "build/spirv/debug_albedo.fs.0.bin"
+        ],
+        "terrainVertex": "build/spirv/forward_terrain.vs.bin"
+      },
+      "debugRoughness": {
+        "vertex": "build/spirv/forward.vs.bin",
+        "fragments": [
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.1.bin",
+          "build/spirv/debug_roughness.fs.2.bin",
+          "build/spirv/debug_roughness.fs.3.bin",
+          "build/spirv/debug_roughness.fs.4.bin",
+          "build/spirv/debug_roughness.fs.5.bin",
+          "build/spirv/debug_roughness.fs.6.bin",
+          "build/spirv/debug_roughness.fs.7.bin",
+          "build/spirv/debug_roughness.fs.8.bin",
+          "build/spirv/debug_roughness.fs.9.bin",
+          "build/spirv/debug_roughness.fs.10.bin",
+          "build/spirv/debug_roughness.fs.11.bin",
+          "build/spirv/debug_roughness.fs.12.bin",
+          "build/spirv/debug_roughness.fs.13.bin",
+          "build/spirv/debug_roughness.fs.14.bin",
+          "build/spirv/debug_roughness.fs.15.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin",
+          "build/spirv/debug_roughness.fs.0.bin"
+        ],
+        "terrainVertex": "build/spirv/forward_terrain.vs.bin"
+      },
+      "wireframe": {
+        "vertex": "build/spirv/wireframe.vs.bin",
+        "fragment": "build/spirv/wireframe.fs.bin"
+      },
+      "ui": {
+        "vertex": "build/spirv/imgui.vs.bin",
+        "fragment": "build/spirv/imgui.fs.bin"
+      },
+      "riverParticles": {
+        "vertex": "build/spirv/river_particles.vs.bin",
+        "fragment": "build/spirv/river_particles.fs.bin"
+      }
+    }
+  }
+}

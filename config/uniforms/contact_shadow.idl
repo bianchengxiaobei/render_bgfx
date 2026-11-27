@@ -1,0 +1,6 @@
+block Contact {
+    vec4 params;   # x = length, y = distanceScaleFactor, z = minDistance, w = maxDistance
+    vec4 params2;  # x = fadeDistance, y = fadeInDistance, z = rayBias, w = thicknessScale
+    vec4 params3;  # x = sampleCount, y = opacity, z = directionalOnly, w = halfResolution
+    vec4 params4;  # x = gbuffer target, y = debug source flip, z = unused, w = unused
+}

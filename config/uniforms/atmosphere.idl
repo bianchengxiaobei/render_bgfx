@@ -1,0 +1,8 @@
+block Atmosphere {
+    vec4 params;  # x=planet radius, y=atmosphere radius, z=Rayleigh scale height, w=Mie scale height
+    vec4 betaR;   # xyz=Rayleigh scattering
+    vec4 betaM;   # xyz=Mie scattering, w=Mie extinction / scattering
+    vec4 params2; # x=sun intensity, y=Mie phase g, z=sky raymarch steps, w=sky enabled
+    vec4 params3; # x=aerial perspective enabled, y=aerial raymarch steps, zw=unused
+    vec4 params4; # x=precomputed LUT enabled, y=sun disk enabled, zw=unused
+}

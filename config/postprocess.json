@@ -1,0 +1,31 @@
+{
+  "name": "baseline",
+  "exposure": {
+    "mode": "fixed",
+    "fixedEv100": -1.2630344,
+    "compensation": 0.0,
+    "limitMin": -1.0,
+    "limitMax": 14.0,
+    "debugExposure": 0.0,
+    "metering": "centerWeighted"
+  },
+  "tonemapping": "aces",
+  "taa": {
+    "enabled": false
+  },
+  "bloom": {
+    "enabled": false
+  },
+  "colorGrading": {
+    "enabled": false
+  },
+  "depthOfField": {
+    "enabled": false
+  },
+  "motionBlur": {
+    "enabled": false
+  },
+  "fxaa": {
+    "enabled": false
+  }
+}

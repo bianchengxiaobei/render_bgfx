@@ -1,0 +1,33 @@
+block Pass {
+    mat4 shadowMatrix;       # world -> shadow atlas UV/depth
+    mat4 shadowViewProj;     # light view-projection used by shadow casters
+    vec4 shadowParams;       # x = legacy filter flag, y = micro shadow opacity, z = enabled, w = cascade count
+    vec4 shadowCascadeSplits; # cascade far distances
+    vec4 lightDirection;     # xyz = primary direction toward light, w = intensity
+    vec4 lightColor;         # rgb = primary light color, w = unused
+    vec4 ambientColor;       # rgb = ambient color, w = intensity
+    vec4 lightCounts;        # total, directional, punctual, shadowed
+    vec4 lightListParams;    # tile size, tiles x, tiles y, enabled
+    vec4 lightListParams2;   # list stride, capacity, max fptl lights, max big-tile lights
+    vec4 lightScreenSize;    # render width, render height, inverse width, inverse height
+    vec4 cookieAtlasParams; # atlas size, padding / size, last valid mip, unused
+    vec4 slopeVarianceParams; # x = ocean slope variance LUT valid, yzw = unused
+    vec4 slopeVarianceLut[250]; # 10x10x10 ocean slope variance LUT, 4 samples per vec4
+    vec4 atmosphereSkyE; # rgb = physical sky irradiance at camera altitude * sun intensity, w = valid
+    vec4 atmosphereSkyEParams; # x = per-pixel LUT valid, y = width, z = height, w = planet radius
+    vec4 atmosphereSkyEPlanet; # x = atmosphere radius, yzw = planet center
+    vec4 atmosphereSkyELut[256]; # 32x8 sky-only irradiance LUT, parameterized by radius and muSun
+    vec4 atmosphereSunTransmittance; # rgb = physical sun transmittance at camera altitude, w = valid
+    vec4 atmosphereSkyShAr; # SH9 sky radiance for red, coefficients 3,1,2,0-6
+    vec4 atmosphereSkyShAg; # SH9 sky radiance for green, coefficients 3,1,2,0-6
+    vec4 atmosphereSkyShAb; # SH9 sky radiance for blue, coefficients 3,1,2,0-6
+    vec4 atmosphereSkyShBr; # SH9 sky radiance for red, coefficients 4,5,6*3,7
+    vec4 atmosphereSkyShBg; # SH9 sky radiance for green, coefficients 4,5,6*3,7
+    vec4 atmosphereSkyShBb; # SH9 sky radiance for blue, coefficients 4,5,6*3,7
+    vec4 atmosphereSkyShC; # SH9 sky radiance, coefficient 8 for rgb
+}
+
+block AtmosphereSky {
+    vec4 mapParams; # x = valid, y = width, z = height, w = mip count
+    vec4 map[640]; # 32x16 paraboloid physical sky radiance plus one box-filtered mip, rgb
+}

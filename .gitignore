@@ -1,0 +1,11 @@
+/build/
+/out/
+/.vs/
+*.user
+*.suo
+compile_commands.json
+gfx_test_screenshot.png
+*.log
+/shaders/build/
+__pycache__/
+*.pyc

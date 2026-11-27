@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022",
+      "displayName": "Visual Studio 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      }
+    },
+    {
+      "name": "vs2022-relwithdebinfo",
+      "configurePreset": "vs2022",
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      }
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "vs2022-debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

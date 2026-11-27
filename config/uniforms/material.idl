@@ -1,0 +1,12 @@
+block Material {
+    vec4 baseColorFactor;
+    vec4 metallicRoughness; # metallic, roughness, normalScale, alphaCutoff
+    vec4 emissiveFactor;
+    vec4 advanced0;          # clearCoat, clearCoatRoughness, transmission, thickness
+    vec4 advanced1;          # anisotropy, anisotropyRotation, ior, iridescence
+    vec4 advanced2;          # iridescenceThickness, subsurfaceMask, features bits, unused
+    vec4 waterFftGridSizes;  # FFT grid tile sizes for GPU water normal sampling
+    vec4 waterSphere;
+    vec4 riverParticleParams; # enabled, wave slope, wave length, reserved
+    vec4 riverRefractionParams; # absorption, reserved
+}

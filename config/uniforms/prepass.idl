@@ -1,0 +1,11 @@
+block Object {
+    mat4 prevModel;          # previous-frame world matrix
+    vec4 lightLayerMask;     # x = 16-bit object mask, w = light-layers enabled
+    vec4 terrainTile;        # x = albedo layer, yz = node origin xz, w = node size (0 = global textures)
+    vec4 terrainNode;        # xz = node origin, z = node size, w = skirt depth (0 = baked geometry)
+    vec4 terrainWorld;       # xz = world origin, z = world size, w = 1 / (heightmap width - 1)
+}
+
+block Prepass {
+    vec4 depthPyramidParams; # xy = source texel size, zw = unused
+}

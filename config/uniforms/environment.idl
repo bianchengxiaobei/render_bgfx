@@ -1,0 +1,10 @@
+block Environment {
+    vec4 skyParams;          # intensity, max mip, sky enabled, reflection enabled
+    vec4 shAr;
+    vec4 shAg;
+    vec4 shAb;
+    vec4 shBr;
+    vec4 shBg;
+    vec4 shBb;
+    vec4 shCr;
+}
